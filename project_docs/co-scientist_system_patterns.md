@@ -1,707 +1,1122 @@
-**System Patterns**
+# System Patterns
 
-**ML Laboratory Co-Scientist**  ·  Architecture baseline for the local ML laboratory MVP
+**Product:** ML Laboratory Co-Scientist  
+**Role:** Architect  
+**Status:** Working Draft v3  
+**Scope:** Local small-scale ML laboratory MVP  
+**Last Updated:** 2026-03-21
 
-| Role | The Architect |
-| :---- | :---- |
-| **Product** | ML Laboratory Co-Scientist |
-| **Status** | Revised Working Draft |
-| **Scope** | Local small-scale ML laboratory MVP centered on scoped research problems, internal research memory, and external literature sources. |
-| **Last Updated** | 2026-03-21 |
+---
 
-| Revision focus in this update Re-centered the architecture on scoped ML research problems instead of a Kaggle-first workflow. Added task-scoped context assembly so operators do not receive the entire project state by default. Made literature handling metadata-first and arXiv HTML-first, with PDFs used only when HTML is insufficient. Shifted routine experimentation toward automation within policy, with live telemetry and user intervention controls. Made a phase-1 UI part of the baseline architecture rather than a later add-on. Strengthened reporting, historical comparison, and failure-memory patterns so results stay legible and reusable. Clarified the local-first stack around PostgreSQL, an arXiv metadata mirror, and a GPU-capable execution backplane. |
-| :---- |
+## 1. Purpose
 
-**1\. Purpose**
+This document defines the canonical architecture for the ML Laboratory Co-Scientist.
 
-This document defines the canonical system architecture for the ML Laboratory Co-Scientist. It answers five questions clearly: what the system is made of, how the major parts relate, which architectural patterns keep the product reliable and explainable, which default technology choices shape the MVP, and which decisions are intentionally deferred so the build stays narrow and practical.
+It answers five questions:
 
-This document is architecture-first. It sets the system shape, component boundaries, data flow, and major decisions with rationale. It does not attempt to pin exact packages, local commands, or environment setup in detail; those belong in tech\_context.md.
+1. What is the system made of?
+2. How do the major parts relate to each other?
+3. What architectural patterns are required for the product to stay reliable, explainable, and extensible?
+4. How do `skill.md` packages fit into the architecture without turning the system into prompt spaghetti?
+5. How should external orchestrator agents use and monitor the lab without bypassing policy or provenance?
 
-The product scope assumed here is a local-first, single-user ML laboratory MVP with metadata-first literature triage, bounded autonomy, explicit policies, and a research loop that can pursue scoped problems across internal and external sources without brute-forcing full-text ingestion.
+This document is architecture-first. It defines shape, boundaries, data flow, and major patterns. It does not pin package versions; those belong in `tech_context.md`.
 
-**2\. Architecture Summary**
+It is downstream of `prd.md` and upstream of `phased_implementation_plan.md` and `tech_context.md`.
 
-The ML Laboratory Co-Scientist should be built as a stateful research operating system, not as a loose swarm of chatting agents.
+---
 
-The core architectural decision is simple: the system runs as a set of typed operators over a shared ResearchState, backed by durable storage, explicit policy, and an append-only audit trail.
+## 2. Architecture Summary
+
+The ML Laboratory Co-Scientist should be built as a **stateful research operating system**, not as a swarm of agents chatting in the dark.
+
+The core architectural decision is:
+
+> The system runs as typed operators over a shared `ResearchState`, backed by durable storage, explicit policy, modular skills, and an append-only audit trail.
 
 The product is organized around three loops:
 
-1. Explore — ingest the scoped problem, screen literature, synthesize evidence, and maintain a ranked hypothesis portfolio.  
-2. Experiment — compile hypotheses into executable ExperimentSpecs, modify code in isolated workspaces, and run local experiments.  
-3. Verify — rerun or replicate results, check for leakage or invalid comparisons, update failure memory, and prepare human-readable finding packets.
+1. **Explore** — problem framing, source retrieval, literature screening, evidence synthesis.
+2. **Experiment** — hypothesis portfolio management, protocol compilation, code generation, sandboxed execution.
+3. **Verify** — deterministic checks, historical comparison, structured postmortems, report generation.
 
-Everything in the architecture exists to support those loops without losing provenance, reproducibility, human control, or operator context discipline.
+Two horizontal layers now cut across all three loops:
 
-**3\. System Design Principles**
+- **Skill layer** — `skill.md` packages that add modular behavior, context rules, and optional deterministic hooks.
+- **Orchestrator API layer** — a stable control-plane surface for external agents to create, monitor, and steer work.
 
-**3.1 Local-first by default**
+---
 
-The system must run on a single developer machine without requiring cluster orchestration, cloud queues, or multi-tenant infrastructure. Remote services may be used for model inference or metadata retrieval, but the product must remain usable as a bounded local lab.
+## 3. System Design Principles
 
-**3.2 Shared state over agent conversation**
+### 3.1 Local-first by default
 
-The system should not depend on hidden prompt history as its memory. Durable state lives in structured records, artifacts, and audit events. Operator inputs are assembled from that state, rather than recovered from freeform chat history.
+The system must run on a single developer workstation without requiring cluster orchestration or multi-tenant infrastructure.
 
-**3.3 Context discipline is mandatory**
+### 3.2 Shared state over agent conversation
 
-The product must not broadcast the entire project state to every model. Each operator receives only the evidence, failures, protocol fragments, or run summaries relevant to its task. This keeps token cost bounded, reduces drift, and makes reasoning traces easier to inspect.
+Durable state lives in structured records, artifacts, skill bindings, and audit events. Prompt history is not the source of truth.
 
-**3.4 Metadata before full text**
+### 3.3 Task-scoped context over global context dumping
 
-Literature discovery follows the same funnel a careful researcher would use: title plus abstract together, shortlist, full text only when justified, and evidence extraction last. For arXiv, the system should prefer HTML or other machine-readable full text before falling back to PDF parsing.
+Each operator and each skill should receive only the context needed for that task. The system must not hand every model the entire corpus, event log, and research history.
 
-**3.5 Deterministic core, probabilistic edge**
+### 3.4 Metadata before full text
 
-LLMs are useful for synthesis, ideation, critique, and report drafting. They should not own bookkeeping, experiment tracking, approval logic, or policy enforcement.
+Literature discovery must follow the same funnel a careful researcher would use:
 
-**3.6 Evidence before hypothesis, hypothesis before code**
+```text
+title + abstract together
+-> shortlist
+-> HTML or other machine-readable full text when needed
+-> PDF only when necessary
+```
 
-The product should not jump directly from a task description to generated code. Ideas must be grounded in evidence, then compiled into an ExperimentSpec, then executed.
+### 3.5 Deterministic core, probabilistic edge
 
-**3.7 Reproducibility is a first-class feature**
+LLMs are useful for synthesis, ideation, critique, and report drafting. They should not own bookkeeping, policy, lineage, or state transitions.
 
-Every accepted claim must be traceable to code, data, prompts, metrics, runtime environment, and approval decisions.
+### 3.6 Evidence before hypothesis, hypothesis before code
 
-**3.8 Automate routine work, reserve humans for leverage**
+The system should move through durable intermediates instead of collapsing directly from retrieval into execution.
 
-Most low-risk experimentation and hypothesis-disproving work should run automatically within policy. Human approval is reserved for high-cost, high-risk, external, or budget-overriding actions. The user must still be able to observe, pause, abort, redirect, and annotate the lab in real time.
+### 3.7 Skills are modular overlays, not shadow architecture
 
-**3.9 Narrow now, extensible later**
+Skills should extend the system in explicit, inspectable ways. A skill may influence context assembly, prompting, heuristics, or deterministic helper logic, but it does not become a hidden second control plane.
 
-The architecture should generalize cleanly, but only after a strong ML lab core exists. Generalized science adapters are deferred; ML is the primary domain model.
+### 3.8 API-first control plane
 
-**4\. Top-Level System Shape**
+Everything the UI can do should flow through the control-plane API so humans and orchestrator agents share the same operational surface.
 
-**4.1 Runtime topology**
+### 3.9 Reproducibility is a first-class feature
 
-| Layer | Contains | Why it exists |
-| :---- | :---- | :---- |
-| User Surface | Local web UI, CLI, rendered reports | The UI is part of phase 1\. It surfaces telemetry, approvals, finding packets, and intervention controls. |
-| Control Plane / API | Research state API, scheduler entry points, policy checks, telemetry endpoints | One entry point for creating cycles, queueing work, approving actions, and inspecting current state. |
-| Worker / Operator Pool | Intake, literature triage, synthesis, ideation, protocol compile, build, execute, verify, report | Operators consume task-scoped context packs and emit durable results. |
-| Durable State | PostgreSQL, pgvector, audit events, DB-backed queue | This is the system of record for research state, jobs, policies, and lineage. |
-| Artifact Store | Local filesystem | Runs, reports, literature caches, notes, patches, and exports remain inspectable on disk. |
-| Execution Backplane | Git worktrees plus GPU-capable containers | Generated code runs in isolated workspaces and containers with resource controls and GPU passthrough. |
-| External / Local Adapters | arXiv metadata, arXiv HTML/PDF, internal corpus, datasets, models, git, container runtime | All external systems sit behind adapters so the core remains testable and vendor-agnostic. |
+Every accepted claim must be traceable to evidence, prompts, code lineage, runtime environment, verification results, and approvals.
 
-**4.2 Architectural stance**
+### 3.10 Human control for irreversible or external actions
 
-* The system is not built around agent-to-agent message passing.  
-* It is built around typed records, explicit state transitions, operator execution with durable inputs and outputs, append-only audit events, isolated experiment workspaces, and policy-checked approvals.  
-* This is what makes the lab debuggable, restartable, and explainable.
+The system may automate low-risk work, but it must expose telemetry, intervention points, and approval boundaries.
 
-**5\. Core Architectural Patterns**
+### 3.11 Narrow now, extensible later
 
-**5.1 Shared ResearchState as source of truth**
+The architecture should generalize cleanly later, but the first product is an ML laboratory.
 
-Each research cycle is represented by a durable ResearchState. Operators do not own hidden memory. They read from and write to the same canonical record set.
+---
 
-A ResearchState should reference, at minimum:
+## 4. Top-Level System Shape
 
-* ResearchCharter and ProblemProfile  
-* Literature search sessions and PaperCards  
-* EvidenceCards and contradiction signals  
-* Hypothesis portfolio and ExperimentSpec queue  
-* RunRecord history, VerificationReports, and FailureMemory entries  
-* FindingPackets, budget state, approval state, and audit events
+### 4.1 Runtime topology
 
-Why this pattern exists: it makes the system restartable, keeps work inspectable without replaying prompt history, supports deterministic testing against stored state, and prevents agent memory drift from becoming hidden product logic.
+```text
++-------------------------------------------------------------------+
+|                    User Surfaces and Consumers                     |
+|     Web UI   |   CLI   |   External Orchestrators / Agents        |
++-------------------------------+-----------------------------------+
+                                |
+                                v
++-------------------------------------------------------------------+
+|                    Control Plane and API Layer                     |
+|  - research cycle API                                              |
+|  - orchestrator API                                                |
+|  - approvals and policy entrypoints                                |
+|  - report and artifact endpoints                                   |
+|  - event and telemetry streams                                     |
++------------------------+----------------------+--------------------+
+                         |                      |
+                         |                      |
+                         v                      v
+              +--------------------+   +----------------------------+
+              | Durable State      |   | Worker / Operator Runtime  |
+              | - Postgres         |   | - intake                   |
+              | - pgvector         |   | - retrieval                |
+              | - jobs             |   | - literature               |
+              | - audit/events     |   | - ideation                 |
+              | - skill registry   |   | - protocol compilation     |
+              +---------+----------+   | - execution                |
+                        |              | - verification             |
+                        |              | - reporting                |
+                        |              +-------------+--------------+
+                        |                            |
+                        v                            v
+              +--------------------+   +----------------------------+
+              | Artifact Store     |   | Skill Runtime              |
+              | local filesystem   |   | - skill discovery          |
+              | reports, runs,     |   | - validation               |
+              | logs, literature,  |   | - binding / resolution     |
+              | patches            |   | - execution records        |
+              +---------+----------+   +-------------+--------------+
+                        |                            |
+                        +-------------+--------------+
+                                      |
+                                      v
+                         +-----------------------------+
+                         | Execution Runner            |
+                         | git worktree + containers   |
+                         | GPU-capable sandbox         |
+                         +-------------+---------------+
+                                       |
+                                       v
+                         +-----------------------------+
+                         | External / Local Adapters   |
+                         | - internal corpus           |
+                         | - arXiv metadata warehouse  |
+                         | - targeted external search  |
+                         | - HTML / PDF fetchers       |
+                         | - LLM / embeddings gateway  |
+                         | - git                       |
+                         | - container runtime         |
+                         +-----------------------------+
+```
 
-**5.2 State machine orchestration**
+### 4.2 Architectural stance
 
-The lab should be implemented as a state machine over a research cycle, not as a freeform conversational workflow.
+The system is not built around freeform agent-to-agent message passing.
 
-| created  \-\> chartered  \-\> baseline\_ready  \-\> literature\_screened  \-\> shortlist\_ready  \-\> portfolio\_ready  \-\> execution\_queued  \-\> running  \-\> verifying  \-\> report\_ready  \-\> closedcross-cutting states: approval\_pending, paused, blocked, aborted, failed |
-| :---- |
+It is built around:
 
-Not every cycle will visit every state, but transitions must be explicit and auditable. An operator may only move the cycle to an allowed next state and must emit the event that explains why.
+- typed records
+- explicit state transitions
+- operator execution with durable inputs and outputs
+- skill bindings with declared permissions and context needs
+- append-only audit events
+- isolated experiment workspaces
+- policy-checked approvals
+- API-mediated intervention and observation
 
-Why this pattern exists: it prevents uncontrolled branching, makes retries explicit, supports pause and resume behavior, and simplifies approvals and failure handling.
+That is what makes the lab debuggable.
 
-**5.3 Event-sourced audit trail**
+---
 
-The product should keep an append-only audit log of domain events. This is not full event sourcing for every read model, but it is a durable trail for every meaningful action.
+## 5. Core Architectural Patterns
 
-Example event types include research\_charter\_created, paper\_title\_abstract\_screened, paper\_shortlisted, fulltext\_fetch\_approved, hypothesis\_generated, experiment\_spec\_created, run\_started, run\_failed, run\_verified, failure\_postmortem\_created, report\_ready, and user\_intervened.
+### 5.1 Shared `ResearchState` as source of truth
 
-The audit trail must also be materialized into user-facing timelines, activity feeds, and report sections so a human can quickly understand what happened without reading raw logs.
+Each research cycle is represented by a durable `ResearchState`. Operators and skills do not own hidden state.
 
-Why this pattern exists: it lets humans reconstruct what happened, supports debugging and future analytics, preserves approval history, and provides a foundation for lab notebooks and reports.
+A `ResearchState` should reference, at minimum:
 
-**5.4 Ports and adapters / hexagonal architecture**
+- `ResearchCharter`
+- scoped problem definition
+- source retrieval sessions
+- `PaperCard` or `SourceRecord` entities
+- `EvidenceCard` entities
+- `HypothesisCard` portfolio
+- `ExperimentSpec` queue
+- `RunRecord` history
+- `VerificationReport` history
+- `FailurePostmortem` history
+- `ReportBundle` history
+- `SkillBinding` and `SkillExecutionRecord` history
+- budget state
+- approval state
+- audit events
 
-External systems must sit behind adapters. Core research logic should not know the details of arXiv retrieval, model providers, dataset sources, git operations, or the container runtime.
+Why this pattern exists:
+
+- makes the system restartable
+- makes work inspectable without replaying prompt history
+- allows deterministic tests against stored state
+- prevents hidden memory drift from becoming system behavior
+
+### 5.2 State machine orchestration
+
+The lab should be implemented as a state machine over a research cycle, not as a freeform conversation.
+
+A typical cycle might move through states like:
+
+```text
+created
+-> chartered
+-> retrieval_ready
+-> literature_screened
+-> evidence_ready
+-> portfolio_ready
+-> protocol_ready
+-> running
+-> verifying
+-> reporting
+-> closed
+```
+
+Pattern rule: an operator may only move the cycle to an allowed next state and must emit the event that explains why.
+
+### 5.3 Event-sourced audit trail
+
+The system should keep an append-only audit log of domain events. This is not full event sourcing for every read model, but it is a durable event trail for every meaningful action.
+
+Example event types:
+
+- `research_charter_created`
+- `source_query_planned`
+- `paper_title_abstract_screened`
+- `paper_shortlisted`
+- `fulltext_fetch_requested`
+- `fulltext_fetch_approved`
+- `evidence_extracted`
+- `skill_bound_to_operator`
+- `skill_executed`
+- `hypothesis_generated`
+- `experiment_spec_created`
+- `run_started`
+- `run_failed`
+- `run_verified`
+- `postmortem_created`
+- `report_bundle_created`
+- `approval_requested`
+- `approval_recorded`
+- `orchestrator_command_received`
+
+Why this pattern exists:
+
+- lets humans reconstruct what happened
+- supports debugging and future analytics
+- preserves approval history
+- powers UI telemetry and orchestrator streams
+- provides a durable lab notebook backbone
+
+### 5.4 Ports and adapters / hexagonal architecture
+
+External systems must sit behind adapters. Core research logic should not know the details of a source API, the LLM provider, or the container runtime.
 
 The core should depend on interfaces such as:
 
-* ResearchProblemAdapter  
-* LiteratureAdapter  
-* CorpusAdapter  
-* DatasetAdapter  
-* EmbeddingAdapter  
-* LLMAdapter  
-* ExecutionAdapter  
-* TelemetryAdapter  
-* ReportAdapter
+- `LiteratureAdapter`
+- `CorpusAdapter`
+- `ExternalSearchAdapter`
+- `LLMAdapter`
+- `EmbeddingAdapter`
+- `ExecutionAdapter`
+- `ReportAdapter`
+- `SkillProvider`
+- `OrchestratorAuthProvider`
 
-Why this pattern exists: it makes the product testable with fixtures and mocks, contains external API churn, keeps business rules independent from vendors, and lets the system act more like a reusable lab assistant than a benchmark-specific script.
+Why this pattern exists:
 
-**5.5 Metadata-first retrieval funnel**
+- makes the product testable with fixtures and mocks
+- contains external API churn
+- keeps business rules independent from vendors
+- makes future generalization possible without rewriting the core
 
-The literature subsystem must preserve the difference between metadata-only evidence, HTML full-text evidence, PDF or figure-driven evidence, and implementation details extracted from deeper reads.
+### 5.5 Metadata-first retrieval funnel
 
-Papers should move through lifecycle states rather than being treated as simply ingested or not ingested.
+The literature subsystem must preserve the difference between:
 
-| metadata\_retrieved  \-\> title\_abstract\_screened  \-\> shortlisted  \-\> html\_fetched  \-\> pdf\_fetched\_if\_needed  \-\> evidence\_extracted |
-| :---- |
+1. metadata-only evidence
+2. full-text evidence
+3. implementation details extracted from deeper reading
+
+A paper should move through lifecycle states such as:
+
+```text
+retrieved
+-> title_abstract_screened
+-> shortlisted
+-> html_fetched
+-> pdf_fetched
+-> evidence_extracted
+```
+
+Pattern rule: metadata screening happens by default; deeper fetch is an exception that requires a reason.
+
+Allowed reasons:
+
+- high triage score
+- conflict resolution
+- implementation detail needed for experiment design
+- explicit human or orchestrator request allowed by policy
+
+### 5.6 Portfolio search, not greedy search
+
+The system should maintain a ranked portfolio of hypotheses and experiment specs rather than following one proposal to completion before considering alternatives.
+
+This means:
+
+- multiple hypotheses can survive review
+- multiple experiment specs can be queued
+- failure memory informs future ranking
+- the scheduler can pick the next experiment by expected value, not creation order
+
+Suggested ranking factors:
+
+- expected information gain
+- implementation feasibility
+- estimated runtime and cost
+- novelty relative to internal history and prior literature
+- risk of invalid evaluation
+- fit to the charter
+
+### 5.7 Skill package pattern
+
+A skill is a modular behavior pack rooted in a `skill.md` file.
+
+A skill package should support:
+
+- metadata and version information
+- description of when to use the skill
+- declared inputs and outputs
+- context requirements
+- permitted models or preferred routing
+- capability requirements and policy hints
+- examples and tests
+- optional deterministic helper hooks
+
+Recommended skill package shape:
+
+```text
+skills/
+  literature/
+    title_abstract_triage/
+      skill.md
+      hooks.py                # optional
+      fixtures/               # optional
+      tests/                  # optional
+      schemas/                # optional
+```
 
 Pattern rules:
 
-* Title and abstract are scored together, not independently, because paper titles can be clever or underspecified.  
-* Recency is an explicit ranking feature alongside semantic relevance and problem fit.  
-* Full-text fetch is an escalation with a recorded reason, not the default path.  
-* For arXiv, HTML or other machine-readable full text is preferred before PDF parsing.
+- skills are discovered from configured paths
+- skills must validate before activation
+- skills may request context, not global state
+- skills may not bypass policy, approvals, or durable state writes
+- every skill execution must emit a `SkillExecutionRecord`
 
-Allowed escalation reasons: high triage score, conflict resolution, implementation detail needed for experiment design, explicit human request, or missing and insufficient HTML.
+Why this pattern exists:
 
-Why this pattern exists: it matches real researcher behavior, reduces compute and storage waste, improves evidence quality by making escalation deliberate, and keeps the system from becoming a brute-force PDF crawler.
+- allows custom and modular behavior
+- keeps domain-specific instructions inspectable and reusable
+- prevents skill logic from dissolving into random prompts in application code
+- makes external agent compatibility easier
 
-**5.6 Portfolio search, not greedy search**
-
-The system should maintain a ranked portfolio of hypotheses and experiments rather than following one single proposal to completion before considering alternatives.
-
-This means multiple hypotheses can survive review, multiple ExperimentSpecs can be queued, failure memory informs future ranking, and the scheduler can pick the next experiment by expected value rather than order of creation.
-
-Suggested ranking factors include expected information gain, implementation feasibility, estimated runtime or cost, novelty relative to internal and external prior work, risk of invalid evaluation, and fit to the current problem profile.
-
-Why this pattern exists: science is not a linear greedy optimization process, the first decent idea is rarely the best branch, and portfolio management helps conserve scarce local compute.
-
-**5.7 Ephemeral workspaces with durable lineage**
+### 5.8 Ephemeral workspaces with durable lineage
 
 Every proposed experiment should execute in its own isolated workspace, ideally backed by a git worktree or equivalent branch directory.
 
-Each run should capture source commit or parent branch, generated patch or diff, problem profile, runtime image or environment identifier, prompt and model identifiers used during generation, seeds, dataset hash or cache reference, produced artifacts, and metrics.
+Each run should capture:
 
-Why this pattern exists: it keeps experiment code isolated, makes diffs reviewable, allows exact replay of accepted results, and prevents one run from corrupting another.
+- source commit or parent branch
+- generated patch or diff
+- problem profile
+- runtime image or environment id
+- prompt and model identifiers used during generation
+- bound skills used during generation or review
+- seeds
+- dataset hash or cache reference
+- produced artifacts and metrics
 
-**5.8 Containerized execution sandbox with GPU passthrough**
+### 5.9 Containerized execution sandbox
 
 Generated or modified code must not execute directly on the host environment.
 
 The execution pattern for the MVP should be:
 
-* Build or reuse a problem-specific base image.  
-* Mount dataset cache read-only where possible.  
-* Mount the workspace read-write and an artifact directory for outputs.  
-* Disable network by default and grant it only through policy.  
-* Enforce time, memory, disk, and GPU usage limits.  
-* Capture stdout, stderr, exit code, resource usage, and container metadata.
+- build or reuse a problem-specific base image
+- mount dataset cache read-only where possible
+- mount workspace read-write
+- mount artifact output directory
+- disable network by default
+- enforce time and memory limits
+- allow GPU passthrough only through explicit runtime policy
+- capture stdout, stderr, exit code, and resource usage
 
-Why this pattern exists: generated code is untrusted, research runs must be isolated from the control plane, resource caps are necessary on a local workstation, and deterministic reruns need stable environments.
+### 5.10 Deterministic verification before promotion
 
-**5.9 Deterministic verification before promotion**
+Verification should be its own subsystem, not an optional postscript.
 
-Verification should be its own subsystem, not an optional postscript. Before a run is promoted from promising to accepted, the system should perform deterministic checks appropriate to the task.
+Before a run is promoted from promising to accepted, the system should perform deterministic checks appropriate to the research problem:
 
-* Rerun or replicate the experiment when randomness or instability is possible.  
-* Compare against the declared baseline and relevant prior internal runs.  
-* Run leakage checks, split validation checks, and metric sanity checks.  
-* Verify required artifacts, reports, and schemas are present and parseable.  
-* Prepare a concise reviewer summary describing whether the improvement looks robust, tentative, or likely spurious.
+- compare against declared baseline
+- compare against relevant historical internal work
+- rerun or replay checks as required by policy
+- split and schema validation checks
+- artifact presence checks
+- metric sanity checks
+- output contract validation
+- postmortem creation on failure or rejection
 
-LLMs may summarize or interpret verification results, but they do not replace verification itself.
+LLMs may summarize or interpret verification results, but they do not replace the verification itself.
 
-Why this pattern exists: most bad scientific claims fail on validation details, not creativity, and accepted results must be reproducible and auditable.
+### 5.11 Policy engine for budgets and approvals
 
-**5.10 Policy engine for budgets and approvals**
+A separate policy layer should decide whether an operator, skill, or orchestrator action may proceed.
 
-A separate policy layer should decide whether an operator may proceed. Low-cost, low-risk experiments may run automatically within policy. High-cost, high-risk, external, or budget-overriding actions should pause for approval.
+The policy layer must handle:
 
-The policy layer must handle compute budget ceilings, full-text read ceilings, allowed problem profiles, network access permissions, automatic execution classes, high-cost run approvals, model-routing policy, and approvals for any external write or publication step.
+- compute budget ceilings
+- full-text read ceilings
+- allowed hardware profiles
+- network access permissions
+- long-running job thresholds
+- model usage policy
+- skill capability policy
+- orchestrator permission scopes
 
-Why this pattern exists: it keeps safety and budget logic out of prompt text, prevents accidental overreach by operator code, and makes human collaboration structural rather than advisory.
+### 5.12 External orchestrator API pattern
 
-**5.11 Derived graph views, not a graph database in v1**
+External orchestrators must interact with the lab through the control-plane API, not by writing directly to the database or manipulating workspaces.
 
-The system should store core entities in relational tables and derive graph views when needed. Useful graph views include citation relationships, evidence-to-hypothesis links, hypothesis-to-experiment lineage, repeated method families, contradiction clusters, and recency overlays.
+The API pattern should be:
 
-Why this pattern exists: the core product needs durability and queryability more than graph-native storage, relational plus vector storage is simpler to build and operate locally, and most useful graph views can be materialized from structured records later.
+- versioned REST endpoints for durable resources
+- streaming telemetry through SSE first
+- stable JSON payloads and ids
+- explicit actor identity for every action
+- policy checks before side effects
+- artifact and report retrieval via signed or internal local paths exposed through the API
 
-**5.12 Live telemetry and intervention surface**
+Core orchestrator actions should include:
 
-The lab must stream its status while it works. Users should not need to poll raw logs or wait for a final report to understand what is happening.
+- create or resume a research cycle
+- request operator or skill execution
+- read state snapshots and reports
+- subscribe to domain events and run telemetry
+- add guidance or notes
+- pause, cancel, or resume allowed work
+- approve or reject gated actions where policy allows
 
-* Expose queued, running, blocked, failed, and completed work in real time.  
-* Stream resource usage, metric snapshots, audit activity, and pending approvals.  
-* Allow the user to pause, abort, reprioritize, redirect search scope, and attach notes while work is in progress.
+Why this pattern exists:
 
-Why this pattern exists: automation only feels trustworthy when the user can inspect and intervene, especially during long-running research loops.
+- makes the lab usable by higher-level agent systems
+- avoids brittle UI automation
+- keeps all control and monitoring in one durable surface
 
-**5.13 Task-scoped context assembly**
+### 5.13 Derived graph views, not a graph database in v1
 
-Operators should be invoked with a context pack tailored to the task, not with the entire project state. A ContextBuilder should select the relevant evidence slice, recent failures, open questions, protocol fragments, or run summaries required for the next operator.
+The system should store core entities in relational tables and derive graph views when needed.
 
-Rules for the pattern:
+Examples of graph views:
 
-* Do not broadcast all state to all models.  
-* Version and attach the context pack used by each operator to its operator report.  
-* Treat retrieval of additional context as an explicit, logged action.  
-* Prefer compact structured state over long narrative summaries where possible.
+- citation relationships
+- evidence-to-hypothesis links
+- hypothesis-to-experiment lineage
+- repeated method families
+- contradiction clusters
+- skill-to-operator usage graphs
+- orchestrator-to-cycle action graphs
 
-Why this pattern exists: it respects model context limits, lowers cost, reduces irrelevant prompt contamination, and keeps operator reasoning grounded in what was actually provided.
+---
 
-**6\. Recommended MVP Stack Shape**
+## 6. Recommended MVP Stack Shape
 
-This section defines the canonical architectural stack for the MVP. It sets the intended shape without yet pinning exact package versions or local startup commands.
+This section defines the canonical architectural stack shape for the MVP.
 
 | Area | Default choice | Why this is the default |
-| :---- | :---- | :---- |
-| Core language | Python | Best fit for ML workflows, orchestration, scientific tooling, and model-driven code generation. |
-| API / control plane | FastAPI-style Python service | Good balance of typed models, async support, and local deployment simplicity. |
-| UI surface | Local web dashboard plus CLI | Phase 1 needs live telemetry, approvals, intervention, and a readable report surface. |
-| Durable state | PostgreSQL | Strong transactional model, row locking, JSON support, and a solid base for queueing and audit history. |
-| Vector retrieval | pgvector in PostgreSQL | Keeps vector search close to canonical state and avoids a second search service in v1. |
-| Lexical retrieval | PostgreSQL full-text search | Good enough for metadata-first search over arXiv metadata, internal corpus, and notes. |
-| Artifact store | Local filesystem | Fits local-first deployment and keeps artifacts inspectable. |
-| Job queue | Database-backed queue | Simpler than a separate queue service in a single-user MVP and keeps jobs auditable. |
-| Execution backplane | GPU-capable Docker containers | Safest practical local sandbox for generated code and ML workloads. |
-| Workspace isolation | Git worktrees | Clean per-experiment code isolation with clear lineage. |
-| Telemetry | DB-backed event log plus WebSocket or SSE stream | Supports a live UI without introducing a second real-time platform early. |
-| LLM access | Provider-agnostic gateway with role-based model routing | Allows different models for planning, coding, critique, and evaluation across local and hosted providers. |
-| Embeddings | Provider-agnostic embedding adapter | Supports future swaps between hosted and local embeddings. |
-| Config | File-based project config plus environment overrides | Keeps local operation explicit and reproducible. |
-| Reporting | Rendered Markdown plus HTML viewer | Readable on day one and more useful than raw markdown files alone. |
+|---|---|---|
+| Core language | Python | Best fit for ML workflows, orchestration, adapters, and scientific tooling |
+| API / control plane | FastAPI-style Python service | Good typed contracts, async support, OpenAPI generation, local simplicity |
+| Durable state | PostgreSQL | Strong transactional model, row locking, JSON, and good fit for queue + state |
+| Vector retrieval | pgvector in PostgreSQL | Keeps vector search close to canonical state in v1 |
+| Full-text / lexical retrieval | PostgreSQL full-text search | Good enough for metadata-first paper search in v1 |
+| Artifact store | Local filesystem | Fits local-first deployment and keeps artifacts inspectable |
+| Job queue | Database-backed queue | Simpler than a separate queue service in a single-user MVP |
+| Execution isolation | Docker or Podman containers | Practical local sandbox for generated code |
+| Workspace isolation | Git worktrees | Clean per-experiment code isolation with clear lineage |
+| UI surface | Web UI plus CLI | We want a real phase-1 UI, not CLI only |
+| LLM access | Provider-agnostic gateway adapter | Prevents coupling to a single model vendor |
+| Embeddings | Provider-agnostic embedding adapter | Allows hosted and local options |
+| Skill packages | `skill.md` rooted packages | Human-readable, coding-agent-friendly extension surface |
+| Orchestrator integration | REST + SSE over the same control plane | Headless-first, simple, observable, and easy to test |
+| Reporting | Markdown rendered in the UI | Easy to diff, store, and inspect |
 
-**6.1 Why PostgreSQL instead of SQLite for the canonical path**
+---
 
-SQLite is attractive for simplicity, but the MVP needs durable multi-table state, append-only audit history, queue semantics with safe locking, vector retrieval, concurrent reads while workers run, and room for a full arXiv metadata mirror. A local PostgreSQL instance is a better long-term default than starting with SQLite and migrating later.
+## 7. Major Bounded Contexts
 
-**6.2 Why not Redis/Celery in the first pass**
+### 7.1 Control Plane
 
-The product is local-first and single-user. A DB-backed queue is simpler to reason about than a separate queue service and aligns better with the audit-trail requirement. A heavier workflow engine can be introduced later only if the local scheduler becomes a real bottleneck.
+Responsibility:
 
-**6.3 Why not Elasticsearch or OpenSearch in the first pass**
+- create and update `ResearchCharter`
+- expose API and CLI commands
+- coordinate approvals
+- enqueue work for operators
+- expose current lab state to users and orchestrators
 
-The first release is not a web-scale search product. Title and abstract screening across a local arXiv metadata mirror, targeted external queries, and an internal corpus can be handled with hybrid lexical and vector retrieval in PostgreSQL. A separate search cluster would increase operational complexity before it adds product value.
+### 7.2 Research Memory
 
-**6.4 Why the UI belongs in phase 1**
+Responsibility:
 
-The UI is not decoration. It is the control surface for telemetry, approvals, intervention, and report review. A research lab that automates experimentation without a readable surface will feel opaque and harder to trust.
+- persist all durable entities and relationships
+- support retrieval over sources, evidence, hypotheses, runs, notes, reports, and failures
+- maintain audit history and job records
 
-**7\. Major Bounded Contexts**
+Primary record types:
 
-**7.1 Control Plane**
+- `ResearchCharter`
+- `ResearchState`
+- `ProblemProfile`
+- `PaperCard`
+- `EvidenceCard`
+- `HypothesisCard`
+- `ExperimentSpec`
+- `RunRecord`
+- `VerificationReport`
+- `FailurePostmortem`
+- `ReportBundle`
+- `SkillDefinition`
+- `SkillBinding`
+- `SkillExecutionRecord`
+- `ApprovalEvent`
+- `DomainEvent`
+- `OrchestratorClient`
 
-Responsibility — create and update the ResearchCharter, expose APIs and CLI commands, coordinate approvals, enqueue work, and expose current lab state.
+### 7.3 Source Intake
 
-Owns — research-cycle lifecycle, policy checks at entry points, and operator scheduling triggers.
+Responsibility:
 
-Does not own — deep search logic, experiment code execution, or literature parsing internals.
+- retrieve internal corpus metadata and selected content
+- maintain an arXiv metadata warehouse
+- perform targeted external retrieval
+- fetch HTML or PDF only when explicitly escalated
 
-**7.2 Research Memory**
+### 7.4 Literature Intelligence
 
-Responsibility — persist all durable entities and relationships, support retrieval over papers, evidence, hypotheses, runs, and notes, and maintain audit history and job records.
+Responsibility:
 
-Primary record types — ResearchCharter, ResearchState, ProblemProfile, PaperCard, EvidenceCard, HypothesisCard, ExperimentSpec, RunRecord, VerificationReport, FailureMemoryEntry, FindingPacket, ApprovalEvent, and DomainEvent.
+- score titles and abstracts together
+- deduplicate results across sources
+- produce shortlist recommendations
+- extract structured evidence from metadata or deeper reads
+- preserve provenance and escalation rationale
 
-Pattern note — this is the system of record. All other components treat it as authoritative.
+### 7.5 Ideation and Review
 
-**7.3 Source Intake**
+Responsibility:
 
-Responsibility — ingest scoped problem definitions and datasets, ingest internal corpus metadata and selected content, maintain a local arXiv metadata mirror in PostgreSQL, run incremental metadata syncs, and fetch deeper paper content only when escalated.
+- generate candidate hypotheses from evidence
+- critique for novelty, weakness, redundancy, and likely failure modes
+- rank the portfolio before protocol compilation
 
-Sub-adapters — ProblemDefinitionAdapter, DatasetSourceAdapter, InternalCorpusAdapter, ArxivMetadataMirrorAdapter, ArxivSearchAdapter, ArxivHTMLAdapter, and ArxivPDFAdapter.
+### 7.6 Protocol Compiler
 
-Pattern note — full-text retrieval is physically separated from metadata retrieval so budget policy can control it directly.
+Responsibility:
 
-**7.4 Literature Intelligence**
+- convert approved hypotheses into executable `ExperimentSpec`s
+- define controls, baseline, metric, artifacts, stop conditions, and expected outputs
+- reject under-specified ideas before code generation begins
 
-Responsibility — score title plus abstract together, deduplicate across sources, produce shortlist recommendations, extract structured evidence from metadata or full text, and preserve source provenance and escalation rationale.
+### 7.7 Skill Registry and Runtime
 
-Primary outputs — screened PaperCards, EvidenceCards, shortlist decisions, contradiction signals, redundancy signals, and recency-aware relevance scores.
+Responsibility:
 
-Pattern note — this subsystem prepares the evidence surface; it does not decide final experiment execution.
+- discover `skill.md` packages from configured roots
+- validate skill metadata and structure
+- resolve which skills are available for a given operator or research cycle
+- record skill activation and execution history
+- expose skill catalog and status through UI and API
 
-**7.5 Ideation and Review**
+Pattern note: the skill runtime is part of the core product surface. It is not an afterthought bolted onto prompts.
 
-Responsibility — generate multiple candidate hypotheses from evidence, critique hypotheses for novelty, weakness, redundancy, and likely failure modes, and rank the portfolio before protocol compilation.
+### 7.8 Build and Execution Lab
 
-Primary outputs — HypothesisCards with cited evidence, review notes, and a ranked queue for experiment design.
+Responsibility:
 
-Pattern note — generator and critic are operator roles over shared state, not autonomous personas with private memory.
+- create isolated workspaces
+- apply code changes
+- prepare runtime images or environments
+- execute runs within policy limits
+- capture outputs into `RunRecord`
 
-**7.6 Protocol Compiler**
+### 7.9 Verification
 
-Responsibility — convert approved hypotheses into executable ExperimentSpecs, define controls, baselines, metrics, artifacts, stop conditions, and expected outputs, and reject under-specified ideas before code generation begins.
+Responsibility:
 
-Primary outputs — validated ExperimentSpecs, required artifact schemas, and run preflight checklists.
+- compare runs to baseline and historical work
+- rerun or replay where required
+- run leakage and evaluation checks
+- create `VerificationReport`
+- create `FailurePostmortem` records when needed
 
-Pattern note — this is the bridge between an interesting idea and a valid experiment.
+### 7.10 Reporting and Lab Notebook
 
-**7.7 Build and Execution Lab**
+Responsibility:
 
-Responsibility — create isolated workspaces, apply code changes, prepare runtime images or environments, execute runs within policy limits, and capture outputs into RunRecords.
+- generate concise human-readable summaries
+- produce markdown report bundles per cycle
+- summarize literature screening, selected papers, experiments, verification, and open questions
 
-Sub-components — WorkspaceManager, PatchBuilder, ExecutionRunner, ArtifactCollector, and ResourceMonitor.
+### 7.11 Approvals and Policy
 
-Pattern note — the build system assumes that generated code is fallible and untrusted.
+Responsibility:
 
-**7.8 Verification**
+- enforce approval requirements
+- block disallowed actions
+- persist approval history
+- expose pending approvals to the user and, where permitted, orchestrators
 
-Responsibility — compare runs to baselines and prior internal work, rerun or replicate promising experiments, run leakage and evaluation checks, and determine whether a run can be promoted.
+### 7.12 Orchestrator Gateway
 
-Primary outputs — VerificationReports, promotion or rejection decisions, and structured failure-memory updates.
+Responsibility:
 
-Pattern note — promotion is a verification outcome, not a generation outcome.
+- authenticate external orchestrators
+- expose versioned research-cycle and run APIs
+- expose SSE telemetry streams
+- enforce orchestrator permission scopes
+- record all external control actions as domain events
 
-**7.9 Reporting and Lab Notebook**
+Pattern note: in v1 this is a logical boundary inside the control-plane service, not a separate deployment.
 
-Responsibility — generate concise human-readable summaries, produce notebook-style entries per cycle, and explain literature screening, selected papers, experiment results, historical comparison, and open questions.
+---
 
-Outputs — cycle summaries, experiment notebooks, finding packets, activity-feed digests, and exportable review bundles.
+## 8. Primary Data and Lineage Model
 
-Pattern note — the reporting layer consumes verified state. It is not the place where truth is decided.
+### 8.1 Canonical research lineage
 
-**7.10 Approvals and Policy**
+```text
+SourceRecord / PaperCard
+    -> EvidenceCard
+        -> HypothesisCard
+            -> ExperimentSpec
+                -> RunRecord
+                    -> VerificationReport
+                        -> ReportBundle / AcceptedFinding
+```
 
-Responsibility — enforce approval requirements, block disallowed actions, persist approval history, and expose pending approvals to the user.
+### 8.2 Skill and orchestration lineage
 
-Examples — full-text paper budget override, high-cost experiment approval, network-enabled run approval, and approval for any external publication, submission, or write.
+```text
+SkillDefinition
+    -> SkillBinding
+        -> SkillExecutionRecord
+            -> OperatorReport / DomainEvent
 
-Pattern note — policy and approval checks should be reusable across operators, not re-implemented inside each one.
+OrchestratorClient
+    -> OrchestratorSession
+        -> OrchestratorCommand
+            -> DomainEvent / ApprovalEvent / Job
+```
 
-**7.11 Telemetry and Intervention**
+### 8.3 Important lineage rules
 
-Responsibility — stream current status, resource usage, metric changes, pending approvals, and report readiness to the UI and CLI.
+- A `HypothesisCard` must cite one or more `EvidenceCard`s.
+- An `ExperimentSpec` must reference the `HypothesisCard` it operationalizes.
+- A `RunRecord` must reference the exact `ExperimentSpec`, workspace lineage, and bound skills used.
+- A promoted claim must reference at least one `VerificationReport`.
+- A `FailurePostmortem` must reference the failed or rejected run and describe classification and next-step insight.
+- A `SkillExecutionRecord` must reference the skill version, operator, research cycle, and outputs it influenced.
+- Every orchestrator action must be attributable to an actor identity and appear in the audit trail.
 
-User controls — pause, abort, reprioritize, redirect research scope, and attach notes or guidance while work is active.
+---
 
-Pattern note — visibility and intervention are part of the product, not an afterthought.
-
-**8\. Primary Data and Lineage Model**
-
-The following lineage path should be treated as canonical:
-
-| PaperCard / CorpusRecord / PriorRunRecord    \-\> EvidenceCard        \-\> HypothesisCard            \-\> ExperimentSpec                \-\> RunRecord                    \-\> VerificationReport                        \-\> FindingPacket or AcceptedFinding |
-| :---- |
-
-**8.1 Key entity roles**
-
-**ResearchCharter —** Defines the objective, scope, success metric, budget, stop conditions, and approval policy.
-
-**ResearchState —** Represents the current state of the cycle and connects all major records.
-
-**ProblemProfile —** Defines the concrete ML problem shape: dataset, metric, artifact contract, runtime envelope, and constraints.
-
-**PaperCard —** Represents a paper or internal document at the screening layer, including source type, metadata, lifecycle state, triage score, and recency.
-
-**EvidenceCard —** Represents a structured claim, method, limitation, result, contradiction, or implementation insight derived from a source.
-
-**HypothesisCard —** Represents a candidate research direction grounded in one or more EvidenceCards.
-
-**ExperimentSpec —** Defines the concrete experimental plan: variables, controls, baseline, expected outputs, stop conditions, and artifact contract.
-
-**RunRecord —** Represents a concrete execution attempt, including environment, commit lineage, logs, metrics, artifacts, and status.
-
-**VerificationReport —** Represents post-run validation, rerun status, leakage checks, historical comparison, and promotion decision.
-
-**FailureMemoryEntry —** Represents a classified failure or non-improving result with a short postmortem and follow-on recommendations.
-
-**FindingPacket —** Represents the human-readable report bundle for a result: evidence links, metrics, novelty summary, and optional external-action payload.
-
-**ApprovalEvent —** Represents a human decision allowing or denying a gated action.
-
-**DomainEvent —** Represents any append-only audit event emitted by the system.
-
-**8.2 Important lineage rules**
-
-* A HypothesisCard must cite one or more EvidenceCards.  
-* An ExperimentSpec must reference the HypothesisCard it operationalizes.  
-* A RunRecord must reference the exact ExperimentSpec and workspace lineage used.  
-* Every experiment must end with a recorded verification outcome or failure classification.  
-* Every failed or non-improving run should produce a FailureMemoryEntry with a short postmortem.  
-* A promoted claim must reference at least one VerificationReport.  
-* Any external write or publication step must reference both a FindingPacket and an ApprovalEvent.
-
-**9\. Operator Contract Pattern**
+## 9. Operator Contract Pattern
 
 Operators should be implemented as typed units of work rather than arbitrary prompt calls.
 
-| Operator(context\_pack, config)  \-\> OperatorResult(       state\_patch,       emitted\_events,       created\_artifacts,       approvals\_requested,       next\_actions,       operator\_report     ) |
-| :---- |
+A good mental model is:
+
+```text
+Operator(input_state, config, assembled_context, bound_skills)
+  -> OperatorResult(
+       state_patch,
+       emitted_events,
+       created_artifacts,
+       approvals_requested,
+       next_actions,
+       operator_report,
+       skill_execution_records
+     )
+```
+
+Operator design rules:
+
+- operators must be idempotent where practical
+- operators must emit durable outputs before downstream work is queued
+- prompts must be versioned and referenced in outputs
+- skill applications must be explicit and recorded
+- policy must be checked before side effects occur
+- operator reports must be inspectable by a human or orchestrator
+
+---
+
+## 10. Critical Workflow Patterns
+
+### 10.1 Research intake pattern
+
+```text
+problem statement
+-> charter creation
+-> source scope selection
+-> policy initialization
+-> baseline planning
+```
+
+### 10.2 Literature triage pattern
+
+```text
+problem context + baseline context
+-> query planning
+-> arXiv metadata retrieval
+-> internal corpus retrieval
+-> targeted external retrieval
+-> dedupe
+-> title + abstract screening together
+-> shortlist ranking
+-> optional HTML fetch with reason
+-> optional PDF fetch with reason
+-> evidence extraction
+```
+
+### 10.3 Skill selection and execution pattern
+
+```text
+operator role + research state + policy
+-> skill resolver
+-> eligible skill set
+-> context assembly
+-> skill execution
+-> skill execution record
+-> operator output
+```
+
+Important rule: no skill executes as invisible prompt glue. It must leave lineage.
+
+### 10.4 Hypothesis to experiment pattern
+
+```text
+evidence cards
+-> hypothesis generation
+-> critique / redundancy filtering
+-> portfolio ranking
+-> scheduler or human selects candidate
+-> protocol compiler creates ExperimentSpec
+-> preflight checks
+-> build workspace and patch
+-> execute
+```
+
+Important rule: no direct “paper insight -> code run” shortcut should bypass `ExperimentSpec`.
+
+### 10.5 Verification and promotion pattern
+
+```text
+completed run
+-> baseline comparison
+-> historical comparison
+-> metric sanity checks
+-> rerun or replay checks
+-> verification report
+-> promoted finding or failure postmortem
+```
+
+### 10.6 External orchestrator control pattern
+
+```text
+orchestrator authenticates
+-> opens or resumes session
+-> subscribes to event stream
+-> reads current state
+-> issues allowed command
+-> policy check
+-> job creation / action result
+-> events and reports returned
+```
 
-**9.1 Operator design rules**
+Important rule: external orchestrators can request work, not bypass the control plane.
+
+---
+
+## 11. Storage Pattern
+
+### 11.1 System of record
 
-* Operators should be idempotent where practical.  
-* Operators must emit durable outputs before downstream work is queued.  
-* Prompts and model identifiers must be versioned and referenced in operator outputs.  
-* Operator reports must be inspectable by a human.  
-* Policy must be checked before side effects occur.  
-* Context packs must be built explicitly and kept bounded to what the operator needs.  
-* Different operator roles may use different models behind the same gateway.
+The system of record should be:
 
-**9.2 Why this matters**
+- PostgreSQL for structured state, queueing, audit events, skill registry state, and vector references
+- local filesystem for large artifacts and cached external assets
 
-This pattern keeps the system composable without turning it into an opaque agent loop. It also makes unit testing, replay, and operator-level debugging much easier.
+### 11.2 Filesystem layout pattern
 
-**10\. Critical Workflow Patterns**
+```text
+/data
+  /artifacts
+    /runs
+    /reports
+    /literature
+    /patches
+    /postmortems
+  /cache
+    /arxiv
+    /embeddings
+    /external
+  /workspaces
+  /exports
 
-**10.1 Scoped research problem intake pattern**
+/repo
+  /skills
+```
 
-| user defines research direction or scoped problem  \-\> control plane creates ResearchCharter  \-\> ProblemDefinitionAdapter resolves datasets, baseline, metrics, and constraints  \-\> dataset and cache access are checked  \-\> ProblemProfile is created  \-\> baseline experiment is generated and run |
-| :---- |
+### 11.3 Artifact philosophy
 
-Important rule: benchmark-style tasks are only one subtype of ProblemProfile. The architecture is centered on scoped research problems, not on any single external benchmark platform.
+Artifacts should be treated as durable evidence, not temporary scratch by default.
 
-**10.2 Literature triage pattern**
+This includes:
 
-| problem context \+ baseline context  \-\> targeted query planning  \-\> query local arXiv metadata mirror \+ internal corpus \+ configured external sources  \-\> dedupe  \-\> joint title\_abstract scoring with recency features  \-\> shortlist ranking  \-\> optional HTML fetch with reason  \-\> PDF fallback if HTML is insufficient  \-\> evidence extraction |
-| :---- |
+- run logs
+- metric snapshots
+- generated patches
+- literature notes
+- extracted evidence summaries
+- rendered reports
+- failure postmortems
+- skill execution diagnostics
 
-Important rule: full-text reads are budgeted and reasoned. The system must be able to explain why each escalated paper was worth deeper reading and why HTML or PDF was required.
+---
 
-**10.3 Hypothesis to experiment pattern**
+## 12. Search and Retrieval Pattern
 
-| EvidenceCards  \-\> hypothesis generation  \-\> critique and redundancy filtering  \-\> portfolio ranking  \-\> scheduler or user selects a candidate  \-\> protocol compiler creates ExperimentSpec  \-\> preflight checks  \-\> build workspace and patch  \-\> execute |
-| :---- |
+The retrieval system should combine:
 
-Important rule: no direct paper-insight-to-code shortcut should bypass ExperimentSpec.
+- lexical search over title, abstract, authors, tags, notes, and postmortems
+- vector search over semantic embeddings
+- structured filters such as source type, recency, problem relevance, and read state
 
-**10.4 Verification and promotion pattern**
+At minimum there should be separate logical search views for:
 
-| completed run  \-\> baseline comparison  \-\> historical internal comparison  \-\> metric sanity checks  \-\> rerun or replicate  \-\> leakage and validation checks  \-\> VerificationReport  \-\> promoted finding or failure-memory update |
-| :---- |
+- title and abstract metadata
+- deeper full-text notes or extracted sections
+- internal corpus documents
+- historical run reports and failure memory
+- skill catalog and examples
 
-Important rule: outside scores or benchmark standings are useful context, but they do not replace local verification and historical comparison.
+---
 
-**10.5 Report and external action pattern**
+## 13. Execution Pattern
 
-| verified run  \-\> FindingPacket builder  \-\> human-readable results and novelty report  \-\> human approval request if external action is needed  \-\> optional external adapter call  \-\> store receipt, response, and provenance |
-| :---- |
+Each supported problem compiles into a `ProblemProfile` that defines:
 
-Important rule: report\_ready and external\_action\_executed are separate states. Every finding packet should explain what changed, why it matters, how it compares with prior work, and what to test next.
+- dataset or source references
+- offline validation metric
+- expected runtime envelope
+- allowed hardware profile
+- artifact contract
+- known constraints
+- optional external benchmark interfaces
 
-**11\. Storage Pattern**
+For each candidate experiment:
 
-**11.1 System of record**
+```text
+create isolated worktree
+-> apply patch
+-> preflight
+-> execute in sandbox
+-> collect artifacts
+-> archive workspace metadata
+-> optionally keep patch for review
+```
 
-The system of record should be PostgreSQL for structured state, queueing, audit events, and vector references, plus the local filesystem for large artifacts and cached external assets.
+Run failures should be classified rather than lumped together. Examples:
 
-**11.2 Filesystem layout pattern**
+- build failure
+- dependency failure
+- OOM or resource limit
+- runtime exception
+- metric parse failure
+- invalid artifact output
+- policy rejection
+- harness mismatch
+- skill misuse or skill contract violation
 
-| /data  /artifacts    /runs    /reports    /findings    /literature      /html      /pdfs      /notes  /cache    /arxiv    /datasets    /embeddings  /workspaces  /exports |
-| :---- |
+---
 
-**11.3 Artifact philosophy**
+## 14. Verification Pattern
 
-Artifacts should be treated as durable evidence, not temporary scratch by default. This includes run logs, metric snapshots, generated patches, literature notes, extracted evidence summaries, rendered reports, and failure postmortems.
+A promoted result should generally have:
 
-**11.4 Why filesystem first**
+- baseline comparison on the declared metric
+- comparison against relevant historical internal work
+- confirmation that the intended split or evaluation surface was used
+- confirmation that no configured leakage or contamination signals were detected
+- required artifacts present and parseable
+- a rerun or replay note
+- a reviewer summary describing whether the improvement is robust, tentative, or likely spurious
+- a postmortem if the result is rejected or inconclusive
 
-A local filesystem is the simplest inspectable artifact store for a single-user lab. It is easy to browse, easy to back up, and easy to replace with object storage later if needed.
+---
 
-**12\. Search and Retrieval Pattern**
+## 15. Human and Orchestrator Interaction Pattern
 
-**12.1 Hybrid retrieval**
+The product should feel like a researcher’s control tower, not a black box.
 
-The retrieval system should combine lexical search over title, abstract, authors, tags, and internal notes; vector search over semantic embeddings; and structured filters such as source type, problem relevance, recency, prior read state, and failure relation.
+### 15.1 Human interaction model
 
-**12.2 Separate indexes for separate evidence layers**
+- use the UI to create or resume a cycle, inspect state, review reports, and intervene
+- use the CLI for direct local control and debugging
+- keep every recommendation linked to evidence and lineage
 
-At minimum, there should be distinct logical search views for title and abstract metadata, HTML or full-text notes, internal corpus documents, and historical run reports plus failure memory.
+### 15.2 Orchestrator interaction model
 
-**12.3 Why separate views matter**
+- use the API to create cycles, query state, monitor events, and issue allowed commands
+- provide scoped read and write permissions
+- treat telemetry streams as the primary monitoring interface
 
-A metadata match is not the same as a full-text implementation-detail match. The retrieval layer must preserve those differences so the system does not overstate how deeply it has read a paper or how directly a source supports an experiment.
+### 15.3 Required approval surfaces
 
-**13\. Execution Pattern**
+The user should be able to clearly review and approve or reject:
 
-**13.1 Problem profiles**
+- deeper reads beyond budget
+- expensive or long-running experiments
+- network-enabled runs
+- promotion of headline claims
+- sensitive orchestrator-issued actions where policy requires confirmation
 
-Each supported research task should compile into a ProblemProfile that defines dataset location, offline validation metric, optional external artifact schema, expected runtime envelope, allowed hardware profile, artifact contract, and known constraints. This keeps problem-specific behavior out of the core orchestration logic.
+### 15.4 Explainability pattern
 
-**13.2 Workspace lifecycle**
+Every surfaced object should answer “why is this here?”
 
-| create isolated worktree  \-\> apply patch  \-\> preflight  \-\> execute in sandbox  \-\> collect artifacts  \-\> generate postmortem summary  \-\> archive workspace metadata  \-\> optionally keep patch for review |
-| :---- |
+Examples:
 
-**13.3 Preflight pattern**
+- a shortlisted paper should show title/abstract score and escalation reason
+- a hypothesis should show supporting evidence and critique summary
+- a promoted run should show baseline and historical comparison
+- a skill should show when and why it was bound to an operator
+- an orchestrator action should show actor, scope, and result
 
-Before execution, the system should run a lightweight preflight that checks config completeness, referenced files, metric parser availability, artifact schema understanding, runtime image readiness, resource estimate fit, and whether required GPU access fits policy.
+---
 
-**13.4 Failure classification**
-
-Run failures should be classified rather than lumped together. Useful classes include build failure, dependency failure, out-of-memory or resource limit, runtime exception, metric-parse failure, invalid artifact output, policy rejection, and harness mismatch. This is necessary for useful failure memory.
-
-**13.5 Base image strategy**
-
-The system may keep a small set of reusable base images for common ML stacks, but most runtime images should be assembled on demand from the current ProblemProfile. That keeps the baseline lightweight while still supporting problem-specific environments.
-
-**14\. Verification Pattern**
-
-**14.1 Minimum verification bundle for ML research tasks**
-
-* Baseline comparison on the declared offline metric.  
-* Comparison to prior internal runs and reproduced literature baselines where available.  
-* Confirmation that the evaluation split and schema are the intended ones.  
-* Configured checks for target leakage, label contamination, or dataset misuse.  
-* Required artifacts present, parseable, and linked to the run.  
-* A rerun or replicate note explaining how stability was checked.  
-* A reviewer summary describing whether the result is robust, tentative, or likely spurious.
-
-**14.2 Historical work comparison policy**
-
-The system should preserve the distinction between baseline improvement, improvement relative to prior internal experiments, comparison against literature claims or reproductions, and optional external benchmark outcomes when available later. This keeps the lab from optimizing to a single visible score and makes novelty claims more honest.
-
-**14.3 Failure memory and postmortem requirement**
-
-Every failed or non-improving experiment should emit a structured failure record and a short reflective postmortem. The scheduler may use that information to downgrade similar branches, refine a hypothesis, or trigger new literature search aimed at the failure mode that was observed.
-
-**15\. Human Interaction Pattern**
-
-The product should feel like a research control tower, not a black box.
-
-**15.1 Preferred interaction model**
-
-* Use the local web UI to inspect current state, live telemetry, reports, runs, and pending approvals.  
-* Keep the CLI for power users, scripts, and direct operator control.  
-* Link every surfaced recommendation to its evidence and lineage.
-
-**15.2 Required approval surfaces**
-
-* Extra full-text reads beyond budget.  
-* Expensive or long-running experiments.  
-* Network-enabled runs.  
-* Promotion of headline claims.  
-* Any external publication, submission, or other irreversible write.
-
-**15.3 Required live controls**
-
-* Pause or abort running work.  
-* Reprioritize queued experiments.  
-* Adjust research scope or search constraints.  
-* Attach human notes or guidance.  
-* Resume from a paused or blocked state.
-
-**15.4 Explainability pattern**
-
-* A shortlisted paper should show its title-plus-abstract score, recency, and escalation reason.  
-* A hypothesis should show its supporting evidence and critique summary.  
-* A promoted run should show its baseline comparison, historical comparison, and verification status.
-
-**15.5 Reporting surface**
-
-Rendered markdown is acceptable in the first pass, but it must be viewable in the product through an HTML or equivalent rendered surface. Raw markdown files alone are not a sufficient reporting experience.
-
-**16\. Repository and Folder Structure Pattern**
+## 16. Repository and Folder Structure Pattern
 
 A practical repository shape for the MVP is:
 
-| repo/  apps/    api/    worker/    web/    cli/  libs/    schemas/    core/    orchestration/    storage/    retrieval/    literature/    ideation/    protocols/    execution/    verification/    reporting/    telemetry/    adapters/      problems/      datasets/      arxiv/      corpus/      llm/      embeddings/      git/      container/  prompts/    literature/    ideation/    critique/    reporting/  configs/    problems/    policies/    prompts/  docs/context/  data/sample/  tests/    unit/    integration/    fixtures/  scripts/ |
-| :---- |
+```text
+repo/
+  apps/
+    api/
+    worker/
+    web/
+    cli/
+  libs/
+    schemas/
+    core/
+    orchestration/
+    storage/
+    retrieval/
+    literature/
+    ideation/
+    protocols/
+    execution/
+    verification/
+    reporting/
+    skills/
+    adapters/
+      arxiv/
+      corpus/
+      external_search/
+      llm/
+      embeddings/
+      git/
+      container/
+  prompts/
+    planning/
+    literature/
+    ideation/
+    coding/
+    verification/
+    reporting/
+  skills/
+    literature/
+    ideation/
+    coding/
+    verification/
+    reporting/
+  configs/
+    problems/
+    policies/
+    models/
+    skills/
+  docs/
+    context/
+      prd.md
+      system_patterns.md
+      phased_implementation_plan.md
+      tech_context.md
+  tests/
+    unit/
+    integration/
+    e2e/
+    fixtures/
+```
 
-**16.1 Structure rules**
+Structure rules:
 
-* Canonical schemas should live in one place.  
-* Adapters must not invert dependencies by importing core domain logic in the wrong direction.  
-* Prompts are versioned assets, not hidden strings inside business logic.  
-* Notebooks may support exploration, but they are not the system backbone.  
-* Problem configs should live in files, not in prompt text.
+- canonical schemas live in one place
+- prompts are versioned assets, not hidden strings in application code
+- skills are repo-visible assets, not buried in application internals
+- adapters must not invert dependencies
+- benchmark and problem configs live in files, not prompt text
 
-**17\. Key Architectural Decisions (ADR Snapshot)**
+---
 
-**ADR-001 — Build the core in Python —** Python is the primary language for orchestration, adapters, and execution tooling because it aligns best with ML workflows and scientific tooling.
+## 17. Key Architectural Decisions (ADR Snapshot)
 
-**ADR-002 — Use shared ResearchState instead of freeform agent memory —** Durable typed state is the system backbone because replayability, testing, and user trust depend on it.
+- **ADR-001** — Build the core in Python.
+- **ADR-002** — Use shared `ResearchState` instead of freeform agent memory.
+- **ADR-003** — Choose PostgreSQL + pgvector as the canonical storage path.
+- **ADR-004** — Use a database-backed job queue instead of a separate workflow engine in v1.
+- **ADR-005** — Treat title + abstract together as the default literature surface.
+- **ADR-006** — Prefer HTML or machine-readable full text before PDF when escalating paper reads.
+- **ADR-007** — Support modular skill packages rooted in `skill.md`.
+- **ADR-008** — Expose a versioned REST + SSE orchestrator API from the control plane.
+- **ADR-009** — Execute generated code inside isolated containers and separate workspaces.
+- **ADR-010** — Baseline first, always.
+- **ADR-011** — Verification is separate from generation.
+- **ADR-012** — Keep a real phase-1 UI instead of CLI only.
 
-**ADR-003 — Use task-scoped context packs rather than full-state prompts —** Each operator should see only the context it needs, which keeps token cost bounded and reduces prompt contamination.
+---
 
-**ADR-004 — Choose PostgreSQL plus pgvector as the canonical storage path —** Relational plus vector retrieval in one durable store supports state, queueing, vector search, and audits with fewer moving parts.
+## 18. Explicit Anti-Patterns
 
-**ADR-005 — Use a database-backed job queue instead of Redis/Celery or a full workflow engine —** Jobs are persisted and claimed through the main database because this fits a local-first MVP with strong audit requirements.
+The following approaches should be considered out of scope or explicitly rejected for the MVP:
 
-**ADR-006 — Maintain a local arXiv metadata mirror —** A PostgreSQL-backed mirror of arXiv metadata should be part of the research memory and kept fresh with bulk and incremental sync.
+1. Agent swarm as architecture.
+2. Brute-force mirroring of arXiv full-text PDFs.
+3. Giving every model the entire research history and corpus by default.
+4. Running generated code directly on the host machine.
+5. Using prompt text as policy logic.
+6. Hiding custom behavior in undocumented ad hoc prompt fragments instead of skills, configs, or code.
+7. Letting external orchestrators write directly to the database or execution runtime.
+8. Jumping from hypothesis directly to code patch without protocolization.
+9. Using notebooks as the product backbone.
 
-**ADR-007 — Treat title plus abstract as the default literature surface, and prefer HTML before PDF —** This mirrors real researcher behavior, improves parseability, and avoids wasteful full-text crawling.
+---
 
-**ADR-008 — Ship a phase-1 web UI alongside the CLI —** Telemetry, approvals, intervention, and rendered reporting require a readable local interface from day one.
+## 19. Evolution Path
 
-**ADR-009 — Execute generated code inside isolated GPU-capable containers and separate workspaces —** Generated code is untrusted and must run in reproducible, resource-constrained sandboxes.
+### Phase 1 — Local ML lab core
 
-**ADR-010 — Baseline first, always —** No experiment is judged without an explicit baseline anchor because false wins are otherwise too easy.
+- single-user local runtime
+- scoped research problems
+- internal corpus retrieval
+- arXiv metadata warehouse and literature triage
+- skill registry and first-party skills
+- orchestrator API and event stream
+- experiment execution and verification loop
 
-**ADR-011 — Verification is separate from generation, and every experiment gets tested —** Creative generation and scientific validation are different stages; every experiment needs an explicit recorded outcome.
+### Phase 2 — Better memory, richer UI, broader skill catalog
 
-**ADR-012 — Human approval is required for external writes and high-cost or high-risk actions —** Routine low-risk experiments may run automatically, but anything irreversible, external, or expensive should require approval.
+- stronger dashboard and timeline views
+- richer historical comparison
+- more robust skill packaging and validation
+- broader first-party skill library
 
-**ADR-013 — Use research problem adapters for problem-specific behavior —** Problem logic must not leak into core orchestration because the lab should support multiple ML research task types cleanly.
+### Phase 3 — Optional scale-up
 
-**ADR-014 — Derive graph views instead of introducing a graph database in v1 —** Graph-native storage would add complexity before it adds enough product value.
+- optional remote workers
+- object storage replacement for filesystem artifacts
+- more advanced retrieval and ranking models
+- optional MCP or other compatibility facades on top of the orchestrator API
+- support for additional research domains through new adapters and skills
 
-**ADR-015 — Support both local and hosted models behind one gateway with role-based routing —** Different operators will likely benefit from different models for planning, coding, critique, and evaluation.
+---
 
-**18\. Explicit Anti-Patterns**
+## 20. Open Questions
 
-4. Agent swarm as architecture. Multiple LLM personas talking to each other without a strong state model is not the system design.  
-5. Broadcasting the full project state to every model. Context must be scoped to the operator and task.  
-6. Brute-force mirroring of arXiv full-text PDFs. Metadata-first retrieval is the default, with HTML preferred before PDF.  
-7. Running generated code directly on the host machine. All experiment code runs through sandboxed execution.  
-8. Using prompt text as policy logic. Budgets and approval rules must live in code and configuration.  
-9. Treating any single visible score as the sole truth signal. Offline verification and historical comparison remain primary.  
-10. Unplanned platform sprawl beyond the canonical local stack. PostgreSQL, a phase-1 frontend, and a GPU-capable execution backplane are intentional; adding extra services without clear product need is the anti-pattern.  
-11. Jumping from hypothesis directly to a code patch without protocolization. ExperimentSpec is required.  
-12. Using notebooks as the product backbone. Notebooks may support exploration, but durable system logic lives in the repo and runtime.
+- Should third-party skills require signing or trust prompts in the first local release?
+- Should orchestrator approvals ever count as equivalent to a human approval for specific scopes?
+- When should we add WebSocket support in addition to SSE, if ever?
+- Which parts of failure reflection should be standardized in shared core versus left to skill packages?
+- How much skill-specific deterministic code should be allowed before a behavior should become part of the shared core?
 
-**19\. Evolution Path**
+---
 
-**Phase 1 — Local ML lab core**
+## 21. Recommended Next Step
 
-* Single-user local runtime.  
-* Phase-1 web UI plus CLI and live telemetry.  
-* Problem adapters for a small set of ML task archetypes.  
-* Internal corpus retrieval plus a local arXiv metadata mirror.  
-* Metadata-first literature triage with HTML-first escalation.  
-* Automated experiment execution, verification, and failure memory.
-
-**Phase 2 — Better research memory and richer UI**
-
-* Stronger contradiction mapping and cross-run reasoning.  
-* Better portfolio ranking and queue management.  
-* Richer collaboration features in the UI.  
-* Reusable problem packs and stronger report exports.
-
-**Phase 3 — Optional scale-up**
-
-* Optional remote workers.  
-* Object storage replacement for filesystem artifacts.  
-* More advanced search and ranking models.  
-* Support for additional research domains through new adapters.
-
-The key rule is that scale should follow product truth, not lead it.
-
-**20\. Current Defaults for tech\_context.md**
-
-The following defaults should now be treated as the current architectural stance while tech\_context.md is written:
-
-* Phase 1 includes a UI, not just an API and CLI.  
-* The model gateway supports both local and hosted models from day one, with role-specific routing.  
-* A notebook-packaging adapter is deferred until the core script-based research loop is stable.  
-* The research memory should include a PostgreSQL-backed arXiv metadata mirror, refreshed by bulk and incremental sync, with targeted API search when needed.  
-* The runtime may keep a few reusable base images, but most images should be assembled on demand from the current ProblemProfile.  
-* Every experiment must receive an explicit recorded verification outcome.  
-* Failure memory should be as structured as practical and should include a short postmortem that can trigger revised hypotheses or additional search.  
-* Reports may start as rendered Markdown and HTML, but they must be viewable inside the product.
-
-**20.1 Remaining open questions**
-
-* Which frontend framework gives the cleanest local-first development path for the phase-1 UI?  
-* What is the exact GPU runtime and quota model for the execution backplane on a single machine?  
-* Which three ML problem packs should ship first?  
-* How much internal code-repository ingest belongs in v1 versus later phases?  
-* Which statistical checks should be mandatory by default for each initial problem family?
-
-**21\. Recommended Next Step**
-
-The next document should be tech\_context.md, derived from this architecture, and should make concrete decisions about local runtime setup, service startup model, package and dependency choices, environment-variable and config loading, PostgreSQL deployment, arXiv sync flow, container and GPU setup, model-provider strategy, coding standards, testing strategy, benchmark and problem configuration format, and the phase-1 UI stack.
+The next document should be `phased_implementation_plan.md`, which turns this architecture into a build sequence.

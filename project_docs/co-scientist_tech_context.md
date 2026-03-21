@@ -1,21 +1,10 @@
 # Tech Context
 
-**ML Laboratory Co-Scientist · implementation baseline for the local ML laboratory MVP**
-
-**Role**  
-The Engineer
-
-**Product**  
-ML Laboratory Co-Scientist
-
-**Status**  
-Working Draft
-
-**Scope**  
-Local small-scale ML laboratory MVP
-
-**Last Updated**  
-2026-03-21
+**Product:** ML Laboratory Co-Scientist  
+**Role:** Engineer  
+**Status:** Working Draft v3  
+**Scope:** Local small-scale ML laboratory MVP  
+**Last Updated:** 2026-03-21
 
 ---
 
@@ -23,17 +12,15 @@ Local small-scale ML laboratory MVP
 
 This document translates the current product direction, system patterns, and phased implementation plan into concrete technical choices for the first build.
 
-It exists to answer these questions clearly:
+It answers these questions:
 
 1. What stack are we actually using first?
 2. How does the local development environment work?
 3. Which services are required versus optional?
-4. How do we handle storage, execution, model routing, and retrieval in practice?
+4. How do we handle retrieval, skill loading, execution, and orchestration in practice?
 5. Which technical decisions are locked now, and which are intentionally deferred?
 
-This document is downstream of `system_patterns.md` and `phased_implementation_plan.md`.
-
-It is intentionally practical. It should be specific enough that an engineer can begin scaffolding the repo and local runtime without needing another architecture rewrite.
+This document is downstream of `prd.md`, `system_patterns.md`, and `phased_implementation_plan.md`.
 
 ---
 
@@ -52,6 +39,8 @@ This tech context assumes the following product decisions are already in force:
 - Different stages of the workflow may use **different models** behind one routing layer.
 - Every experiment should produce durable artifacts, verification output, and when it fails, a **structured postmortem**.
 - Historical internal work matters. The system should compare new results against **prior internal runs, reports, and research memory**.
+- Modular behavior must be supported through **`skill.md` packages**.
+- External orchestrators must be supported through a **stable API plus telemetry streams**.
 
 ---
 
@@ -62,21 +51,16 @@ The following choices should be treated as the default implementation path for t
 ### 3.1 Host platform targets
 
 - **Primary host target:** Linux workstation
-- **Secondary dev target:** macOS for non-GPU development and UI/API work, also possible light metal work
+- **Secondary dev target:** macOS for non-GPU development and UI/API work
 - **Windows stance:** not a first-class target; use WSL2 only if needed
-
-Why this is the default:
-
-- GPU passthrough for experiment containers is materially easier and more reliable on Linux.
-- Most ML tooling and container execution patterns are simplest on Linux.
-- We can still allow macOS for API, retrieval, and UI development when GPU execution is not required.
 
 ### 3.2 Primary languages
 
 - **Backend, workers, adapters, orchestration, verification:** Python
 - **Frontend:** TypeScript
 - **Configuration:** YAML plus environment variables
-- **Documentation and reports:** Markdown with rendered HTML in the UI
+- **Documentation and reports:** Markdown rendered as HTML in the UI
+- **Skills:** Markdown-first packages rooted in `skill.md`
 
 ### 3.3 Core local stack
 
@@ -90,14 +74,14 @@ The canonical local stack for the first implementation is:
 - **Postgres driver:** `psycopg`
 - **Frontend:** React + TypeScript + Vite
 - **Frontend data layer:** TanStack Query
-- **Frontend routing:** lightweight file-based or TanStack Router; keep routing simple
-- **Styling:** Tailwind CSS with a minimal component layer
+- **Frontend routing:** TanStack Router or similarly light file-based routing
+- **Styling:** Tailwind CSS with a thin local component layer
 - **Durable state:** PostgreSQL + `pgvector`
 - **Queue:** Postgres-backed jobs table with row-claim semantics
 - **Artifact store:** local filesystem
 - **Execution backplane:** Docker Engine + NVIDIA Container Toolkit
 - **Workspace isolation:** git worktrees
-- **Telemetry stream:** domain events persisted in Postgres and exposed to the UI through SSE first
+- **Telemetry stream:** domain events persisted in Postgres and exposed through SSE first
 - **CLI:** Typer-based Python CLI
 
 ### 3.4 Mandatory services for v1
@@ -105,12 +89,12 @@ The canonical local stack for the first implementation is:
 The MVP should assume these services exist from the beginning:
 
 - PostgreSQL
-- Web frontend
+- web frontend
 - API/control plane
-- Worker process
-- Execution runner with container access
+- worker process
+- execution runner with container access
 
-These are not optional nice-to-haves. They are part of the baseline product shape.
+These are baseline product services, not optional nice-to-haves.
 
 ### 3.5 Explicitly not required in v1
 
@@ -125,49 +109,13 @@ The MVP should not require these services to be usable:
 - Kubernetes
 - object storage
 - graph database
-
-Some of these may appear later, but they should not be part of the initial local lab baseline.
-
----
-
-## 4. Recommended Machine Profiles
-
-### 4.1 Minimum development profile
-
-Use this when hosted models are acceptable and the machine is mainly for product development:
-
-- 8 CPU cores
-- 32 GB RAM
-- 150 GB free SSD space
-- Docker installed
-- no local GPU required
-
-### 4.2 Recommended lab profile
-
-Use this when the machine will also run local experiments and some local model inference:
-
-- 12+ CPU cores
-- 64 GB RAM
-- 1 TB NVMe storage
-- NVIDIA GPU with enough VRAM for the target workload
-- Docker + NVIDIA Container Toolkit
-
-### 4.3 Storage expectation
-
-Storage pressure will come from four places:
-
-- arXiv metadata warehouse
-- cached full-text or PDF fetches
-- dataset caches
-- experiment artifacts and workspaces
-
-The repo should stay small. Large state belongs under a configurable local data root, not inside the git repository.
+- separate real-time messaging broker
 
 ---
 
-## 5. Local Runtime Model
+## 4. Local Runtime Model
 
-### 5.1 Development mode
+### 4.1 Development mode
 
 During normal development, the system should run with a split model:
 
@@ -180,16 +128,9 @@ That means:
 - optional local model servers can run in Docker Compose
 - API runs locally via `uv`
 - worker runs locally via `uv`
-- web frontend runs locally via `npm`
+- web frontend runs locally via `pnpm`
 
-Why this is the default:
-
-- faster edit/run/debug loop
-- easier stack traces and debugging
-- easier IDE integration
-- no need to rebuild the whole app container for every backend change
-
-### 5.2 Reproducible demo mode
+### 4.2 Reproducible demo mode
 
 A second startup path should exist for demos and onboarding:
 
@@ -199,9 +140,9 @@ A second startup path should exist for demos and onboarding:
 - bring up frontend
 - optionally bring up a local model server
 
-This can be done with Docker Compose profiles once the first vertical slice is stable.
+Docker Compose profiles are sufficient for this once the first vertical slice is stable.
 
-### 5.3 Dynamic experiment execution
+### 4.3 Dynamic experiment execution
 
 Experiment containers are **not** long-running compose services.
 
@@ -216,9 +157,9 @@ They are created on demand by the execution runner. Each run gets:
 
 ---
 
-## 6. Repository Shape
+## 5. Repository Shape
 
-The monorepo should follow this general structure:
+The monorepo should follow this structure:
 
 ```text
 repo/
@@ -239,16 +180,23 @@ repo/
     execution/
     verification/
     reporting/
+    skills/
     adapters/
       arxiv/
       corpus/
+      external_search/
       llm/
       embeddings/
       git/
       container/
-      benchmark/
   prompts/
     planning/
+    literature/
+    ideation/
+    coding/
+    verification/
+    reporting/
+  skills/
     literature/
     ideation/
     coding/
@@ -258,1067 +206,681 @@ repo/
     problems/
     policies/
     models/
-    execution/
-    prompts/
+    skills/
   docs/
     context/
+      prd.md
+      system_patterns.md
+      phased_implementation_plan.md
+      tech_context.md
   tests/
     unit/
     integration/
+    e2e/
     fixtures/
-  scripts/
 ```
 
-### 6.1 Structure rules
+---
 
-- Canonical schemas must live in one place.
-- Core domain code must not depend directly on vendor SDK details.
-- Adapters can depend on core interfaces, not the other way around.
-- Prompts are versioned assets, not long strings hidden in Python files.
-- Config for problems, policies, and model routing should live in files, not prompt text.
-- Notebooks may exist for exploration, but not as the product backbone.
+## 6. Service Boundaries
+
+### 6.1 API service
+
+Responsibilities:
+
+- REST API for durable resources
+- SSE endpoints for telemetry
+- OpenAPI schema generation
+- auth and scope checks for humans and orchestrators
+- report and artifact access
+- approval entrypoints
+
+### 6.2 Worker service
+
+Responsibilities:
+
+- claim queued jobs from Postgres
+- run operators
+- coordinate skill resolution and context assembly
+- emit domain events and reports
+- launch execution runs through the execution runner
+
+### 6.3 Web service
+
+Responsibilities:
+
+- render cycle dashboard
+- render report bundles
+- show run telemetry and approvals
+- expose skill catalog and skill usage history
+
+### 6.4 CLI
+
+Responsibilities:
+
+- local developer control
+- debugging and fixture workflows
+- direct cycle creation and replay helpers
+
+### 6.5 Execution runner
+
+Responsibilities:
+
+- workspace lifecycle
+- base-image selection or build
+- container launch and teardown
+- log and metric collection
+- resource enforcement
+
+In v1 this is a library/module invoked by workers, not a separate microservice.
+
+### 6.6 Skill runtime
+
+Responsibilities:
+
+- discover `skill.md` packages
+- validate metadata and optional helpers
+- resolve eligible skills for each operator
+- emit `SkillExecutionRecord`s
+
+In v1 this is also a library/module invoked by workers and surfaced through the API.
 
 ---
 
-## 7. Package and Dependency Baseline
+## 7. Canonical Storage Design
 
-### 7.1 Backend dependencies
+### 7.1 Database role
 
-The first backend pass should assume the following libraries or equivalents:
+PostgreSQL is the system of record for:
 
-- FastAPI
-- Pydantic v2
-- SQLAlchemy 2
-- Alembic
-- `psycopg`
-- `httpx`
-- `tenacity`
-- `structlog` or equivalent structured logging layer
-- `typer`
-- `jinja2` or a similarly simple templating layer for reports and prompts where needed
-- `orjson` where fast JSON serialization materially helps
+- research cycles and state transitions
+- jobs and job claims
+- domain events and audit history
+- papers and source records
+- evidence, hypotheses, experiment specs, and reports
+- skills, skill bindings, and skill execution records
+- orchestrator clients, sessions, commands, and approvals
+- embeddings and retrieval metadata references
 
-### 7.2 Python tooling
+### 7.2 Filesystem role
 
-- `uv` for dependency and virtual environment management
-- `ruff` for linting and formatting
-- `pytest` for tests
-- `pyright` for static type checking
-- `testcontainers` for integration tests that need Postgres or Docker-managed services
+The filesystem stores:
 
-### 7.3 Frontend dependencies
+- run logs
+- generated patches
+- experiment artifacts
+- literature fetches and notes
+- rendered reports
+- exports
+- cached datasets or external assets where appropriate
 
-The first web UI should stay thin. Use:
+### 7.3 Local data root
 
-- React
-- TypeScript
-- Vite
-- TanStack Query
-- Tailwind CSS
-- a small component layer, not a large enterprise UI framework
-- `react-markdown` or equivalent sanitized markdown rendering stack for report viewing
-
-### 7.4 Avoidable dependency creep
-
-Do not add large framework dependencies unless they remove a real bottleneck.
-
-Examples to avoid in the first pass:
-
-- enterprise workflow engines
-- large state-management frameworks the UI does not need
-- dedicated search clusters
-- notebook-centric orchestration products
-
----
-
-## 8. Service Breakdown
-
-### 8.1 API / Control Plane
-
-Responsibilities:
-
-- create, update, and inspect research cycles
-- expose research state and reports to the UI
-- create approval requests
-- enqueue jobs
-- stream event timelines and run telemetry
-- provide a small health and admin surface
-
-Implementation notes:
-
-- FastAPI should be enough for the MVP
-- prefer SSE for one-way telemetry first
-- use normal HTTP endpoints for pause, cancel, resume, approve, reject, and re-run actions
-
-### 8.2 Worker Process
-
-Responsibilities:
-
-- claim jobs from Postgres
-- run typed operators
-- persist outputs before enqueueing downstream work
-- emit domain events and operator reports
-- request approvals when policy blocks the next step
-
-Implementation notes:
-
-- one worker process is enough for the first pass
-- concurrency should be limited and explicit
-- job claiming should use `FOR UPDATE SKIP LOCKED` or equivalent safe row-claim semantics
-- every long-running job should heartbeat so stalled jobs can be recovered
-
-### 8.3 Execution Runner
-
-Responsibilities:
-
-- create or reuse the correct execution image
-- create a git worktree workspace
-- mount data and artifact paths
-- start the experiment container
-- stream logs and status back to the system
-- collect outputs into a `RunRecord`
-
-Implementation notes:
-
-- this can begin as a library used by the worker
-- if it grows complex, it can become a dedicated service later
-- the core requirement is durable run control, not service count purity
-
-### 8.4 Web Frontend
-
-Responsibilities:
-
-- show research cycles
-- show literature triage progress and shortlist decisions
-- show hypothesis portfolio and experiment queue
-- show active runs and live telemetry
-- show reports, verification outputs, and postmortems
-- expose pause/cancel/approve controls
-
-Implementation notes:
-
-- the UI should exist in phase 1
-- keep it narrow and practical
-- the goal is control-tower visibility, not a polished analytics suite
-
-### 8.5 CLI
-
-Responsibilities:
-
-- bootstrap a research cycle
-- trigger or resume phases
-- import internal corpus material
-- export reports and artifacts
-- provide a non-UI control path for power users
-
-The CLI is still useful, but it is not the only required surface.
-
----
-
-## 9. Durable State and Storage
-
-### 9.1 Canonical state store
-
-Use PostgreSQL as the system of record.
-
-It should hold:
-
-- research cycles
-- jobs
-- domain events
-- approvals
-- paper metadata
-- evidence cards
-- hypotheses
-- experiment specs
-- run records
-- verification reports
-- postmortems
-- report metadata
-- embeddings and retrieval references
-
-### 9.2 Why Postgres is the canonical choice
-
-We need one durable system that can support:
-
-- relational records
-- append-only audit history
-- queue semantics
-- hybrid retrieval support
-- concurrent reads and writes
-- restartable local operation
-
-SQLite is attractive for tiny prototypes, but not for the product shape we have already chosen.
-
-### 9.3 `pgvector`
-
-Use `pgvector` inside Postgres for semantic retrieval.
-
-It should be used for:
-
-- title+abstract embeddings for arXiv metadata
-- internal corpus documents
-- evidence summaries
-- historical reports
-- failure postmortems
-
-### 9.4 Postgres full-text search
-
-Use Postgres full-text search for lexical retrieval in v1.
-
-That is enough for:
-
-- title and abstract search
-- author and keyword search
-- internal report keyword search
-- operator-side filtering before semantic ranking
-
-### 9.5 Filesystem artifact store
-
-Artifacts should live under a configurable local data root.
-
-Recommended variable:
-
-- `MLLAB_HOME`
-
-Recommended layout:
+Use a configurable local data root such as:
 
 ```text
-$MLLAB_HOME/
+$LAB_DATA_ROOT/
   artifacts/
-    runs/
-    reports/
-    postmortems/
-    literature/
-      html/
-      pdf/
-      notes/
   cache/
-    arxiv/
-    embeddings/
-    datasets/
-    models/
   workspaces/
   exports/
 ```
 
-### 9.6 Artifact philosophy
+The git repo should stay relatively small. Large caches and artifacts should live under the data root.
 
-Artifacts are durable evidence, not disposable scratch.
+### 7.4 Suggested database grouping
 
-At minimum, preserve:
+Use logical schema grouping or at least naming boundaries for:
 
-- generated patches
-- run stdout and stderr
-- metric snapshots
-- verification outputs
-- rendered reports
-- literature notes
-- failure analyses
+- `research_*`
+- `source_*`
+- `execution_*`
+- `report_*`
+- `skill_*`
+- `orchestrator_*`
+- `audit_*`
 
 ---
 
-## 10. Queue and Scheduling Approach
+## 8. Skill System Technical Design
 
-### 10.1 Queue pattern
+### 8.1 Skill package format
 
-Use a database-backed queue inside Postgres.
+Each skill is a directory rooted in `skill.md`.
 
-The queue should support:
+Recommended structure:
 
-- delayed jobs
-- retries
-- heartbeats
-- job priority
-- cancellation
-- dead-letter or terminal failure state
+```text
+skills/
+  literature/
+    title_abstract_triage/
+      skill.md
+      hooks.py                 # optional deterministic helpers
+      schemas/                 # optional input/output schemas
+      fixtures/                # optional examples and tests
+      tests/                   # optional tests
+```
 
-### 10.2 Why not Redis/Celery first
+### 8.2 `skill.md` contract
 
-A separate queue service adds moving parts before it adds real product value.
+The `skill.md` file should include YAML frontmatter so one file remains both human-readable and machine-parseable.
 
-For a single-user local lab, the DB-backed queue gives us:
+Example:
 
-- durability
-- auditability
-- simpler operations
-- easier debugging
-- direct linkage between jobs and research state
+```md
+---
+id: literature.title_abstract_triage
+version: 0.1.0
+phase: literature
+allowed_operators: [literature_screen]
+preferred_models: [retrieval_summarizer]
+context_inputs:
+  - research_charter
+  - source_candidates
+outputs:
+  - screening_decisions
+capabilities:
+  - source.read_metadata
+  - source.request_fulltext
+risk_level: low
+---
 
-### 10.3 Scheduler stance
+# Title + Abstract Triage
 
-The scheduler should stay modest in v1.
+## Purpose
+Screen title and abstract together to decide shortlist priority.
 
-It should decide:
+## When to use
+Use after metadata retrieval and before deeper reading.
 
-- what phase to run next
-- whether an approval is needed
-- which hypothesis or experiment has priority
-- whether to continue exploration, experiment, verification, or reporting
+## Required behavior
+- consider title and abstract jointly
+- produce shortlist rationale
+- propose escalation reason only when needed
+```
 
-It should not become a separate workflow platform.
+### 8.3 Skill loader and validator
+
+Implementation stance:
+
+- parse frontmatter from `skill.md`
+- validate against a Pydantic `SkillManifest`
+- store the rendered body as the human-readable instructions
+- compute a content hash for version tracking
+- validate optional `hooks.py` exports when present
+- reject malformed or unsafe skill packages during load
+
+### 8.4 Skill resolution
+
+The worker should resolve skills using:
+
+- operator type
+- phase
+- research problem profile
+- policy and capability requirements
+- enable/disable flags
+- explicit cycle-level bindings
+
+The result should be a **small bound skill set** per operator invocation.
+
+### 8.5 Skill persistence model
+
+Minimum tables or entities:
+
+- `SkillDefinition`
+- `SkillVersion`
+- `SkillBinding`
+- `SkillExecutionRecord`
+- `SkillValidationIssue`
+
+### 8.6 Skill hooks
+
+Allow optional deterministic helper hooks in `hooks.py` for narrow use cases such as:
+
+- pre-assembly context shaping
+- deterministic scoring helpers
+- post-processing and validation of structured outputs
+
+Do **not** let hooks become an alternate orchestration system.
+
+### 8.7 Skill authoring ergonomics
+
+The repo should ship:
+
+- a skill template
+- a skill validation CLI command
+- fixture examples
+- docs for writing first-party and custom skills
+
+---
+
+## 9. Orchestrator API Technical Design
+
+### 9.1 API style
+
+The v1 orchestrator surface should be:
+
+- **REST/JSON** for durable resource operations
+- **SSE** for real-time event and telemetry streams
+- **OpenAPI 3.1** for schema visibility and client generation
+
+Do not split this into a separate gateway service in v1. Keep it in the same FastAPI control-plane service.
+
+### 9.2 Core resources
+
+Suggested resource families:
+
+- `/api/v1/cycles`
+- `/api/v1/problems`
+- `/api/v1/sources`
+- `/api/v1/hypotheses`
+- `/api/v1/experiments`
+- `/api/v1/runs`
+- `/api/v1/reports`
+- `/api/v1/approvals`
+- `/api/v1/skills`
+- `/api/v1/orchestrators`
+- `/api/v1/events/stream`
+
+### 9.3 Must-have actions
+
+The API must support:
+
+- create and update research cycles
+- read cycle state snapshots
+- list and fetch reports
+- request allowed operator execution
+- pause, cancel, and resume allowed jobs or runs
+- submit notes or steering directives
+- fetch skill catalog and skill usage history
+- read pending approvals and record allowed decisions
+- subscribe to domain events and run telemetry
+
+### 9.4 Auth and scopes
+
+Use local API tokens with explicit scopes in v1.
+
+Suggested scopes:
+
+- `cycles.read`
+- `cycles.write`
+- `runs.read`
+- `runs.control`
+- `reports.read`
+- `skills.read`
+- `skills.bind`
+- `events.read`
+- `approvals.read`
+- `approvals.write`
+- `admin.local`
+
+Every orchestrator action should record:
+
+- actor id
+- token or client id
+- scope used
+- target resource
+- result
+
+### 9.5 Event streaming model
+
+Use **SSE first**.
+
+Event delivery approach:
+
+- persist domain events in Postgres
+- expose stream endpoints that tail events by `last_event_id`
+- allow clients to resume from checkpoints
+- expose run telemetry as event records or structured stream chunks
+
+This is simpler and more durable than a separate real-time broker in v1.
+
+### 9.6 Idempotency and retries
+
+For externally triggered mutations, support:
+
+- client-supplied idempotency key where useful
+- safe retry behavior for command endpoints
+- explicit status responses for already-applied actions
+
+### 9.7 Client SDK
+
+Ship a minimal Python SDK first.
+
+Responsibilities:
+
+- token handling
+- typed models
+- event stream helper
+- convenience methods for common actions
+
+---
+
+## 10. Source Retrieval and Research Memory
+
+### 10.1 arXiv strategy
+
+Use Postgres as the local warehouse for arXiv metadata.
+
+Technical stance:
+
+- store title, abstract, categories, authors, dates, ids, and links in Postgres
+- support incremental sync from a bulk metadata harvester
+- allow targeted API search when needed
+- treat HTML fetch and PDF fetch as separate escalation operations
+
+### 10.2 Internal corpus strategy
+
+Support internal ingestion for:
+
+- papers and notes
+- prior run summaries
+- reports and postmortems
+- selected code or experiment metadata where useful
+
+### 10.3 Retrieval strategy
+
+Use hybrid retrieval:
+
+- lexical search in Postgres
+- vector search via `pgvector`
+- structured filters for source type, recency, relevance, and read depth
+
+### 10.4 Read-depth preservation
+
+Every source match should preserve whether the evidence comes from:
+
+- metadata only
+- HTML or machine-readable deeper read
+- PDF-based deeper read
+- internal note or report
 
 ---
 
 ## 11. Model Gateway and Routing
 
-### 11.1 Model access stance
+### 11.1 Routing model
 
-Support both **hosted** and **local** models from day one.
+The model gateway should support role-based routing.
 
-The system should present one internal model gateway that can route by task role.
+Suggested logical roles:
 
-Examples of task roles:
+- planning / orchestration
+- retrieval synthesis
+- literature screening
+- hypothesis generation
+- protocol drafting
+- coding
+- evaluation / verification
+- report writing
 
-- planner
-- literature triage
-- synthesis
-- critic
-- protocol compiler
-- coder
-- verifier
-- reporter
+### 11.2 Hosted and local model support
 
-### 11.2 Gateway implementation shape
+The gateway should support both:
 
-The internal gateway should normalize two families of backends:
+- hosted provider adapters
+- local inference adapters
 
-- hosted provider SDKs
-- local or self-hosted OpenAI-compatible endpoints
+A cycle, operator, or skill may prefer one model route, but the control plane should own the final routing decision.
 
-That lets us support combinations such as:
+### 11.3 Recording requirements
 
-- strong hosted reasoning model for planning and critique
-- local fast model for low-cost triage or report drafting
-- code-specialized model for patch generation
-- smaller verifier model for structured checks that still need LLM help
+Every model call that affects durable outputs should record:
 
-### 11.3 Local model stance
-
-For local inference, prefer a backend that can expose an OpenAI-compatible API.
-
-This keeps the control plane and worker code simple.
-
-Two acceptable modes for the first pass are:
-
-- a heavier GPU-backed local model server for stronger local inference
-- a lighter local model server for development convenience
-
-The product should not hard-code one local model serving product into the core architecture.
-
-### 11.4 Routing policy
-
-Routing should be file-based and explicit.
-
-Example config shape:
-
-```yaml
-roles:
-  planner: hosted_reasoner
-  triage: local_fast
-  synthesizer: hosted_reasoner
-  critic: hosted_reasoner
-  coder: code_model
-  verifier: precise_reasoner
-  reporter: local_fast
-fallbacks:
-  planner: [local_reasoner]
-  coder: [hosted_reasoner]
-```
-
-### 11.5 Context discipline
-
-Do not dump the whole lab state into every model call.
-
-Instead, introduce task-scoped `ContextPack` builders.
-
-Examples:
-
-- `TriageContextPack`
-- `EvidenceContextPack`
-- `HypothesisContextPack`
-- `CodingContextPack`
-- `VerificationContextPack`
-- `ReportContextPack`
-
-Each pack should have:
-
-- a clear token budget
-- explicit allowed sources
-- deterministic ordering rules
-- truncation behavior
-- provenance back to the records it was assembled from
-
-This is a core product behavior, not prompt polish.
+- provider or local runtime
+- model identifier
+- prompt or template identifier
+- major generation parameters
+- cost or token usage when available
+- bound skills in effect
 
 ---
 
-## 12. Prompt and Operator Assets
+## 12. Execution Backplane
 
-### 12.1 Prompt asset layout
+### 12.1 Base images
 
-Prompts should live in versioned files under `prompts/`.
+Use a mix of:
 
-Do not bury them in application code.
+- a few reusable base images for common ML stacks
+- on-demand image builds for research-problem-specific needs
 
-### 12.2 Operator contract
+Most specialized environments should be built on demand from config, not pre-baked forever.
 
-Each operator should be a typed unit of work with:
+### 12.2 Runner contract
 
-- input state reference
-- config reference
-- context pack reference
-- model route
-- output schema
-- emitted events
-- artifact references
-- operator report
+The execution runner should accept a `RunSpec` containing:
 
-### 12.3 Prompt version tracking
+- workspace path
+- image reference or build recipe
+- command
+- env vars
+- mounts
+- hardware profile
+- timeout and memory limits
+- network mode
+- artifact output path
 
-Every operator result should record:
+### 12.3 GPU support
 
-- prompt asset identifier
-- prompt version or checksum
-- model route used
-- generation parameters where material
+GPU passthrough should be allowed through Docker + NVIDIA Container Toolkit only when the `RunSpec` and policy allow it.
 
-That record belongs in the durable run history, not only in logs.
+### 12.4 Telemetry capture
 
----
+The runner must capture:
 
-## 13. Source Retrieval and Research Memory
+- stdout and stderr
+- structured status transitions
+- resource usage snapshots
+- metric outputs
+- artifact manifests
 
-### 13.1 arXiv strategy
+### 12.5 Failure capture
 
-The system should maintain a local Postgres-backed arXiv metadata warehouse.
-
-That means:
-
-- store arXiv metadata locally in Postgres
-- keep title and abstract together as the default screening surface
-- preserve `published_at` and `updated_at`
-- support recency-aware ranking and filtering
-- compute embeddings over combined title+abstract text
-- support both broad metadata sync and targeted query expansion
-
-### 13.2 arXiv ingestion modes
-
-Use two ingestion modes:
-
-- a bulk or incremental metadata harvester that keeps the local warehouse fresh
-- targeted metadata lookups when a research cycle needs more coverage in a specific niche
-
-The local warehouse should be the default query surface. Remote calls should top off coverage, not replace the warehouse.
-
-### 13.3 arXiv retrieval policy
-
-Default flow:
-
-1. query local arXiv metadata warehouse
-2. if coverage is insufficient, fetch additional metadata incrementally or through targeted lookup
-3. shortlist using title+abstract together
-4. escalate to HTML or other machine-readable full text when needed
-5. fall back to PDF only when necessary
-
-The system should not brute-force PDFs for a topic.
-
-### 13.4 arXiv data layout
-
-At minimum, preserve these fields:
-
-- arXiv identifier
-- title
-- abstract
-- authors
-- categories
-- primary category
-- published timestamp
-- updated timestamp
-- version information when available
-- comment, DOI, and journal reference when available
-- canonical links for abstract page, HTML page when available, and PDF
-
-### 13.5 Internal corpus support
-
-The first internal corpus pass should support:
-
-- local markdown notes
-- previous run summaries and reports
-- prior postmortems
-- local papers and PDFs already owned by the user
-- optionally selected research repo material
-
-The initial system should value notes, reports, and existing research artifacts before trying to ingest entire code repositories.
-
-### 13.6 Research memory layers
-
-Treat these as distinct retrieval layers:
-
-- arXiv metadata
-- full-text notes or extracted sections
-- internal corpus documents
-- historical run reports
-- failure postmortems
-
-A hit in one layer is not equivalent to a hit in another. The UI and reports should preserve that distinction.
-
-### 13.7 Optional benchmark adapters
-
-Benchmark adapters can exist, but the core lab should not be shaped around one benchmark source.
-
-Kaggle can be treated as one optional benchmark adapter for evaluation problems. It should not define the product architecture.
+The runner must classify failures and persist the classification to `RunRecord` and `FailurePostmortem` generation.
 
 ---
 
-## 14. Research Problem Configuration
+## 13. Verification and Postmortem Pipeline
 
-The lab should be driven by explicit problem configuration, not hidden prompt state.
+### 13.1 Verification stance
 
-A problem config should define:
+Every experiment should be tested and verified.
 
-- problem identifier
-- human objective
-- target metric and directionality
-- source scopes
-- dataset references
-- evaluation harness
-- execution budget
-- hardware expectations
-- reporting expectations
-- approval policy overrides if any
+Minimum verification bundle:
 
-Example shape:
+- baseline comparison
+- historical comparison
+- artifact validation
+- schema and split checks where applicable
+- metric sanity checks
+- promotion or rejection decision
 
-```yaml
-id: vision-noisy-label-robustness-v1
-name: Improve noisy-label robustness for medium-scale image classification
-objective: Improve macro_f1 over the declared baseline without increasing training cost by more than 20 percent.
-sources:
-  internal_corpus:
-    enabled: true
-    tags: [vision, noisy-labels]
-  external:
-    arxiv:
-      enabled: true
-      categories: [cs.CV, cs.LG]
-      max_metadata_results: 500
-      fulltext_budget: 20
-      date_from: 2023-01-01
-execution:
-  gpu: required
-  max_runtime_minutes: 180
-  network: disabled
-  image_strategy: on_demand
-verification:
-  rerun_required: true
-reporting:
-  generate_cycle_summary: true
-model_profile: default_research
-```
+### 13.2 Postmortem generation
 
-This config should be stored in `configs/problems/` and snapshotted into the research cycle at creation time.
+Every failed or rejected run should generate a structured postmortem with fields such as:
 
-### 14.1 Dataset and harness handling
+- failure type
+- likely root cause
+- evidence observed
+- what was learned
+- whether the hypothesis should be revised, searched again, or abandoned
+- suggested next actions
 
-The ML lab should treat datasets and evaluation harnesses as first-class runtime inputs.
+### 13.3 Feedback loops
 
-That means:
+Verification and postmortems should feed back into:
 
-- dataset files live outside the repo under the configurable local data root or another declared path
-- each dataset reference should have a stable identifier and a recorded version, hash, or fingerprint when practical
-- evaluation harness code lives in the repo and is versioned with the rest of the system
-- every `RunRecord` should preserve the dataset reference and harness version it used
-
-The experiment runner should mount datasets read-only where possible and should never assume that datasets belong in the git worktree.
+- hypothesis ranking
+- literature re-querying
+- skill recommendations
+- protocol revisions
 
 ---
 
-## 15. Execution Backplane and Sandboxing
+## 14. UI and Report Rendering
 
-### 15.1 Execution backplane choice
+### 14.1 Phase-1 UI views
 
-Use Docker Engine as the default execution backplane for the MVP.
+The first UI should include:
+
+- cycle list and cycle detail
+- event timeline
+- source and paper shortlist view
+- hypothesis and experiment queue view
+- active run telemetry view
+- reports and postmortems view
+- skill catalog and usage view
+- approvals panel
+
+### 14.2 Report rendering
+
+Reports should be stored as Markdown and rendered to HTML in the UI.
 
 Why this is the default:
 
-- it is widely supported locally
-- GPU passthrough is practical with NVIDIA tooling
-- isolated containers are a good baseline for untrusted generated code
-- it pairs well with git worktrees and mounted artifact paths
+- markdown is easy to diff and generate
+- rendered HTML is readable for users
+- the same artifact is useful for coding agents and humans
 
-Podman can remain a later compatibility target, not the canonical first path.
+### 14.3 Artifact access
 
-### 15.2 GPU support
-
-GPU-capable experiment execution is a hard requirement for the ML lab.
-
-That means:
-
-- the execution runner must be able to request GPU access for a run
-- GPU visibility should be controlled by the run spec
-- the runtime should record whether a run used GPU resources and which device profile was requested
-
-### 15.3 Workspace pattern
-
-Each run should execute from its own git worktree.
-
-Each workspace should preserve:
-
-- parent commit
-- generated patch or diff
-- selected config files
-- runtime image identifier
-- run id
-
-The main working branch should never be mutated by an experiment run.
-
-### 15.4 Base image strategy
-
-Use a mixed strategy:
-
-- maintain a small number of reusable base images for common ML environments
-- allow most task-specific images to be built on demand from problem config and experiment needs
-
-This matches the current product direction better than trying to pre-build everything.
-
-### 15.5 Image policy
-
-Base images should be defined in config, versioned, and identifiable in `RunRecord`.
-
-At minimum, record:
-
-- image name
-- image digest or immutable identifier
-- CUDA or accelerator expectations when relevant
-- key package set
-
-### 15.6 Container policy defaults
-
-Default run container behavior:
-
-- network disabled
-- dataset mounts read-only where possible
-- workspace mount read-write
-- artifact output mount writeable
-- CPU, memory, and runtime limits enforced
-- no secrets injected unless explicitly required
-- stdout and stderr captured
-- exit code captured
-
-### 15.7 Telemetry from runs
-
-The execution runner should stream:
-
-- phase or step name if available
-- log tail
-- exit status
-- resource usage summary
-- heartbeat
-- artifact update notifications
-
-SSE is sufficient for the first UI pass.
+The UI should link to logs, patches, report bundles, and relevant artifacts through API-served metadata, not direct filesystem assumptions.
 
 ---
 
-## 16. Verification and Failure Memory
+## 15. Config and Secrets
 
-### 16.1 Verification requirement
+### 15.1 Config loading
 
-Every experiment should be tested.
+Use:
 
-Verification should not be reserved only for top results.
-
-At minimum, each completed run should produce:
-
-- baseline comparison
-- metric sanity check
-- artifact presence check
-- harness validity check
-- verification summary
-
-### 16.2 Structured failure memory
-
-When a run fails or is rejected, the system should create a `FailurePostmortem` record.
-
-That record should include as much structure as practical, including:
-
-- failure class
-- failure stage
-- root cause hypothesis
-- relevant log references
-- impacted files or components
-- whether the hypothesis changed
-- whether new literature search is recommended
-- recommended next action
-
-### 16.3 LLM-assisted postmortem
-
-The agent may help write and structure the postmortem, but the final record should preserve deterministic evidence such as:
-
-- error type
-- exit code
-- log excerpts
-- resource usage
-- missing artifacts
-- violated assumptions
-
-### 16.4 Historical comparison
-
-Verification and reporting should compare new results against:
-
-- the declared current baseline for the problem
-- prior internal runs for the same or related problem
-- previously rejected approaches when relevant
-
-This historical comparison is part of the product and should not be left to human memory.
-
----
-
-## 17. Reporting and Human Readability
-
-### 17.1 Report formats
-
-The first report layer should emit:
-
-- markdown source
-- rendered HTML for UI viewing
-
-This gives us:
-
-- easy diffability
-- inspectable artifacts
-- easy export
-- human-readable in-app viewing
-
-### 17.2 Required report types
-
-At minimum, support:
-
-- literature screening summary
-- shortlisted paper report
-- evidence summary
-- hypothesis review packet
-- experiment run summary
-- verification report
-- failure postmortem
-- cycle summary
-
-### 17.3 UI viewing requirement
-
-The web UI must render markdown reports so a user is not forced to read raw markdown files.
-
-Raw markdown should still be available for export and version control.
-
----
-
-## 18. Frontend Implementation Scope
-
-### 18.1 Phase-1 pages
-
-The first UI should include at least:
-
-- research cycles list
-- research cycle detail page
-- literature triage view
-- hypothesis portfolio view
-- runs and telemetry view
-- reports and postmortems view
-- approvals and controls view
-
-### 18.2 Interaction model
-
-The UI should support:
-
-- creating a new research cycle
-- viewing progress by phase
-- browsing events in time order
-- inspecting the current shortlist and why items were escalated
-- monitoring active runs
-- cancelling or pausing runs
-- approving or rejecting gated actions
-- exporting reports
-
-### 18.3 UI philosophy
-
-The UI is a control surface, not a decoration layer.
-
-If a human cannot tell what the lab is doing, why it is doing it, and how to intervene, the product is not ready.
-
----
-
-## 19. Configuration and Secrets
-
-### 19.1 Config sources
-
-Configuration should come from two sources:
-
-- versioned config files in `configs/`
+- checked-in YAML config for default profiles
 - environment variables for secrets and machine-specific overrides
+- optional per-user local override files ignored by git
 
-### 19.2 Settings loader
+### 15.2 Important config domains
 
-Use a typed settings layer based on Pydantic settings or an equivalent pattern.
+- database
+- data root
+- model providers
+- skill discovery paths
+- problem profiles
+- policy thresholds
+- execution profiles
+- telemetry settings
+- orchestrator token scopes
 
-### 19.3 Core environment variables
+### 15.3 Example environment variables
 
-At minimum, expect variables for:
-
-- environment name
-- Postgres connection
-- local data root
-- enabled model providers
-- provider API keys when used
-- local model endpoint URLs when used
-- container runtime configuration
-- optional default GPU policy
-
-### 19.4 Secret handling stance
-
-For local development:
-
-- use `.env` files excluded from source control
-- do not store secrets in the database
-- do not mount secrets into experiment containers unless explicitly needed
-
-A more formal secret manager can wait until later.
-
----
-
-## 20. Coding Standards
-
-### 20.1 Backend code standards
-
-- Prefer typed Python throughout.
-- Use Pydantic models for boundary schemas.
-- Keep SQLAlchemy models and domain schemas separate.
-- Avoid passing untyped dicts across subsystem boundaries.
-- Make operator inputs and outputs explicit and serializable.
-- Make state transitions explicit in code, not implicit in prompt text.
-- Keep policy logic in code and config, not in prompts.
-
-### 20.2 Database standards
-
-- Every schema change must go through migrations.
-- Every major entity should have created/updated timestamps.
-- Domain events should be append-only.
-- Long text blobs should be allowed where useful, but core searchable attributes should still be normalized.
-
-### 20.3 Prompt and model standards
-
-- Prompts are versioned assets.
-- Model routing is config-driven.
-- Every material generation call should be traceable.
-- Context packs must record their source references.
-
-### 20.4 Frontend standards
-
-- Keep components small and state ownership obvious.
-- Prefer server-derived truth over duplicated local state.
-- Treat the UI as an inspector and controller of durable state.
-
-### 20.5 Git standards
-
-- Keep the main branch human-owned.
-- Experiments operate in worktrees.
-- Generated code diffs should be preserved as artifacts.
-- Accepted code changes should be reviewed before merging into long-lived branches.
+```text
+LAB_ENV=dev
+LAB_DB_URL=postgresql+psycopg://...
+LAB_DATA_ROOT=/path/to/data
+LAB_MODEL_CONFIG=/path/to/models.yaml
+LAB_SKILL_PATHS=/repo/skills:/user/skills
+LAB_LOCAL_MODEL_BASE_URL=http://localhost:11434
+LAB_API_TOKEN=...
+LAB_ENABLE_GPU=true
+```
 
 ---
 
-## 21. Testing Strategy
+## 16. Testing Strategy
 
-### 21.1 Testing layers
+### 16.1 Unit tests
 
-The system should have four testing layers:
+Cover:
 
-1. unit tests for pure domain logic
-2. integration tests for storage, retrieval, and queue behavior
-3. execution tests for sandbox and artifact handling
-4. end-to-end smoke tests for the local vertical slice
+- state transitions
+- skill parsing and validation
+- policy checks
+- retrieval scoring helpers
+- API schema models
 
-### 21.2 Backend testing tools
+### 16.2 Integration tests
 
-Use:
+Cover:
 
-- `pytest`
-- `testcontainers` for Postgres and container-dependent integration tests
-- fixtures for sample research cycles, paper metadata, and run artifacts
+- worker claiming jobs from Postgres
+- event streaming
+- skill resolution and binding
+- arXiv metadata retrieval path
+- execution runner contract
+- verification pipeline
 
-### 21.3 Frontend testing tools
+### 16.3 End-to-end tests
 
-Use:
+Cover:
 
-- `vitest` for component and utility tests
-- Playwright for a very small number of end-to-end UI tests
+- create cycle -> literature triage -> protocol -> run -> verification -> report
+- orchestrator client end-to-end control flow
+- custom skill load and execution
 
-### 21.4 CI stance
+### 16.4 Fixtures
 
-A basic CI pipeline should run:
+Create reusable fixtures for:
 
-- lint
-- type check
-- unit tests
-- CPU-only integration smoke tests
-
-GPU execution tests can run manually or on a self-hosted runner later.
-
----
-
-## 22. Logging, Telemetry, and Observability
-
-### 22.1 Logging
-
-Use structured logs throughout.
-
-Every log line that matters should carry:
-
-- research cycle id
-- operator id or run id
-- job id when relevant
-- severity
-- event type
-
-### 22.2 Domain events
-
-The system should treat domain events as the primary explainability timeline.
-
-Logs help engineering. Domain events help users and reports.
-
-### 22.3 Metrics stance
-
-The MVP does not need a full Prometheus/Grafana stack.
-
-It does need:
-
-- job counts by status
-- active runs
-- average phase timings
-- failure class counts
-- verification outcomes
-
-These can be derived from Postgres and surfaced in the UI first.
-
-### 22.4 Telemetry transport
-
-Use SSE first for live updates to the UI.
-
-WebSockets can wait unless we prove we need them.
+- small literature sets
+- internal reports and postmortems
+- fake runs and metrics
+- sample `skill.md` packages
+- API tokens and scope models
 
 ---
 
-## 23. Security and Execution Safety
+## 17. Coding Standards
 
-### 23.1 Untrusted code stance
-
-Generated or modified experiment code must be treated as untrusted.
-
-### 23.2 Default protections
-
-- container isolation required
-- network disabled by default
-- dataset mounts read-only where possible
-- resource ceilings enforced
-- secrets not passed into runs by default
-- no direct execution on the host shell
-
-### 23.3 Gated exceptions
-
-The following should require an explicit approval or policy allowance:
-
-- network-enabled experiment runs
-- unusually large compute requests
-- external writes or submissions
-- full-text budget overrides beyond policy
+- prefer typed interfaces and explicit schemas over dynamic dict passing
+- keep prompts versioned and stored as assets
+- keep skills repo-visible and testable
+- keep deterministic policy logic in Python and config, not prompt prose
+- record all external side effects through durable events
+- do not let the web UI become the only way to operate the system
 
 ---
 
-## 24. Build and Startup Workflow
+## 18. First Build Sequence
 
-### 24.1 Default local boot sequence
+The first implementation sequence should be:
 
-The default development flow should look like this:
-
-1. start Postgres
-2. run migrations
-3. start API locally
-4. start worker locally
-5. start frontend locally
-6. optionally start local model endpoint
-
-### 24.2 Developer commands
-
-The repo should expose simple commands for:
-
-- install backend deps
-- install frontend deps
-- run migrations
-- start API
-- start worker
-- start web UI
-- run tests
-- seed sample data
-- import corpus materials
-
-Use either a small `Makefile` or clearly named scripts, but keep the command surface obvious.
-
-### 24.3 Deployment stance
-
-There is no cloud deployment requirement for the first milestone.
-
-The deployable unit for the MVP is a single local machine.
-
-A packaged local demo stack can come later, but should follow the same architecture rather than inventing a second one.
+1. Postgres + migrations + base schemas
+2. FastAPI control plane + OpenAPI docs
+3. worker runtime + job queue + event stream
+4. minimal web UI
+5. skill loader + validation + catalog endpoints
+6. research cycle creation and retrieval pipeline
+7. arXiv metadata warehouse integration
+8. title + abstract triage operators and reports
+9. protocol compiler
+10. execution runner and telemetry
+11. verification and postmortems
+12. orchestrator SDK and compatibility tests
 
 ---
 
-## 25. Deferred Decisions
+## 19. Deferred Technical Choices
 
-The following decisions should remain open for now:
+The following are intentionally deferred until after the MVP loop works:
 
-- exact hosted model vendors
-- exact local model server product
-- exact set of benchmark adapters beyond the first research problems
-- whether verification will eventually use additional deterministic static-analysis tools
-- whether experiment telemetry later needs WebSockets instead of SSE
-- whether artifact storage later moves to object storage
-- whether remote workers are needed after the local lab is stable
-
-These are important, but they should not block scaffolding the MVP.
-
----
-
-## 26. Immediate Next Engineering Moves
-
-The next engineering tasks implied by this document are:
-
-1. scaffold the monorepo
-2. stand up Postgres with `pgvector`
-3. create the core schema and migration baseline
-4. implement the research cycle API and DB-backed job queue
-5. build the worker shell and operator contract
-6. build the phase-1 web shell with SSE event streaming
-7. implement the arXiv metadata warehouse and title+abstract triage path
-8. implement the git worktree + Docker execution runner with GPU support
-9. implement verification and postmortem records
-10. wire report generation to markdown plus rendered HTML
+- Redis or separate queue infra
+- workflow engines like Temporal
+- Elasticsearch/OpenSearch
+- graph database
+- WebSocket as the primary stream protocol
+- MCP facade on top of the orchestrator API
+- object storage for artifacts
+- remote worker pools
+- signed third-party skill marketplace mechanics
 
 ---
 
-## 27. Decision Summary
+## 20. Recommended Immediate Next Step
 
-The first implementation should be built around this concrete stack:
+Turn this into an initial repository bootstrap with:
 
-- Python 3.12 + `uv`
-- FastAPI + Pydantic + SQLAlchemy + Alembic
-- React + TypeScript + Vite + Tailwind
-- PostgreSQL + `pgvector`
-- DB-backed queue
-- Docker Engine + NVIDIA Container Toolkit for experiment execution
-- git worktrees for per-run isolation
-- local filesystem artifact store under `MLLAB_HOME`
-- provider-agnostic model gateway with both hosted and local backends
-- markdown reports rendered in the web UI
-- research-problem configs as versioned YAML
-
-This is the technical baseline for the local ML laboratory MVP.
+- database schema stubs
+- API resource skeletons
+- skill package template
+- first two literature skills
+- orchestrator token and event-stream scaffolding
