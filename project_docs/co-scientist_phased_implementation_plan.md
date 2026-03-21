@@ -1,21 +1,10 @@
 # Phased Implementation Plan
 
-**ML Laboratory Co-Scientist · delivery roadmap for the local ML laboratory MVP**
-
-**Role**  
-The Planner
-
-**Product**  
-ML Laboratory Co-Scientist
-
-**Status**  
-Working Draft
-
-**Scope**  
-Local small-scale ML laboratory MVP
-
-**Last Updated**  
-2026-03-21
+**Product:** ML Laboratory Co-Scientist  
+**Role:** Planner  
+**Status:** Working Draft v3  
+**Scope:** Local small-scale ML laboratory MVP  
+**Last Updated:** 2026-03-21
 
 ---
 
@@ -23,15 +12,15 @@ Local small-scale ML laboratory MVP
 
 This document translates the current product and architecture direction into a practical build sequence.
 
-It is meant to answer five questions clearly:
+It answers five questions:
 
 1. What do we build first?
 2. What can wait?
 3. What should each phase prove before we move on?
 4. Which workstreams can move in parallel?
-5. What does “MVP done” actually mean for the first ML laboratory?
+5. How do `skill.md` support and the orchestrator API land in the roadmap instead of being vague future add-ons?
 
-This document is downstream of `system_patterns.md` and should guide the first implementation passes before we lock concrete stack details in `tech_context.md`.
+This plan is downstream of `prd.md` and `system_patterns.md` and should guide execution before we tighten package-level details in `tech_context.md`.
 
 ---
 
@@ -41,15 +30,17 @@ This implementation plan assumes the following product decisions are already in 
 
 - The system is **research-problem-first**, not competition-first.
 - The first release is an **ML laboratory**, not a general-purpose science platform.
-- The system should work against **both internal and external sources**.
-- arXiv discovery is **metadata-first**, with **title + abstract reviewed together** before any deeper read.
-- arXiv escalation should follow **metadata -> HTML full text when possible -> PDF only when necessary**.
-- The system should be able to run **automated low-risk experiments** without requiring a human to approve every run.
+- The system works against **both internal and external sources**.
+- arXiv discovery is **metadata-first**, with **title + abstract reviewed together** before any deeper read. (See kaggle-arxiv-example.txt and arxiv-harvester example)
+- arXiv escalation follows **metadata -> HTML full text when possible -> PDF only when necessary**.
+- The system should run **automated low-risk experiments** without requiring a human to approve every run.
 - The user still needs a **live control surface** for progress, telemetry, intervention, and steering.
 - The execution layer must support **GPU-capable isolated workloads**.
 - Different workflow stages may use **different models** through a common gateway.
-- Every experiment should produce a **result record**, a **verification record**, and if it fails, a **structured postmortem**.
-- Historical internal work should matter. The system should compare new outputs to **prior internal runs and research memory**, not just the current baseline.
+- Every experiment should produce a **run record**, a **verification record**, and if it fails, a **structured postmortem**.
+- Historical internal work matters. The system should compare new outputs to **prior internal runs and research memory**, not just the current baseline.
+- Modular behavior must be supported through **`skill.md` packages**.
+- External orchestrators must be supported through a **stable control-plane API and telemetry stream**.
 
 ---
 
@@ -57,11 +48,11 @@ This implementation plan assumes the following product decisions are already in 
 
 ### 3.1 Build vertical slices, not disconnected subsystems
 
-Each phase should end with a real loop that a human can use, inspect, and critique. We should avoid spending multiple phases building invisible infrastructure that cannot yet test the product truth.
+Each phase should end with a real loop that a human or orchestrator can use, inspect, and critique.
 
 ### 3.2 Stabilize the artifact model early
 
-The most important early decision is not the queue library or UI framework. It is the durable shape of the research record.
+The most important early decision is the durable shape of the research record.
 
 The following entities should be treated as first-class from the start:
 
@@ -75,12 +66,16 @@ The following entities should be treated as first-class from the start:
 - `VerificationReport`
 - `FailurePostmortem`
 - `ReportBundle`
+- `SkillDefinition`
+- `SkillBinding`
+- `SkillExecutionRecord`
+- `OrchestratorClient`
 - `ApprovalEvent`
 - `DomainEvent`
 
 ### 3.3 Keep context scoped to the task
 
-The system should not give every model every document, every prompt, and every event. Context assembly should be phase-specific and operator-specific.
+The system should not give every model every document, every prompt, and every event. Context assembly should be phase-specific, operator-specific, and skill-aware.
 
 ### 3.4 Prefer simple durable infrastructure in v1
 
@@ -91,17 +86,11 @@ The first version should optimize for:
 - auditable execution
 - easy restart and resume
 - low operator burden
+- headless API access
 
-It should not optimize for:
+### 3.5 Reports are part of the product
 
-- multi-tenant scale
-- distributed workers
-- complex workflow orchestration products
-- overly specialized infrastructure too early
-
-### 3.5 Reports are part of the product, not a final garnish
-
-Every major phase should emit something readable by a human:
+Every major phase should emit something readable:
 
 - literature screening report
 - evidence summary
@@ -111,33 +100,37 @@ Every major phase should emit something readable by a human:
 - failure postmortem
 - cycle summary
 
+### 3.6 Skills and API support start early
+
+Skill support and orchestrator access should not be backfilled late. They affect state shape, event design, security boundaries, and operator contracts from day one.
+
 ---
 
 ## 4. Phase Overview
 
 The roadmap is organized into six phases.
 
-### Phase 0 — Foundation and Local Runtime
-Create the repo skeleton, canonical schemas, control plane, worker runtime, initial dashboard shell, model gateway, and durable state.
+### Phase 0 — Foundation, Shared State, Skill Skeleton, and API Spine
+Create the repo skeleton, canonical schemas, control plane, worker runtime, initial dashboard shell, skill loader, event stream, and orchestrator-facing API foundation.
 
-### Phase 1 — Research Intake and Source Retrieval
-Create the first usable research intake loop: scoped problem -> internal/external retrieval -> title/abstract triage -> shortlist -> selective full-text escalation.
+### Phase 1 — Research Intake and Literature Triage
+Create the first useful research loop: scoped problem -> internal/external retrieval -> title/abstract screening -> shortlist -> selective HTML/PDF escalation.
 
-### Phase 2 — Literature Intelligence and Protocolization
-Turn screened sources into evidence, hypotheses, critiques, and executable experiment plans.
+### Phase 2 — Evidence, Hypotheses, Protocols, and Phase Skills
+Turn screened sources into evidence, hypotheses, critiques, and executable experiment plans. Expand the first-party skill library.
 
-### Phase 3 — Execution Lab MVP
-Run experiments in isolated GPU-capable sandboxes, stream telemetry live, and allow the user to intervene without breaking the workflow.
+### Phase 3 — Execution Lab MVP and Live Control
+Run experiments in isolated GPU-capable sandboxes, stream telemetry live, and allow both humans and orchestrators to intervene safely.
 
 ### Phase 4 — Verification, Historical Comparison, and Failure Memory
-Verify every experiment, compare results against internal history, and turn failures into reusable memory.
+Verify every experiment, compare against internal history, and turn failures into reusable memory.
 
-### Phase 5 — Pilot Evaluation and Hardening
-Exercise the product end-to-end on a small public benchmark set plus internal research problems, harden the loop, and prepare the next architecture pass.
+### Phase 5 — Pilot Hardening and Ecosystem Readiness
+Exercise the product end-to-end on a small public benchmark set plus internal research problems, harden the loop, and validate skill/API interoperability.
 
 ---
 
-## 5. Phase 0 — Foundation and Local Runtime
+## 5. Phase 0 — Foundation, Shared State, Skill Skeleton, and API Spine
 
 ### 5.1 Objective
 
@@ -152,22 +145,16 @@ This phase creates the product backbone:
 - operator contract
 - model gateway
 - event stream
-- minimal dashboard shell
+- initial dashboard shell
+- `skill.md` discovery and validation
+- versioned orchestrator API skeleton
 
 ### 5.2 Work to implement
 
 #### A. Repository and service skeleton
 
-- Create the monorepo structure for API, worker, frontend, CLI, shared schemas, adapters, prompts, and tests.
-- Define the first bounded contexts in code:
-  - control plane
-  - research memory
-  - retrieval
-  - literature intelligence
-  - protocol compiler
-  - execution
-  - verification
-  - reporting
+- Create the monorepo structure for API, worker, web, CLI, shared schemas, adapters, skills, prompts, and tests.
+- Define the first bounded contexts in code.
 - Add local bootstrapping for the whole stack.
 
 #### B. Durable state
@@ -175,7 +162,7 @@ This phase creates the product backbone:
 - Stand up PostgreSQL as the system of record.
 - Enable `pgvector`.
 - Create migration tooling.
-- Add canonical tables for research cycles, jobs, events, papers, evidence, hypotheses, experiments, runs, verifications, reports, and approvals.
+- Add canonical tables for cycles, jobs, events, reports, skills, orchestrator clients, approvals, and lineage.
 
 #### C. Shared state model
 
@@ -192,363 +179,267 @@ This phase creates the product backbone:
   - browsing recent events
   - seeing active jobs
   - opening generated reports
-- Keep the UI intentionally thin but real from phase 0 onward.
+  - observing live telemetry
 
 #### E. Telemetry plumbing
 
-- Add worker-to-UI streaming for:
+- Add worker-to-UI and worker-to-API streaming for:
   - active operator
   - current phase
   - job status
   - run status
   - recent log events
-- Add pause, cancel, and resume hooks even if the first version is limited.
+- Add pause, cancel, and resume hooks.
 
 #### F. Model gateway
 
 - Create a common adapter for LLM calls.
-- Create a common adapter for embeddings. - Recommend Sentence Transformers for maximum portability
+- Create a common adapter for embeddings.
 - Support both hosted and local models from day one.
-- Support role-based model routing from day one, even if the first routing table is simple.
+- Support role-based model routing from day one.
 
-#### G. Dev ergonomics
+#### G. Skill foundation
 
-- Add linting, formatting, static checks, and test scaffolding.
-- Add local fixtures and sample research cycles.
-- Add a small seed corpus for manual testing.
+- Define the `skill.md` package contract.
+- Build skill discovery from configured directories.
+- Validate skill metadata and basic structure.
+- Persist `SkillDefinition` and enable/disable state.
+- Expose a skill catalog view in UI and API.
+
+#### H. Orchestrator API foundation
+
+- Define versioned resource ids and API schemas.
+- Expose endpoints for cycle creation, cycle state, event streaming, and health.
+- Add API token and scope model for external orchestrators.
+- Record orchestrator identity in events.
 
 ### 5.3 Deliverables
 
-- Local stack boot script
-- Monorepo structure
-- Database migrations
-- Shared schema package
-- Initial dashboard shell
-- Operator runtime skeleton
-- Event stream and audit trail
-- Model gateway interface
+- local stack boot script
+- monorepo structure
+- database migrations
+- shared schema package
+- initial dashboard shell
+- operator runtime skeleton
+- event stream and audit trail
+- model gateway interface
+- skill discovery/validation skeleton
+- orchestrator API skeleton with OpenAPI docs
 
 ### 5.4 Exit criteria
 
 Phase 0 is done when:
 
-- A user can create a research cycle from the UI or CLI.
-- The cycle is persisted and visible in the dashboard.
-- A worker can claim a job, emit events, and update durable state.
-- The UI can stream state changes without a manual refresh.
-- One hosted model and one local model can both be invoked through the same gateway.
-- The system can pause and resume a simple operator flow.
+- a user can create a research cycle from UI or CLI
+- the cycle is persisted and visible in the dashboard
+- a worker can claim a job, emit events, and update durable state
+- the UI can stream state changes without manual refresh
+- one hosted model and one local model can both be invoked through the same gateway
+- the system can discover at least one first-party skill and expose it via UI/API
+- an external client can create a cycle and subscribe to the event stream through the API
 
 ### 5.5 Out of scope
 
-- Real literature intelligence
-- Real experiment execution
-- Verification logic
-- Strong benchmark support
+- real literature intelligence
+- real experiment execution
+- strong verification logic
+- rich skill hooks
 
 ---
 
-## 6. Phase 1 — Research Intake and Source Retrieval
+## 6. Phase 1 — Research Intake and Literature Triage
 
 ### 6.1 Objective
 
 Deliver the first genuinely useful research-assistant loop:
 
-**scoped problem -> source retrieval -> title/abstract screening -> shortlist -> selective full-text escalation**
+```text
+scoped problem
+-> source retrieval
+-> title + abstract screening
+-> shortlist
+-> selective HTML/PDF escalation
+-> literature report
+```
 
 ### 6.2 Work to implement
 
-#### A. Research problem intake
+#### A. Research intake
 
-- Create the `ResearchCharter` flow.
-- Let the user define:
-  - research question
-  - task type
-  - success metric
-  - compute budget
-  - novelty expectations
-  - stop conditions
-  - source scope
-- Support updates to the charter as the cycle evolves.
+- Create `ResearchCharter` workflows for scoped ML problems.
+- Add problem templates and source-scope selection.
+- Support problem notes from both humans and orchestrators.
 
-#### B. Internal source registration
+#### B. Internal and external source adapters
 
-- Add internal corpus ingestion for:
-  - notes
-  - prior reports
-  - papers
-  - experiment summaries
-  - run logs
-  - selected code references if needed later
-- Track provenance, timestamps, and source type.
+- Add internal corpus adapter.
+- Add arXiv metadata warehouse integration. (See kaggle-arxiv-example.txt and arxiv-harvester example)
+- Add targeted external retrieval adapter where needed.
+- Add metadata dedupe across sources.
 
-#### C. arXiv metadata layer
+#### C. Literature triage
 
-- Build the arXiv metadata ingest path into PostgreSQL. - See the m-chimiste-arxiv-harvester-example for metadata scraping.  Also see kaggle-arxiv-example for a detailed way to download *all* of arxiv's metadata in a single go. Harvester is for incremental updates and kaggle is for initial population.
-- Support three retrieval modes:
-  - bulk metadata bootstrap
-  - incremental metadata harvesting
-  - on-demand query fallback
-- Store enough structure for lexical search, vector search, date filtering, and source linking.
+- Implement title + abstract joint scoring.
+- Track shortlist decisions and reasons.
+- Implement HTML-first escalation and PDF fallback.
+- Capture deeper-read rationale.
 
-#### D. Retrieval and ranking
+#### D. Reporting
 
-- Implement hybrid search across internal and external sources.
-- Search title + abstract together, not separately.
-- Rank results using:
-  - lexical similarity
-  - semantic similarity
-  - recency
-  - source relevance
-  - novelty distance from internal history
-- Deduplicate overlapping records.
+- Generate a readable literature screening packet.
+- Surface shortlist reasoning in the UI.
+- Make reports retrievable over API.
 
-#### E. Screening and escalation funnel
+#### E. Skills
 
-- Add paper lifecycle states:
-  - retrieved
-  - screened
-  - shortlisted
-  - html_fetched
-  - pdf_fetched
-  - evidence_extracted
-- Require an escalation reason before deeper fetch.
-- Prefer HTML full text before PDF when available.
-- Track why a paper or document was shortlisted.
+- Add first-party literature skills such as:
+  - problem scoping support
+  - title/abstract triage
+  - shortlist critique
+  - escalation rationale drafting
 
-#### F. User-facing screening report
+#### F. API
 
-- Create a human-readable screening report that shows:
-  - what was searched
-  - what was found
-  - what was shortlisted
-  - why items were rejected or escalated
-  - which sources came from internal memory vs external literature
+- Expose source retrieval status and literature reports over API.
+- Stream literature triage events in real time.
 
 ### 6.3 Deliverables
 
-- `ResearchCharter` intake flow
-- Internal corpus adapter
-- arXiv metadata adapter
-- Search and rerank pipeline
-- Screening and shortlist UI
-- Escalation policy for HTML/PDF fetches
-- Literature screening report
+- research charter UI/API flow
+- source adapters for internal corpus and arXiv metadata (See kaggle-arxiv-example.txt and arxiv-harvester example)
+- title/abstract triage operator
+- shortlist report bundle
+- first literature skill set
+- API endpoints for source state and reports
 
 ### 6.4 Exit criteria
 
 Phase 1 is done when:
 
-- A user can define a research problem and persist it as a charter.
-- The system can retrieve relevant internal and external sources.
-- The system screens title + abstract together and produces a ranked shortlist.
-- Full text is fetched only for shortlisted items with an explicit reason.
-- The user can review a readable screening report in the UI.
-
-### 6.5 Out of scope
-
-- Deep evidence extraction from all shortlisted papers
-- Strong novelty scoring
-- Automatic hypothesis generation
-- Experiment execution
+- a user can define a research problem and run literature intake end to end
+- the system can search internal corpus plus arXiv metadata
+- shortlisted papers show why they were selected
+- deeper reads are recorded with reasons
+- the literature screening report is viewable in the UI and API
+- an orchestrator can monitor triage progress without scraping the UI
 
 ---
 
-## 7. Phase 2 — Literature Intelligence and Protocolization
+## 7. Phase 2 — Evidence, Hypotheses, Protocols, and Phase Skills
 
 ### 7.1 Objective
 
-Convert screened sources into usable research reasoning:
-
-**shortlist -> evidence -> hypothesis portfolio -> critique -> experiment plan**
+Turn screened sources into executable research plans.
 
 ### 7.2 Work to implement
 
 #### A. Evidence extraction
 
-- Add `EvidenceCard` creation from:
-  - metadata-only reads
-  - HTML full text
-  - PDF text when required
-  - internal reports and notes
-- Extract structured evidence types such as:
-  - claim
-  - method
-  - limitation
-  - result
-  - implementation detail
-  - open question
-- Preserve source depth so the system knows whether the evidence came from metadata or full text.
+- turn shortlisted sources into `EvidenceCard`s
+- support conflict and redundancy signals
+- preserve provenance and read depth
 
-#### B. Contradiction and redundancy signals
+#### B. Hypothesis portfolio
 
-- Add similarity and contradiction detection across evidence cards.
-- Detect overlapping methods and repeated claims.
-- Mark likely stale or superseded approaches using date and citation context where available.
+- generate multiple candidate hypotheses
+- critique and rank them
+- store portfolio state and decision rationale
 
-#### C. Hypothesis portfolio
+#### C. Protocol compiler
 
-- Generate multiple candidate hypotheses.
-- Require every hypothesis to cite its supporting evidence.
-- Add a critique pass that scores for:
-  - novelty
-  - likely failure modes
-  - redundancy
-  - implementation feasibility
-  - evaluation risk
+- create `ExperimentSpec`s from approved hypotheses
+- define baseline, controls, metrics, artifacts, stop conditions, and expected outputs
+- reject under-specified ideas
 
-#### D. Protocol compiler
+#### D. Skills
 
-- Convert a selected hypothesis into an `ExperimentSpec`.
-- Require the spec to define:
-  - baseline
-  - variables
-  - controls
-  - success metric
-  - expected artifacts
-  - stop conditions
-  - budget envelope
-  - verification needs
-- Reject under-specified ideas before code generation begins.
+- add first-party skills for:
+  - evidence extraction
+  - novelty critique
+  - protocol drafting
+  - benchmark/problem-specific context shaping
+- add skill tests and examples
 
-#### E. Task-scoped context assembly
+#### E. API
 
-- Build operator-specific context packing.
-- Ensure the ideation model sees different context than the coding or verification model.
-- Version prompt templates and retrieval recipes.
-
-#### F. User-facing evidence and portfolio views
-
-- Add views for:
-  - evidence cards
-  - hypothesis cards
-  - critique summaries
-  - experiment specs
-- Add a readable hypothesis review packet.
+- expose hypothesis cards, experiment specs, and portfolio ranking through the API
+- allow orchestrators to request a hypothesis review or protocol compilation job
 
 ### 7.3 Deliverables
 
-- `EvidenceCard` pipeline
-- Contradiction and redundancy layer
-- Hypothesis generator and reviewer operators
-- `ExperimentSpec` compiler and validator
-- Context assembly rules
-- Hypothesis review report
+- evidence extraction operators
+- hypothesis portfolio manager
+- protocol compiler
+- first protocol and critique skills
+- hypothesis and protocol API resources
 
 ### 7.4 Exit criteria
 
 Phase 2 is done when:
 
-- The system can produce evidence cards from shortlisted sources.
-- The system can generate multiple grounded hypotheses.
-- Each hypothesis can be critiqued and ranked.
-- At least one hypothesis can be converted into a valid `ExperimentSpec`.
-- The user can inspect evidence, critiques, and experiment plans in the UI.
-
-### 7.5 Out of scope
-
-- High-throughput portfolio search
-- Sophisticated theorem-prover-like planning
-- Mature agent self-improvement loops
+- the system can produce evidence cards from shortlisted sources
+- at least three candidate hypotheses can be generated and ranked for a problem
+- the chosen hypothesis compiles into a valid `ExperimentSpec`
+- skills can influence context assembly and outputs in a recorded way
+- an orchestrator can inspect the portfolio and request the next operator step through the API
 
 ---
 
-## 8. Phase 3 — Execution Lab MVP
+## 8. Phase 3 — Execution Lab MVP and Live Control
 
 ### 8.1 Objective
 
-Turn experiment plans into real local runs:
-
-**experiment spec -> isolated workspace -> code change -> sandboxed execution -> artifacts -> live telemetry**
+Run experiments in isolated GPU-capable environments and make the process observable and steerable.
 
 ### 8.2 Work to implement
 
-#### A. Workspace and patch flow
+#### A. Workspace and execution runtime
 
-- Create per-experiment isolated workspaces.
-- Track parent code lineage.
-- Store patches or diffs as first-class artifacts.
-- Make each workspace inspectable and replayable.
+- create per-run git worktrees
+- support base images and on-demand image builds
+- execute runs in sandboxed containers with optional GPU passthrough
+- capture logs, metrics, resource usage, and artifacts
 
-#### B. Execution sandbox
+#### B. Telemetry and controls
 
-- Run generated or modified code inside containers.
-- Support GPU passthrough.
-- Support resource limits for:
-  - runtime
-  - memory
-  - disk
-  - GPU selection if relevant
-- Default to network-off unless explicitly allowed by policy.
+- stream run telemetry to UI and API
+- add pause, cancel, and retry actions
+- show current operator, current run, and queue state
 
-#### C. Preflight and dry run
+#### C. Automation policy
 
-- Add preflight checks for:
-  - config completeness
-  - dataset availability
-  - artifact contract validity
-  - metric parser availability
-  - environment readiness
-  - budget fit
-- Add a lightweight dry-run path for fast feedback before expensive execution.
+- allow low-risk automated experiment execution
+- keep long-running, expensive, or sensitive actions behind policy thresholds
 
-#### D. Automated low-risk execution
+#### D. Skills
 
-- Allow the scheduler to auto-run low-risk experiments within policy bounds.
-- Keep expensive, unusual, or policy-exception runs behind explicit approval.
-- Record why a run was allowed to auto-execute.
+- add coding, experiment repair, and evaluator skills
+- capture skill usage in run lineage
 
-#### E. Live telemetry and intervention
+#### E. API
 
-- Stream logs, metrics, and resource usage to the UI.
-- Let the user:
-  - stop a run
-  - pause queueing
-  - reprioritize experiments
-  - inspect intermediate output
-- Preserve the full run history regardless of outcome.
-
-#### F. Benchmark and task adapters
-
-- Introduce benchmark/task profiles for the first ML problem classes.
-- Keep the product architecture benchmark-agnostic even when initial pilots include public competition datasets.
-- Focus on task structure rather than hardcoding a single benchmark source.
-
-#### G. Run reporting
-
-- Generate a readable run summary for each experiment with:
-  - what changed
-  - what was executed
-  - key metrics
-  - artifacts produced
-  - initial interpretation
+- expose run-control endpoints
+- expose live run telemetry streams
+- let orchestrators pause or cancel allowed runs
 
 ### 8.3 Deliverables
 
-- Workspace manager
-- Patch application flow
-- Containerized execution runner
-- GPU-capable runtime path
-- Preflight and dry-run pipeline
-- Telemetry streaming UI
-- Run summary report
+- execution runner
+- GPU-capable sandbox path
+- run telemetry stream
+- run-control UI
+- run-control API
+- first coding and evaluation skills
 
 ### 8.4 Exit criteria
 
 Phase 3 is done when:
 
-- An approved `ExperimentSpec` can be converted into a real run.
-- The run executes in an isolated containerized environment.
-- GPU-backed runs are supported where needed.
-- The user can watch telemetry live and intervene.
-- Each run produces a durable `RunRecord` and readable run report.
-- Low-risk experiments can execute automatically within policy.
-
-### 8.5 Out of scope
-
-- Distributed compute scheduling
-- Cluster-scale autoscaling
-- Massive benchmark coverage
+- the system can execute a real experiment in an isolated workspace
+- live run telemetry is visible in the UI
+- an allowed external client can monitor and interrupt a run through the API
+- automated low-risk experiments can proceed without manual approval at every step
+- skill usage is visible in run lineage and reports
 
 ---
 
@@ -556,255 +447,179 @@ Phase 3 is done when:
 
 ### 9.1 Objective
 
-Make the lab trustworthy:
-
-**completed run -> verification -> historical comparison -> promotion or rejection -> postmortem**
+Make results credible and reusable.
 
 ### 9.2 Work to implement
 
-#### A. Deterministic verification
+#### A. Verification
 
-- Verify every experiment.
-- Add checks appropriate to the first ML tasks, including:
-  - baseline comparison
-  - metric sanity checks
-  - split and schema validation
-  - artifact presence and parseability
-  - rerun requirement
-- Separate run success from claim success.
+- run deterministic checks for every experiment
+- compare results against current baseline and historical internal work
+- enforce artifact and metric sanity checks
 
-#### B. Historical comparison
+#### B. Failure memory
 
-- Compare current runs to:
-  - current cycle baseline
-  - prior runs in the same cycle
-  - prior runs across the internal lab history
-- Surface whether the result is:
-  - genuinely new
-  - a regression
-  - a repeat of prior work
-  - uncertain or under-validated
+- classify failures
+- create structured `FailurePostmortem` records
+- feed postmortem insights back into retrieval and ranking
 
-#### C. Failure memory
+#### C. Reporting
 
-- Classify failed runs into structured categories.
-- Add `FailurePostmortem` generation with fields such as:
-  - failure type
-  - likely cause
-  - evidence for the diagnosis
-  - whether the failure invalidates the hypothesis or only the implementation
-  - suggested next actions
-- Feed failure memory back into ranking and search.
+- create verification reports and cycle summaries
+- surface historical comparisons clearly
 
-#### D. Promotion logic
+#### D. Skills
 
-- Define what it means for a result to be promoted from “completed run” to “accepted finding.”
-- Require verification to pass before promotion.
-- Keep report generation downstream of the verified state.
+- add postmortem and verification-summary skills
+- let skills suggest follow-up searches or protocol updates based on failures
 
-#### E. Reporting bundle
+#### E. API
 
-- Generate a human-readable verification bundle that explains:
-  - what was tested
-  - what changed versus baseline
-  - what verification checks ran
-  - whether the result is robust, tentative, or failed
-  - what the recommended next step is
+- expose verification reports and postmortems through API
+- allow orchestrators to fetch structured summaries and next-step recommendations
 
 ### 9.3 Deliverables
 
-- Verification service
-- Historical comparison engine
-- Failure classifier
-- `FailurePostmortem` schema and renderer
-- Verification report view
-- Promotion rules
+- verification subsystem
+- postmortem generator
+- historical comparison views
+- verification/report APIs
+- first postmortem/reflection skills
 
 ### 9.4 Exit criteria
 
 Phase 4 is done when:
 
-- Every run automatically produces a verification result.
-- Failed runs produce structured postmortems.
-- Results are compared against historical internal work.
-- Promotion only happens after verification.
-- The user can inspect verification status and failure reasoning in the UI.
-
-### 9.5 Out of scope
-
-- Fully automatic publication workflows
-- Broad multi-domain scientific verification packs
+- every run results in a verification outcome
+- failed or rejected runs generate structured postmortems
+- the system can compare a new run to prior internal work
+- reports make it obvious whether a result is robust, tentative, or rejected
+- an orchestrator can monitor verification outcomes and retrieve report bundles over API
 
 ---
 
-## 10. Phase 5 — Pilot Evaluation and Hardening
+## 10. Phase 5 — Pilot Hardening and Ecosystem Readiness
 
 ### 10.1 Objective
 
-Prove the product on a small but meaningful set of research problems.
-
-This phase validates the full loop against:
-
-- a small public benchmark set for ML experimentation
-- internal research problems using the existing corpus
-- a few different task archetypes, not just one style of benchmark
+Validate the full loop on real workloads and prepare for broader use.
 
 ### 10.2 Work to implement
 
-#### A. Pilot benchmark pack
+#### A. Pilot exercises
 
-Create a compact pilot suite that covers at least:
+- run the product on a small public benchmark set, including selected Kaggle competitions where appropriate
+- run the product on internal research problems
+- evaluate literature triage quality against arXiv metadata and internal corpus tasks
 
-- one tabular or structured prediction problem
-- one text or retrieval-oriented problem
-- one additional ML task archetype if local compute allows
-- at least one internal research problem tied to the existing corpus
+#### B. Hardening
 
-Public benchmarks may include competition-style datasets, but the system should be evaluated as a research co-scientist, not as a leaderboard optimization bot.
+- improve recovery behavior and resume flows
+- improve report quality and timeline views
+- tighten policy defaults and skill validation
+- add API contract and compatibility tests
 
-#### B. End-to-end runs
+#### C. Skill ecosystem readiness
 
-- Run full research cycles from charter through verification.
-- Capture operator cost, model cost, runtime cost, and human time saved.
-- Measure how often the literature funnel avoids unnecessary full-text reads.
+- publish a small first-party skill library
+- add sample custom skill packages
+- document skill authoring and testing
 
-#### C. Product hardening
+#### D. Orchestrator readiness
 
-- Improve reliability of retries and resume behavior.
-- Improve UI clarity for events, reports, and intervention.
-- Tighten policy defaults and budgets.
-- Improve prompt versioning and experiment traceability.
-
-#### D. Evaluation and review
-
-- Evaluate:
-  - quality of shortlisted literature
-  - quality of evidence extraction
-  - plausibility of hypotheses
-  - execution success rate
-  - verification pass rate
-  - usefulness of failure postmortems
-  - overall usefulness to a human researcher
-- Identify what should move into the next architecture and what should stay deferred.
+- provide a simple client SDK
+- test end-to-end usage from an external orchestrator harness
+- validate monitoring, intervention, and report retrieval workflows
 
 ### 10.3 Deliverables
 
-- Pilot benchmark suite
-- Pilot evaluation dashboard
-- End-to-end cycle reports
-- Reliability fixes and operator tuning
-- MVP review memo
+- pilot evaluation results
+- hardened policy and recovery behaviors
+- first-party skill pack set
+- simple orchestrator client SDK
+- updated docs and examples
 
 ### 10.4 Exit criteria
 
 Phase 5 is done when:
 
-- The product can complete end-to-end cycles without manual database intervention.
-- The title/abstract-first funnel works in practice and avoids brute-force PDF ingestion.
-- The system can execute and verify low-risk ML experiments locally.
-- The user can inspect telemetry, reports, and postmortems in a usable UI.
-- At least one internal research cycle produces a useful, credible report bundle.
-- We are ready to lock the next version of `tech_context.md` and choose which scale-up work actually matters.
+- the full cycle works across at least a few representative ML problems
+- reports are credible enough for day-to-day researcher use
+- skills can be added or modified without changing the shared core
+- an external orchestrator can drive a full cycle through API with observability and control
+- the system is ready for the next architecture pass rather than still behaving like a prototype demo
 
 ---
 
 ## 11. Cross-Cutting Workstreams
 
-These workstreams begin early and continue through multiple phases.
+These workstreams cut across every phase.
 
-### 11.1 Model strategy and prompt assets
+### 11.1 Model routing and context management
 
-- role-based model routing
-- prompt versioning
-- evaluation of model/task fit
-- cost tracking by operator
-- fallback behavior if a provider or local runtime fails
+- role-based routing
+- local plus hosted model support
+- context budgeting and skill-aware assembly
 
-### 11.2 Observability
+### 11.2 Policy and approval model
 
-- structured logs
-- operator traces
-- run telemetry
-- error classification
-- UI surfaces for current status and recent failures
+- run thresholds
+- model usage policy
+- deeper-read budgets
+- orchestrator permission scopes
 
-### 11.3 Testing strategy
+### 11.3 Skill library
 
-- unit tests for state transitions and policies
-- integration tests for retrieval, execution, and verification flows
-- fixture-based tests for literature screening and run promotion
-- replay tests for stored research cycles
+- first-party skills
+- custom skill examples
+- skill validation and testing
+- skill docs and templates
 
-### 11.4 Reporting and explainability
+### 11.4 API and telemetry
 
-- readable markdown reports
-- rendered report views in the UI
-- evidence-linked recommendations
-- clear “why this happened” summaries for shortlist, hypothesis, run, and verification states
+- versioned schemas
+- event streams
+- client SDKs
+- contract tests
 
-### 11.5 Policy and safety
+### 11.5 Reporting UX
 
-- budgets for full-text access and compute
-- allowlists and denylists for networked execution
-- approval handling for high-cost or unusual actions
-- explicit policy records in durable state
+- rendered markdown
+- timeline views
+- report bundle navigation
+- postmortem readability
 
----
+### 11.6 Testing and fixtures
 
-## 12. Suggested Build Order Within the Team
-
-If work is parallelized, the most sensible split is:
-
-### Track A — Control Plane and UI
-Owns research cycle creation, dashboard, event stream, approvals, and report rendering.
-
-### Track B — Storage and Research Memory
-Owns schemas, migrations, repositories, search views, and lineage.
-
-### Track C — Retrieval and Literature Intelligence
-Owns internal/external adapters, screening, evidence extraction, and hypothesis support.
-
-### Track D — Execution and Verification
-Owns workspaces, containers, telemetry, experiment runs, verification, and postmortems.
-
-### Track E — Model Gateway and Prompt Infrastructure
-Owns provider adapters, local/hosted model routing, embedding interfaces, and prompt asset management.
-
-Even if one person is doing most of the work, this split is still useful because it prevents early code from becoming an undifferentiated blob.
+- problem fixtures
+- literature fixtures
+- skill fixtures
+- execution sandbox fixtures
+- API fixtures
 
 ---
 
-## 13. Decisions That Should Be Locked Before Phase 0 Starts
+## 12. MVP Definition of Done
 
-The following decisions should be finalized before implementation begins in earnest:
+The MVP is done when all of the following are true:
 
-- exact monorepo shape
-- frontend stack for the local dashboard
-- API framework choice
-- migration tooling choice
-- container runtime choice
-- local GPU support strategy
-- hosted model providers to support first
-- local model runtime to support first
-- report rendering approach in the UI
-- artifact storage root and conventions
-
-These belong in `tech_context.md`.
+- a researcher can create a scoped ML research cycle and run it end to end
+- the system can retrieve internal and external sources and triage literature with title + abstract together
+- deeper reads are selective, reasoned, and recorded
+- hypotheses and experiment specs are evidence-backed and durable
+- experiments run in isolated GPU-capable sandboxes
+- every experiment is verified and failures get postmortems
+- reports are readable in the UI and available over API
+- the system supports a meaningful first-party `skill.md` library plus custom skills
+- an orchestrator agent can create, monitor, and steer a cycle over API without bypassing policy
 
 ---
 
-## 14. MVP Definition of Done
+## 13. Suggested Immediate Next Step
 
-The first ML laboratory MVP should be considered complete when all of the following are true:
+Use `tech_context.md` to lock the first-pass stack and implementation details for:
 
-- A user can define a research problem and create a `ResearchCharter`.
-- The system can search internal memory and arXiv metadata.
-- The system triages literature using title + abstract together before deeper reading.
-- HTML full text is preferred before PDF when deeper reading is required.
-- The system can generate evidence, grounded hypotheses, and executable experiment specs.
-- Low-risk experiments can run automatically in isolated GPU-capable sandboxes.
-- The user can watch telemetry live and intervene when needed.
-- Every run produces a `RunRecord`, a verification result, and if relevant, a structured failure postmortem.
-- Historical internal work is used for comparison and interpretation.
-- Every research cycle can produce a readable report bundle for a human researcher.
-
+- the skill package format and loader
+- the orchestrator API resources and streaming approach
+- the local runtime and execution backplane
+- the first three first-party skill packs

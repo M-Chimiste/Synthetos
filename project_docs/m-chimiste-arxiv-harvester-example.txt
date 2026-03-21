@@ -1,0 +1,868 @@
+Directory structure:
+└── m-chimiste-arxiv-harvester/
+    ├── README.md
+    ├── LICENSE
+    ├── requirements.txt
+    ├── setup.py
+    └── arxiv_harvester/
+        ├── __init__.py
+        └── harvester.py
+
+================================================
+FILE: README.md
+================================================
+# arxiv-harvester
+
+A rate-limit-compliant OAI-PMH harvester for ArXiv papers. This package provides a simple way to harvest metadata from ArXiv papers while respecting their rate limits and handling errors gracefully.
+
+## Features
+
+- Rate-limit compliant (follows ArXiv's policy of ≤ 1 request / 3s)
+- Automatic retry with exponential backoff
+- Support for resumption tokens and pagination
+- Clean Pydantic models for paper metadata
+- Optional pandas DataFrame support
+- Type hints and comprehensive documentation
+- Filtering by subcategories
+- Creation date-based filtering
+- Progress reporting with total record count estimation
+
+## Installation
+
+You can install arxiv-harvester using pip:
+
+```bash
+pip install "git+https://github.com/M-Chimiste/arxiv-harvester.git#egg=arxiv-harvester"
+```
+
+To include pandas support for DataFrame conversion:
+
+```bash
+pip install "git+https://github.com/M-Chimiste/arxiv-harvester.git#egg=arxiv-harvester[pandas]"
+```
+
+## Quick Start
+
+Here's a simple example to get you started:
+
+```python
+from arxiv_harvester import ArxivOAIHarvester
+
+# Create a harvester for AI papers from January 2024
+harvester = ArxivOAIHarvester(
+    category="cs:AI",
+    date_from="2024-01-01",
+    date_until="2024-01-31",
+    subcategories=["cs.ai", "cs.cl"],  # Optional: filter by specific subcategories
+    max_results=100,  # Optional: limit the number of results
+    verbose=True      # Optional: print progress information
+)
+
+# Get the records as a list of dictionaries
+records = harvester.harvest()
+
+# Or get them as a pandas DataFrame (requires pandas)
+df = harvester.to_dataframe()
+
+# Print some information about the papers
+for record in records[:5]:  # First 5 papers
+    print(f"Title: {record['title']}")
+    print(f"Authors: {', '.join(record['authors'])}")
+    print(f"Categories: {record['categories']}")
+    print(f"Abstract: {record['abstract'][:200]}...")
+    print("-" * 80)
+```
+
+## Advanced Usage
+
+### Filtering by Subcategories
+
+You can filter papers by specific subcategories within a main category:
+
+```python
+harvester = ArxivOAIHarvester(
+    category="cs",
+    date_from="2024-01-01",
+    date_until="2024-01-31",
+    subcategories=["cs.ai", "cs.cl", "cs.lg"],  # Get papers in AI, CL, and ML
+    verbose=True
+)
+```
+
+### Custom Session
+
+You can provide your own `requests.Session` for custom headers or proxies:
+
+```python
+import requests
+
+session = requests.Session()
+session.headers.update({
+    "User-Agent": "My Research Project (contact@example.com)"
+})
+
+harvester = ArxivOAIHarvester(
+    category="cs",
+    date_from="2024-01-01",
+    date_until="2024-01-31",
+    session=session
+)
+```
+
+### Retry and Timeout Configuration
+
+Configure retry behavior and timeouts:
+
+```python
+harvester = ArxivOAIHarvester(
+    category="cs",
+    date_from="2024-01-01",
+    date_until="2024-01-31",
+    timeout=600,        # Total operation timeout (seconds)
+    base_delay=2.0,    # Base delay between retries
+    max_delay=120.0    # Maximum delay between retries
+)
+```
+
+### Working with Records
+
+Each record contains the following fields:
+
+```python
+record = records[0]
+print(f"ArXiv ID: {record['id']}")
+print(f"Title: {record['title']}")
+print(f"Authors: {record['authors']}")
+print(f"Abstract: {record['abstract']}")
+print(f"Categories: {record['categories']}")
+print(f"Created: {record['created']}")
+print(f"Updated: {record['updated']}")
+print(f"DOI: {record['doi']}")
+print(f"URL: {record['url']}")
+print(f"PDF URL: {record['pdf_url']}")
+print(f"Affiliations: {record['affiliation']}")
+```
+
+## Available Categories
+
+ArXiv subcategories must be specified in period form. Some common categories include:
+
+- Computer Science: `cs.ai`, `cs.cl`, `cs.cv`, `cs.lg`, etc.
+- Physics: `physics.hep-th`, `physics.quant-ph`, etc.
+- Mathematics: `math.ag`, `math.at`, etc.
+- Statistics: `stat.ml`, `stat.th`, etc.
+
+For a complete list of categories, visit [ArXiv's taxonomy](https://arxiv.org/category_taxonomy).
+
+## Rate Limiting
+
+The harvester respects ArXiv's rate limit of 1 request per 3 seconds. It also implements:
+
+- Exponential backoff with jitter for retries
+- Proper handling of HTTP 503 responses
+- Response to `Retry-After` headers
+- Progress reporting with estimated total records
+
+## Contributing
+
+Contributions are welcome! Please feel free to submit a Pull Request.
+
+## License
+
+This project is licensed under the Apache-2.0 License - see the LICENSE file for details.
+
+
+
+================================================
+FILE: LICENSE
+================================================
+                                 Apache License
+                           Version 2.0, January 2004
+                        http://www.apache.org/licenses/
+
+   TERMS AND CONDITIONS FOR USE, REPRODUCTION, AND DISTRIBUTION
+
+   1. Definitions.
+
+      "License" shall mean the terms and conditions for use, reproduction,
+      and distribution as defined by Sections 1 through 9 of this document.
+
+      "Licensor" shall mean the copyright owner or entity authorized by
+      the copyright owner that is granting the License.
+
+      "Legal Entity" shall mean the union of the acting entity and all
+      other entities that control, are controlled by, or are under common
+      control with that entity. For the purposes of this definition,
+      "control" means (i) the power, direct or indirect, to cause the
+      direction or management of such entity, whether by contract or
+      otherwise, or (ii) ownership of fifty percent (50%) or more of the
+      outstanding shares, or (iii) beneficial ownership of such entity.
+
+      "You" (or "Your") shall mean an individual or Legal Entity
+      exercising permissions granted by this License.
+
+      "Source" form shall mean the preferred form for making modifications,
+      including but not limited to software source code, documentation
+      source, and configuration files.
+
+      "Object" form shall mean any form resulting from mechanical
+      transformation or translation of a Source form, including but
+      not limited to compiled object code, generated documentation,
+      and conversions to other media types.
+
+      "Work" shall mean the work of authorship, whether in Source or
+      Object form, made available under the License, as indicated by a
+      copyright notice that is included in or attached to the work
+      (an example is provided in the Appendix below).
+
+      "Derivative Works" shall mean any work, whether in Source or Object
+      form, that is based on (or derived from) the Work and for which the
+      editorial revisions, annotations, elaborations, or other modifications
+      represent, as a whole, an original work of authorship. For the purposes
+      of this License, Derivative Works shall not include works that remain
+      separable from, or merely link (or bind by name) to the interfaces of,
+      the Work and Derivative Works thereof.
+
+      "Contribution" shall mean any work of authorship, including
+      the original version of the Work and any modifications or additions
+      to that Work or Derivative Works thereof, that is intentionally
+      submitted to Licensor for inclusion in the Work by the copyright owner
+      or by an individual or Legal Entity authorized to submit on behalf of
+      the copyright owner. For the purposes of this definition, "submitted"
+      means any form of electronic, verbal, or written communication sent
+      to the Licensor or its representatives, including but not limited to
+      communication on electronic mailing lists, source code control systems,
+      and issue tracking systems that are managed by, or on behalf of, the
+      Licensor for the purpose of discussing and improving the Work, but
+      excluding communication that is conspicuously marked or otherwise
+      designated in writing by the copyright owner as "Not a Contribution."
+
+      "Contributor" shall mean Licensor and any individual or Legal Entity
+      on behalf of whom a Contribution has been received by Licensor and
+      subsequently incorporated within the Work.
+
+   2. Grant of Copyright License. Subject to the terms and conditions of
+      this License, each Contributor hereby grants to You a perpetual,
+      worldwide, non-exclusive, no-charge, royalty-free, irrevocable
+      copyright license to reproduce, prepare Derivative Works of,
+      publicly display, publicly perform, sublicense, and distribute the
+      Work and such Derivative Works in Source or Object form.
+
+   3. Grant of Patent License. Subject to the terms and conditions of
+      this License, each Contributor hereby grants to You a perpetual,
+      worldwide, non-exclusive, no-charge, royalty-free, irrevocable
+      (except as stated in this section) patent license to make, have made,
+      use, offer to sell, sell, import, and otherwise transfer the Work,
+      where such license applies only to those patent claims licensable
+      by such Contributor that are necessarily infringed by their
+      Contribution(s) alone or by combination of their Contribution(s)
+      with the Work to which such Contribution(s) was submitted. If You
+      institute patent litigation against any entity (including a
+      cross-claim or counterclaim in a lawsuit) alleging that the Work
+      or a Contribution incorporated within the Work constitutes direct
+      or contributory patent infringement, then any patent licenses
+      granted to You under this License for that Work shall terminate
+      as of the date such litigation is filed.
+
+   4. Redistribution. You may reproduce and distribute copies of the
+      Work or Derivative Works thereof in any medium, with or without
+      modifications, and in Source or Object form, provided that You
+      meet the following conditions:
+
+      (a) You must give any other recipients of the Work or
+          Derivative Works a copy of this License; and
+
+      (b) You must cause any modified files to carry prominent notices
+          stating that You changed the files; and
+
+      (c) You must retain, in the Source form of any Derivative Works
+          that You distribute, all copyright, patent, trademark, and
+          attribution notices from the Source form of the Work,
+          excluding those notices that do not pertain to any part of
+          the Derivative Works; and
+
+      (d) If the Work includes a "NOTICE" text file as part of its
+          distribution, then any Derivative Works that You distribute must
+          include a readable copy of the attribution notices contained
+          within such NOTICE file, excluding those notices that do not
+          pertain to any part of the Derivative Works, in at least one
+          of the following places: within a NOTICE text file distributed
+          as part of the Derivative Works; within the Source form or
+          documentation, if provided along with the Derivative Works; or,
+          within a display generated by the Derivative Works, if and
+          wherever such third-party notices normally appear. The contents
+          of the NOTICE file are for informational purposes only and
+          do not modify the License. You may add Your own attribution
+          notices within Derivative Works that You distribute, alongside
+          or as an addendum to the NOTICE text from the Work, provided
+          that such additional attribution notices cannot be construed
+          as modifying the License.
+
+      You may add Your own copyright statement to Your modifications and
+      may provide additional or different license terms and conditions
+      for use, reproduction, or distribution of Your modifications, or
+      for any such Derivative Works as a whole, provided Your use,
+      reproduction, and distribution of the Work otherwise complies with
+      the conditions stated in this License.
+
+   5. Submission of Contributions. Unless You explicitly state otherwise,
+      any Contribution intentionally submitted for inclusion in the Work
+      by You to the Licensor shall be under the terms and conditions of
+      this License, without any additional terms or conditions.
+      Notwithstanding the above, nothing herein shall supersede or modify
+      the terms of any separate license agreement you may have executed
+      with Licensor regarding such Contributions.
+
+   6. Trademarks. This License does not grant permission to use the trade
+      names, trademarks, service marks, or product names of the Licensor,
+      except as required for reasonable and customary use in describing the
+      origin of the Work and reproducing the content of the NOTICE file.
+
+   7. Disclaimer of Warranty. Unless required by applicable law or
+      agreed to in writing, Licensor provides the Work (and each
+      Contributor provides its Contributions) on an "AS IS" BASIS,
+      WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or
+      implied, including, without limitation, any warranties or conditions
+      of TITLE, NON-INFRINGEMENT, MERCHANTABILITY, or FITNESS FOR A
+      PARTICULAR PURPOSE. You are solely responsible for determining the
+      appropriateness of using or redistributing the Work and assume any
+      risks associated with Your exercise of permissions under this License.
+
+   8. Limitation of Liability. In no event and under no legal theory,
+      whether in tort (including negligence), contract, or otherwise,
+      unless required by applicable law (such as deliberate and grossly
+      negligent acts) or agreed to in writing, shall any Contributor be
+      liable to You for damages, including any direct, indirect, special,
+      incidental, or consequential damages of any character arising as a
+      result of this License or out of the use or inability to use the
+      Work (including but not limited to damages for loss of goodwill,
+      work stoppage, computer failure or malfunction, or any and all
+      other commercial damages or losses), even if such Contributor
+      has been advised of the possibility of such damages.
+
+   9. Accepting Warranty or Additional Liability. While redistributing
+      the Work or Derivative Works thereof, You may choose to offer,
+      and charge a fee for, acceptance of support, warranty, indemnity,
+      or other liability obligations and/or rights consistent with this
+      License. However, in accepting such obligations, You may act only
+      on Your own behalf and on Your sole responsibility, not on behalf
+      of any other Contributor, and only if You agree to indemnify,
+      defend, and hold each Contributor harmless for any liability
+      incurred by, or claims asserted against, such Contributor by reason
+      of your accepting any such warranty or additional liability.
+
+   END OF TERMS AND CONDITIONS
+
+   APPENDIX: How to apply the Apache License to your work.
+
+      To apply the Apache License to your work, attach the following
+      boilerplate notice, with the fields enclosed by brackets "[]"
+      replaced with your own identifying information. (Don't include
+      the brackets!)  The text should be enclosed in the appropriate
+      comment syntax for the file format. We also recommend that a
+      file or class name and description of purpose be included on the
+      same "printed page" as the copyright notice for easier
+      identification within third-party archives.
+
+   Copyright [yyyy] [name of copyright owner]
+
+   Licensed under the Apache License, Version 2.0 (the "License");
+   you may not use this file except in compliance with the License.
+   You may obtain a copy of the License at
+
+       http://www.apache.org/licenses/LICENSE-2.0
+
+   Unless required by applicable law or agreed to in writing, software
+   distributed under the License is distributed on an "AS IS" BASIS,
+   WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+   See the License for the specific language governing permissions and
+   limitations under the License.
+
+
+
+================================================
+FILE: requirements.txt
+================================================
+pandas
+pydantic
+requests
+
+
+
+================================================
+FILE: setup.py
+================================================
+from setuptools import setup, find_packages
+
+with open("README.md", "r", encoding="utf-8") as fh:
+    long_description = fh.read()
+
+setup(
+    name="arxiv-harvester",
+    version="0.1.1",
+    author="arxiv-harvester Contributors",
+    description="A rate-limit-compliant OAI-PMH harvester for ArXiv papers",
+    long_description=long_description,
+    long_description_content_type="text/markdown",
+    url="https://github.com/M-Chimiste/arxiv-harvester",
+    packages=find_packages(),
+    classifiers=[
+        "Development Status :: 3 - Alpha",
+        "Intended Audience :: Science/Research",
+        "License :: OSI Approved :: Apache-2.0 License",
+        "Operating System :: OS Independent",
+        "Programming Language :: Python :: 3",
+        "Programming Language :: Python :: 3.7",
+        "Programming Language :: Python :: 3.8",
+        "Programming Language :: Python :: 3.9",
+        "Programming Language :: Python :: 3.10",
+        "Programming Language :: Python :: 3.11",
+        "Topic :: Scientific/Engineering",
+    ],
+    python_requires=">=3.7",
+    install_requires=[
+        "requests>=2.25.0",
+        "pydantic>=2.0.0",
+    ],
+    extras_require={
+        "pandas": ["pandas>=1.0.0"],
+    }
+) 
+
+
+
+================================================
+FILE: arxiv_harvester/__init__.py
+================================================
+"""
+arxiv-harvester - A rate-limit-compliant OAI-PMH harvester for ArXiv papers.
+
+This package provides tools to harvest metadata from ArXiv papers using their OAI-PMH API,
+while respecting rate limits and handling errors gracefully.
+"""
+
+from arxiv_harvester.harvester import ArxivOAIHarvester, Record
+
+__version__ = "0.1.1"
+__all__ = ["ArxivOAIHarvester", "Record"]
+
+
+
+================================================
+FILE: arxiv_harvester/harvester.py
+================================================
+from __future__ import annotations
+
+# Standard library imports
+import random
+import threading
+import time
+import datetime
+import xml.etree.ElementTree as ET
+from typing import Any, Dict, List, Optional
+
+# Third-party imports
+import requests
+import pandas as pd
+from pydantic import BaseModel, Field
+
+
+_ARXIV_NS = "{http://arxiv.org/OAI/arXiv/}"
+_BASE_URL = "https://export.arxiv.org/oai2"
+_OAI_NS = "{http://www.openarchives.org/OAI/2.0/}"
+_MIN_INTERVAL = 3.0  # ≤ 1 request / 3 s (arXiv legacy policy)
+
+
+
+class Record(BaseModel):
+    """Structured representation of a single arXiv paper (metadata only).
+    
+    This class represents the metadata of an arXiv paper, including its ID, title,
+    abstract, authors, and other relevant information. It inherits from Pydantic's
+    BaseModel for data validation.
+
+    Attributes:
+        xml (ET.Element): The raw XML element containing the paper's metadata.
+        id (str): ArXiv ID of the paper.
+        url (str): URL to the paper's arXiv abstract.
+        pdf_url (str): URL to the paper's PDF.
+        title (str): Title of the paper.
+        abstract (str): Abstract of the paper.
+        categories (str): ArXiv categories the paper belongs to.
+        created (str): Creation date of the paper.
+        updated (str): Last update date of the paper.
+        doi (str): Digital Object Identifier of the paper.
+        authors (List[str]): List of author names.
+        affiliation (List[str]): List of author affiliations.
+    """
+
+    model_config = {"arbitrary_types_allowed": True}
+
+    xml: ET.Element
+    id: str = Field(description="ArXiv ID of the paper")
+    url: str = Field(description="URL to the paper's arXiv abstract")
+    pdf_url: str = Field(description="URL to the paper's PDF")
+    title: str = Field(description="Title of the paper")
+    abstract: str = Field(description="Abstract text of the paper")
+    categories: str = Field(alias="cats", description="Categories the paper falls into.")
+    created: str = Field(description="ArXiv created date of the paper")
+    updated: str = Field(description="ArXiv updated date of the paper")
+    doi: str = Field(description="DOI of the paper")
+    authors: List[str] = Field(description="Paper authors")
+    affiliation: List[str] = Field(description="Author affiliations")
+
+    @staticmethod
+    def _get_text(xml: ET.Element, tag: str) -> str:
+        """Extract text content from an XML element.
+
+        Args:
+            xml (ET.Element): The XML element to search in.
+            tag (str): The tag name to find.
+
+        Returns:
+            str: The text content of the found element, or empty string if not found.
+        """
+        try:
+            return xml.find(_ARXIV_NS + tag).text.strip()
+        except Exception:  # noqa: BLE001 E722
+            return ""
+
+    @staticmethod
+    def _get_name(parent: ET.Element, tag: str) -> str:
+        """Extract name information from an author XML element.
+
+        Args:
+            parent (ET.Element): The parent XML element containing author information.
+            tag (str): The tag name to find (e.g., 'forenames' or 'keyname').
+
+        Returns:
+            str: The extracted name, or 'n/a' if not found.
+        """
+        try:
+            return parent.find(_ARXIV_NS + tag).text.strip()
+        except Exception:  # noqa: BLE001 E722
+            return "n/a"
+
+    @staticmethod
+    def _get_authors(xml: ET.Element) -> List[str]:
+        """Extract all author names from the XML.
+
+        Args:
+            xml (ET.Element): The XML element containing author information.
+
+        Returns:
+            List[str]: List of author names in "firstname lastname" format.
+        """
+        people = xml.findall(_ARXIV_NS + "authors/" + _ARXIV_NS + "author")
+        firsts = [Record._get_name(p, "forenames") for p in people]
+        lasts = [Record._get_name(p, "keyname") for p in people]
+        return [f"{f} {l}".strip() for f, l in zip(firsts, lasts)]
+
+    @staticmethod
+    def _get_affiliations(xml: ET.Element) -> List[str]:
+        """Extract all author affiliations from the XML.
+
+        Args:
+            xml (ET.Element): The XML element containing author information.
+
+        Returns:
+            List[str]: List of author affiliations.
+        """
+        people = xml.findall(_ARXIV_NS + "authors/" + _ARXIV_NS + "author")
+        affils = []
+        for p in people:
+            try:
+                affils.append(p.find(_ARXIV_NS + "affiliation").text.strip())
+            except Exception:  # noqa: BLE001 E722
+                pass
+        return affils
+
+    def __init__(self, xml_record: ET.Element):
+        """Initialize a Record instance from an XML element.
+
+        Args:
+            xml_record (ET.Element): The XML element containing the paper's metadata.
+        """
+        _id = self._get_text(xml_record, "id")
+        super().__init__(
+            xml=xml_record,
+            id=_id,
+            url=f"https://arxiv.org/abs/{_id}",
+            pdf_url=f"https://arxiv.org/pdf/{_id}.pdf",
+            title=self._get_text(xml_record, "title"),
+            abstract=self._get_text(xml_record, "abstract"),
+            cats=self._get_text(xml_record, "categories"),
+            created=self._get_text(xml_record, "created"),
+            updated=self._get_text(xml_record, "updated"),
+            doi=self._get_text(xml_record, "doi"),
+            authors=self._get_authors(xml_record),
+            affiliation=self._get_affiliations(xml_record),
+        )
+
+    def model_dump(self) -> Dict[str, Any]:
+        """Convert the record to a dictionary, excluding the raw XML.
+
+        Returns:
+            Dict[str, Any]: Dictionary representation of the record without the XML element.
+        """
+        data = super().model_dump()
+        data.pop("xml", None)
+        return data
+
+
+class ArxivOAIHarvester:
+    """A rate-limit-compliant OAI-PMH harvester for ArXiv papers.
+
+    This harvester respects ArXiv's rate limits and provides functionality to
+    download paper metadata in batches. It handles retries, backoff, and pagination
+    automatically.
+
+    Attributes:
+        set (str): The ArXiv category to harvest (e.g., 'cs:AI').
+        date_from (str): Start date for harvesting.
+        date_until (str): End date for harvesting.
+        max_results (Optional[int]): Maximum number of results to retrieve.
+        timeout (int): Maximum time in seconds for the entire harvesting operation.
+        base_delay (float): Base delay between requests in seconds.
+        max_delay (float): Maximum delay between requests in seconds.
+        verbose (bool): Whether to print progress information.
+    """
+
+    def __init__(
+        self,
+        category: str,
+        date_from: str,
+        date_until: str,
+        *,
+        subcategories: Optional[List[str]] = None,
+        max_results: Optional[int] = None,
+        timeout: int = 300,
+        base_delay: float = 1.5,
+        max_delay: float = 60,
+        verbose: bool = False,
+        session: Optional[requests.Session] = None,
+    ):
+        """Initialize the ArXiv OAI harvester.
+
+        Args:
+            category (str): ArXiv category (e.g., 'cs').
+            date_from (str): Start date for harvesting.
+            date_until (str): End date for harvesting.
+            subcategories (Optional[List[str]], optional): List of subcategories to harvest. (e.g. ["cs.ai", "cs.cl"]) Defaults to None.
+            max_results (Optional[int], optional): Maximum number of results. Defaults to None.
+            timeout (int, optional): Operation timeout in seconds. Defaults to 300.
+            base_delay (float, optional): Base delay between requests. Defaults to 1.5.
+            max_delay (float, optional): Maximum delay between requests. Defaults to 60.
+            verbose (bool, optional): Whether to print progress. Defaults to False.
+            session (Optional[requests.Session], optional): Custom requests session. Defaults to None.
+        """
+
+        self.set = category
+        self.date_from = date_from
+        self.date_until = date_until
+        self.subcategories = [s.lower() for s in subcategories] if subcategories else None
+        self.max_results = max_results
+        self.timeout = timeout
+        self.base_delay = base_delay
+        self.max_delay = max_delay
+        self.verbose = verbose
+
+        self._session = session or requests.Session()
+        self._records: List[Dict[str, Any]] = []
+
+        self._last_call = 0.0  # Unix-epoch timestamp
+        self._lock = threading.Lock()
+
+    def _log(self, msg: str) -> None:
+        """Print a message if verbose mode is enabled.
+
+        Args:
+            msg (str): Message to print.
+        """
+        if self.verbose:
+            print(msg, flush=True)
+
+    def _exp_backoff(self, attempt: int) -> float:
+        """Calculate exponential backoff delay with jitter.
+
+        Args:
+            attempt (int): Current attempt number.
+
+        Returns:
+            float: Delay duration in seconds.
+        """
+        delay = min(self.max_delay, self.base_delay * 2**attempt)
+        return delay + random.uniform(-0.25 * delay, 0.25 * delay)
+
+    def _throttle(self, extra: float = 0.0) -> None:
+        """Ensure minimum time between API calls.
+
+        Args:
+            extra (float, optional): Additional delay in seconds. Defaults to 0.0.
+        """
+        with self._lock:
+            wait = max(0.0, (_MIN_INTERVAL + extra) - (time.time() - self._last_call))
+            if wait:
+                time.sleep(wait)
+            self._last_call = time.time()
+
+    def _request(self, params: Dict[str, str]) -> ET.Element:
+        """Make a rate-limited request to the ArXiv OAI-PMH API.
+
+        Args:
+            params (Dict[str, str]): Query parameters for the request.
+
+        Returns:
+            ET.Element: Parsed XML response.
+
+        Raises:
+            TimeoutError: If the aggregate timeout is exceeded.
+            RuntimeError: If the request fails for other reasons.
+        """
+        start, attempt = time.time(), 0
+
+        while True:
+            if time.time() - start > self.timeout:
+                raise TimeoutError("Aggregate timeout exceeded")
+
+            self._throttle()
+
+            try:
+                resp = self._session.get(_BASE_URL, params=params, timeout=30)
+
+                if resp.status_code == 503:
+                    retry_hdr = resp.headers.get("Retry-After")
+                    hdr_delay = float(retry_hdr) if retry_hdr and retry_hdr.isdigit() else 0
+                    backoff = self._exp_backoff(attempt)
+                    extra = max(hdr_delay, backoff)
+
+                    self._log(
+                        f"503 → retry {attempt+1} after {extra:.1f}s "
+                        f"(hdr={hdr_delay:.0f}, backoff={backoff:.1f})"
+                    )
+                    self._throttle(extra)
+                    attempt += 1
+                    continue
+
+                resp.raise_for_status()
+                return ET.fromstring(resp.content)
+
+            except requests.RequestException as exc:
+                raise RuntimeError(f"OAI-PMH request failed: {exc}") from exc
+
+    @staticmethod
+    def _parse_record(rec_xml: ET.Element) -> Dict[str, Any]:
+        """Parse a single record from XML.
+
+        Args:
+            rec_xml (ET.Element): XML element containing a single record.
+
+        Returns:
+            Dict[str, Any]: Parsed record as a dictionary, or empty dict if malformed.
+        """
+        meta = rec_xml.find(_OAI_NS + "metadata").find(_ARXIV_NS + "arXiv")
+        if meta is None:
+            return {}
+        return Record(meta).model_dump()
+
+    # ------------------------------------------------------------------ date filter
+    def _created_in_range(self, created_str: str) -> bool:
+        """Return ``True`` if the paper's *creation* date lies within the user-specified window."""
+        try:
+            created = datetime.datetime.strptime(created_str, "%Y-%m-%d").date()
+            start   = datetime.datetime.strptime(self.date_from, "%Y-%m-%d").date()
+            end     = datetime.datetime.strptime(self.date_until, "%Y-%m-%d").date()
+            return start <= created <= end
+        except Exception:
+            # Malformed date? Treat as out‑of‑range so it gets skipped
+            return False
+
+    def harvest(self) -> List[Dict[str, Any]]:
+        """Download and parse records from ArXiv.
+
+        Returns:
+            List[Dict[str, Any]]: List of parsed records.
+
+        Raises:
+            RuntimeError: If the OAI-PMH API returns an error.
+        """
+        self._records.clear()
+
+        params = {
+            "verb": "ListRecords",
+            "metadataPrefix": "arXiv",
+            "from": self.date_from,
+            "until": self.date_until,
+            "set": self.set,
+        }
+
+        while True:
+            root = self._request(params)
+            if self.verbose and not hasattr(self, "_total_records"):
+                total = None
+                try:
+                    token_elem = root.find(_OAI_NS + "ListRecords").find(_OAI_NS + "resumptionToken")
+                    if token_elem is not None and token_elem.get("completeListSize"):
+                        total = int(token_elem.get("completeListSize"))
+                    else:
+                        total = len(root.findall(_OAI_NS + "ListRecords/" + _OAI_NS + "record"))
+                except Exception:
+                    total = None
+                if total is not None:
+                    if self.max_results:
+                        total = min(total, self.max_results)
+                    self._log(f"Total records available in range: {total}")
+                else:
+                    self._log("Could not determine total record count; proceeding...")
+                self._total_records = total  # remember so we don't print again
+                
+            err = root.find(_OAI_NS + "error")
+            if err is not None:
+                raise RuntimeError(
+                    f"OAI-PMH error {err.attrib.get('code')}: {err.text.strip()}"
+                )
+
+            for rec in root.findall(_OAI_NS + "ListRecords/" + _OAI_NS + "record"):
+                parsed = self._parse_record(rec)
+                # Skip records that do not match requested sub‑categories
+                if (
+                    self.subcategories
+                    and not any(sub in parsed["categories"].lower() for sub in self.subcategories)
+                ):
+                    continue
+                # Skip records whose *creation* date is outside the requested range
+                if not self._created_in_range(parsed["created"]):
+                    continue
+                if parsed:
+                    self._records.append(parsed)
+                    if self.max_results and len(self._records) >= self.max_results:
+                        self._log("Reached max_results limit; stopping.")
+                        return self._records
+
+            token = root.find(
+                _OAI_NS + "ListRecords/" + _OAI_NS + "resumptionToken"
+            )
+            if token is None or not token.text:
+                break
+
+            params = {"verb": "ListRecords", "resumptionToken": token.text}
+
+        self._log(f"Harvested {len(self._records)} records")
+        return self._records
+
+    def to_dataframe(self):
+        """Convert harvested records to a pandas DataFrame.
+
+        Returns:
+            pandas.DataFrame: DataFrame containing all harvested records.
+
+        Raises:
+            RuntimeError: If pandas is not installed.
+        """
+        if "pd" not in globals() or pd is None:  # type: ignore
+            raise RuntimeError("pandas is not installed (`pip install pandas`)")
+        if not self._records:
+            self.harvest()
+        return pd.DataFrame(self._records)
+
+
