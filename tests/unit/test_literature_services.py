@@ -9,12 +9,15 @@ from sqlalchemy.orm import Session, sessionmaker
 from libs.adapters.literature import RawPaperRecord
 from libs.core.ids import generate_public_id
 from libs.literature.services import (
+    build_escalation_reason,
     build_screening_report_markdown,
     compute_shortlist,
     get_escalation_candidates,
     get_papers_for_screening,
     ingest_papers,
     record_screening_decision,
+    retrieval_provenance_summary,
+    select_escalation_candidates,
 )
 from libs.storage.base import Base
 from libs.storage.models import (
@@ -103,6 +106,37 @@ def test_ingest_papers_deduplicates(db_session, cycle, retrieval_session):
     assert len(second) == 0
 
 
+def test_ingest_papers_merges_cross_source_duplicates(db_session, cycle, retrieval_session):
+    arxiv_raw = RawPaperRecord(
+        external_id="2401.00001",
+        title="Paper Alpha",
+        abstract="Good abstract about ML.",
+        authors=["Alice"],
+        categories=["cs.LG"],
+        publication_date="2024-01-01",
+        source_type="arxiv",
+        metadata_extra={"doi": "10.1000/example"},
+    )
+    corpus_raw = RawPaperRecord(
+        external_id="corpus:alpha",
+        title="Paper Alpha",
+        abstract="Local notes about the same paper.",
+        authors=[],
+        categories=["internal"],
+        publication_date="2024-01-15",
+        source_type="internal_corpus",
+    )
+
+    first = ingest_papers(db_session, cycle, retrieval_session, [arxiv_raw])
+    second = ingest_papers(db_session, cycle, retrieval_session, [corpus_raw])
+
+    assert len(first) == 1
+    assert len(second) == 0
+    provenance = retrieval_provenance_summary(first[0].metadata_extra)
+    assert "arxiv: 2401.00001" in provenance
+    assert "internal_corpus: corpus:alpha" in provenance
+
+
 def test_record_screening_decision_updates_lifecycle(db_session, cycle, retrieval_session):
     raw = _make_raw_papers()
     papers = ingest_papers(db_session, cycle, retrieval_session, raw)
@@ -156,6 +190,23 @@ def test_get_escalation_candidates(db_session, cycle, retrieval_session):
     candidates = get_escalation_candidates(db_session, cycle.id)
     assert len(candidates) == 2
     assert all(c.fulltext_artifact_path is None for c in candidates)
+
+
+def test_select_escalation_candidates_respects_budget(db_session, cycle, retrieval_session):
+    raw = _make_raw_papers()
+    papers = ingest_papers(db_session, cycle, retrieval_session, raw)
+    for p in papers:
+        record_screening_decision(
+            db_session, p, decision="advance", score=0.8,
+            rationale="Good", model_route_id="t", prompt_id="p", batch_index=0,
+        )
+    shortlisted = compute_shortlist(db_session, cycle.id)
+
+    selected, skipped = select_escalation_candidates(db_session, cycle.id, max_fetches=1)
+    assert len(shortlisted) == 2
+    assert len(selected) == 1
+    assert skipped == 1
+    assert build_escalation_reason(selected[0]).startswith("Escalated for deeper read")
 
 
 def test_get_papers_for_screening(db_session, cycle, retrieval_session):

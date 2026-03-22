@@ -109,12 +109,18 @@ class PaperCardSummary(BaseModel):
     external_id: str
     lifecycle_status: str
     triage_score: float | None = None
+    triage_rationale: str | None = None
     shortlist_rank: int | None = None
+    shortlist_reason: str | None = None
+    escalation_reason: str | None = None
+    escalation_type: str | None = None
+    retrieval_provenance_summary: list[str] = Field(default_factory=list)
     created_at: datetime
 
 
 class PaperCardDetail(PaperCard):
     screening_decisions: list[ScreeningDecision] = Field(default_factory=list)
+    retrieval_provenance_summary: list[str] = Field(default_factory=list)
 
 
 class PaperListResponse(BaseModel):
@@ -138,4 +144,3 @@ class RetrievalSessionListResponse(BaseModel):
 class HealthResponse(BaseModel):
     status: str
     timestamp: datetime
-

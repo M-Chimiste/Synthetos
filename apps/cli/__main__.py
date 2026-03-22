@@ -43,17 +43,33 @@ def create_cycle(
     problem_statement: str,
     success_criteria: str = "Establish a credible baseline.",
     source_scope: str = "internal+arxiv",
+    keywords: str = "",
+    categories: str = "cs",
+    date_from: str = "",
+    date_until: str = "",
+    max_results: int = 50,
+    fulltext_budget: int = 3,
     stop_conditions: str = "Stop when initialization completes.",
     notes: str = "",
 ) -> None:
+    keyword_list = [item.strip() for item in keywords.split(",") if item.strip()]
+    category_list = [item.strip() for item in categories.split(",") if item.strip()]
     payload = {
         "title": title,
         "problem_statement": problem_statement,
         "success_criteria": {"summary": success_criteria},
         "budget_envelope": {"timebox_hours": 4},
-        "source_scope": {"mode": source_scope},
+        "source_scope": {
+            "mode": source_scope,
+            "keywords": keyword_list,
+            "categories": category_list or ["cs"],
+            "date_from": date_from or None,
+            "date_until": date_until or None,
+            "max_results": max_results,
+            "fulltext_budget": {"max_fetches": fulltext_budget},
+        },
         "stop_conditions": {"summary": stop_conditions},
-        "constraints": {"phase": "phase0"},
+        "constraints": {"phase": "phase1"},
         "notes": notes or None,
     }
     with api_client() as client:
@@ -161,4 +177,3 @@ def worker_run_once() -> None:
 
 if __name__ == "__main__":
     app()
-

@@ -11,9 +11,10 @@ from fastapi.testclient import TestClient
 from sqlalchemy import create_engine
 from sqlalchemy.orm import sessionmaker
 
-from apps.api.main import app, get_db
+from apps.api.main import app, get_db, stream_events
 from libs.adapters.literature import RawPaperRecord
 from libs.core.config import AppConfig
+from libs.core.policy import SYSTEM_ACTOR
 from libs.storage.base import Base
 
 FIXTURES_DIR = Path(__file__).parent.parent / "fixtures"
@@ -82,7 +83,7 @@ def client(tmp_config, test_session):
 AUTH_HEADERS = {"Authorization": "Bearer lab-local-admin"}
 
 
-def _create_cycle(client: TestClient) -> dict:
+def _create_cycle(client: TestClient, fulltext_budget: int = 1) -> dict:
     payload = {
         "title": "Phase 1 Test Cycle",
         "problem_statement": "Investigate neural architecture search methods for efficient ML.",
@@ -94,6 +95,7 @@ def _create_cycle(client: TestClient) -> dict:
             "date_from": "2024-01-01",
             "date_until": "2024-01-31",
             "max_results": 10,
+            "fulltext_budget": {"max_fetches": fulltext_budget},
         },
         "stop_conditions": {"summary": "Literature report generated"},
         "constraints": {},
@@ -248,3 +250,84 @@ def test_full_literature_pipeline_with_mock_adapters(client, tmp_config):
     triage = resp.json()
     assert triage["total_papers"] == 3
     assert triage["shortlisted_count"] > 0
+    assert triage["papers"][0]["triage_rationale"]
+    assert triage["papers"][0]["shortlist_reason"]
+    assert triage["papers"][0]["retrieval_provenance_summary"]
+
+    # Verify explicit eventing and skill lineage
+    detail_resp = client.get(f"/api/v1/cycles/{cycle_id}", headers=AUTH_HEADERS)
+    detail = detail_resp.json()
+    event_types = [event["event_type"] for event in detail["recent_events"]]
+    assert "paper_shortlist_finalized" in event_types
+    assert "fulltext_budget_exhausted" in event_types
+
+    skill_operator_names = [item["operator_name"] for item in detail["skill_execution_records"]]
+    assert "literature_screen" in skill_operator_names
+    assert "shortlist_rank" in skill_operator_names
+    assert "fulltext_escalation" in skill_operator_names
+
+
+@pytest.mark.anyio
+async def test_events_stream_includes_shortlist_and_escalation_events(client):
+    cycle_data = _create_cycle(client, fulltext_budget=1)
+    cycle_id = cycle_data["cycle"]["public_id"]
+
+    assert _run_worker(client) == "job_succeeded"
+    resp = client.post(
+        f"/api/v1/cycles/{cycle_id}/commands",
+        json={"command": "start_intake"},
+        headers=AUTH_HEADERS,
+    )
+    assert resp.status_code == 200
+
+    sample = _sample_papers()
+    with patch("libs.orchestration.operators.ArxivMetadataAdapter") as MockAdapter:
+        mock_instance = MagicMock()
+        mock_instance.search.return_value = sample
+        MockAdapter.return_value = mock_instance
+        assert _run_worker(client) == "job_succeeded"
+
+    mock_llm_response = {
+        "choices": [{
+            "message": {
+                "content": json.dumps({
+                    "decision": "advance",
+                    "score": 0.8,
+                    "rationale": "Relevant to ML research."
+                })
+            }
+        }]
+    }
+    with patch(
+        "libs.adapters.llm.gateway.ModelGateway.call_chat_completion",
+        return_value=mock_llm_response,
+    ):
+        assert _run_worker(client) == "job_succeeded"
+    assert _run_worker(client) == "job_succeeded"
+    with patch("libs.orchestration.operators.FulltextFetcher") as MockFetcher:
+        mock_fetcher = MagicMock()
+        mock_fetcher.fetch_html.return_value = None
+        mock_fetcher.fetch_pdf.return_value = None
+        MockFetcher.return_value = mock_fetcher
+        assert _run_worker(client) == "job_succeeded"
+
+    response = await stream_events(
+        actor=SYSTEM_ACTOR,
+        cycle_id=cycle_id,
+        last_event_id=0,
+        header_last_event_id=None,
+    )
+
+    seen_event_types: list[str] = []
+    async for chunk in response.body_iterator:
+        text = chunk.decode() if isinstance(chunk, bytes) else chunk
+        for line in text.splitlines():
+            if not line.startswith("data: "):
+                continue
+            payload = json.loads(line.removeprefix("data: "))
+            seen_event_types.append(payload["event_type"])
+        if "paper_escalation_decision_finalized" in seen_event_types:
+            break
+
+    assert "paper_shortlist_finalized" in seen_event_types
+    assert "paper_escalation_decision_finalized" in seen_event_types

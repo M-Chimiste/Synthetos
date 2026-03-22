@@ -58,6 +58,7 @@ class OperatorReport(BaseModel):
     title: str
     body_markdown: str
     prompt_id: str
+    report_type: str = "operator_report"
     generated_at: datetime = Field(default_factory=lambda: datetime.now(UTC))
 
 
@@ -77,4 +78,3 @@ class OperatorResult(BaseModel):
     next_actions: list[NextAction] = Field(default_factory=list)
     operator_report: OperatorReport
     skill_execution_records: list[SkillExecutionOutcome] = Field(default_factory=list)
-

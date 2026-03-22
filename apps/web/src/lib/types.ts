@@ -145,7 +145,12 @@ export interface PaperCardSummary {
   external_id: string;
   lifecycle_status: string;
   triage_score?: number | null;
+  triage_rationale?: string | null;
   shortlist_rank?: number | null;
+  shortlist_reason?: string | null;
+  escalation_reason?: string | null;
+  escalation_type?: string | null;
+  retrieval_provenance_summary: string[];
   created_at: string;
 }
 
@@ -168,4 +173,3 @@ export interface LiteratureTriageResponse {
   escalated_count: number;
   papers: PaperCardSummary[];
 }
-

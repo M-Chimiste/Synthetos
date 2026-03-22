@@ -18,18 +18,31 @@ import {
 import type { CycleDetailResponse, CycleSummaryResponse, LiteratureTriageResponse, PaperCardSummary, ReportDetail, SkillSummaryResponse } from "./lib/types";
 
 const defaultForm = {
-  title: "Phase 0 bootstrap cycle",
-  problem_statement: "Create the durable control-plane foundation for the ML laboratory.",
-  success_criteria: '{"summary":"Cycle reaches ready and produces an initialization report."}',
+  title: "Phase 1 literature triage cycle",
+  problem_statement: "Investigate efficient neural architecture search methods for practical ML research.",
+  success_criteria: '{"summary":"Produce a credible literature screening report with a ranked shortlist."}',
   budget_envelope: '{"timebox_hours":4}',
-  source_scope: '{"mode":"internal+arxiv"}',
-  stop_conditions: '{"summary":"Initialization report is available."}',
-  constraints: '{"phase":"phase0"}',
-  notes: "Created from the web shell.",
+  source_mode: "internal+arxiv",
+  keywords: "neural architecture search, efficient deep learning",
+  categories: "cs, cs.LG",
+  date_from: "2024-01-01",
+  date_until: "",
+  max_results: "25",
+  fulltext_budget: "3",
+  stop_conditions: '{"summary":"Literature report generated and shortlist reviewed."}',
+  constraints: '{"phase":"phase1"}',
+  notes: "Created from the web intake form.",
 };
 
 function parseJsonField(value: string): Record<string, unknown> {
   return JSON.parse(value);
+}
+
+function parseListField(value: string): string[] {
+  return value
+    .split(",")
+    .map((item) => item.trim())
+    .filter(Boolean);
 }
 
 export default function App() {
@@ -90,7 +103,17 @@ export default function App() {
         problem_statement: form.problem_statement,
         success_criteria: parseJsonField(form.success_criteria),
         budget_envelope: parseJsonField(form.budget_envelope),
-        source_scope: parseJsonField(form.source_scope),
+        source_scope: {
+          mode: form.source_mode,
+          keywords: parseListField(form.keywords),
+          categories: parseListField(form.categories),
+          date_from: form.date_from || null,
+          date_until: form.date_until || null,
+          max_results: Number(form.max_results || "25"),
+          fulltext_budget: {
+            max_fetches: Number(form.fulltext_budget || "3"),
+          },
+        },
         stop_conditions: parseJsonField(form.stop_conditions),
         constraints: parseJsonField(form.constraints),
         notes: form.notes,
@@ -164,7 +187,35 @@ export default function App() {
                 <span className="text-sm font-medium">Problem Statement</span>
                 <textarea className="field min-h-24" value={form.problem_statement} onChange={(event) => setForm({ ...form, problem_statement: event.target.value })} />
               </label>
-              {(["success_criteria", "budget_envelope", "source_scope", "stop_conditions", "constraints"] as const).map((key) => (
+              <label className="space-y-1">
+                <span className="text-sm font-medium">Source Mode</span>
+                <input className="field" value={form.source_mode} onChange={(event) => setForm({ ...form, source_mode: event.target.value })} />
+              </label>
+              <label className="space-y-1">
+                <span className="text-sm font-medium">Keywords</span>
+                <input className="field" value={form.keywords} onChange={(event) => setForm({ ...form, keywords: event.target.value })} />
+              </label>
+              <label className="space-y-1">
+                <span className="text-sm font-medium">Categories</span>
+                <input className="field" value={form.categories} onChange={(event) => setForm({ ...form, categories: event.target.value })} />
+              </label>
+              <label className="space-y-1">
+                <span className="text-sm font-medium">Max Results</span>
+                <input className="field" value={form.max_results} onChange={(event) => setForm({ ...form, max_results: event.target.value })} />
+              </label>
+              <label className="space-y-1">
+                <span className="text-sm font-medium">Date From</span>
+                <input className="field" value={form.date_from} onChange={(event) => setForm({ ...form, date_from: event.target.value })} />
+              </label>
+              <label className="space-y-1">
+                <span className="text-sm font-medium">Date Until</span>
+                <input className="field" value={form.date_until} onChange={(event) => setForm({ ...form, date_until: event.target.value })} />
+              </label>
+              <label className="space-y-1">
+                <span className="text-sm font-medium">Fulltext Budget</span>
+                <input className="field" value={form.fulltext_budget} onChange={(event) => setForm({ ...form, fulltext_budget: event.target.value })} />
+              </label>
+              {(["success_criteria", "budget_envelope", "stop_conditions", "constraints"] as const).map((key) => (
                 <label className="space-y-1" key={key}>
                   <span className="text-sm font-medium">{key}</span>
                   <textarea className="field min-h-20 font-mono text-xs" value={form[key]} onChange={(event) => setForm({ ...form, [key]: event.target.value })} />
@@ -358,7 +409,7 @@ function LiteraturePanel({ triage }: { triage?: LiteratureTriageResponse }) {
         <div>Escalated: <strong>{triage.escalated_count}</strong></div>
       </div>
       <div className="max-h-80 space-y-2 overflow-y-auto">
-        {triage.papers.map((paper: PaperCardSummary) => (
+            {triage.papers.map((paper: PaperCardSummary) => (
           <div key={paper.public_id} className="rounded-xl border border-slate-200 p-3">
             <div className="flex items-start justify-between gap-2">
               <div className="min-w-0 flex-1">
@@ -375,6 +426,27 @@ function LiteraturePanel({ triage }: { triage?: LiteratureTriageResponse }) {
               <div className="mt-1 text-xs text-slate-500">
                 Score: {paper.triage_score.toFixed(2)}
                 {paper.shortlist_rank != null && ` · Rank #${paper.shortlist_rank}`}
+              </div>
+            )}
+            {paper.triage_rationale && (
+              <div className="mt-2 text-xs text-slate-600">
+                <strong>Triage:</strong> {paper.triage_rationale}
+              </div>
+            )}
+            {paper.shortlist_reason && (
+              <div className="mt-1 text-xs text-slate-600">
+                <strong>Shortlist:</strong> {paper.shortlist_reason}
+              </div>
+            )}
+            {paper.escalation_reason && (
+              <div className="mt-1 text-xs text-slate-600">
+                <strong>Escalation:</strong> {paper.escalation_reason}
+                {paper.escalation_type ? ` (${paper.escalation_type})` : ""}
+              </div>
+            )}
+            {paper.retrieval_provenance_summary.length > 0 && (
+              <div className="mt-1 text-xs text-slate-500">
+                <strong>Provenance:</strong> {paper.retrieval_provenance_summary.join(", ")}
               </div>
             )}
           </div>
@@ -440,4 +512,3 @@ function InfoCard({ label, value }: { label: string; value: string }) {
     </div>
   );
 }
-

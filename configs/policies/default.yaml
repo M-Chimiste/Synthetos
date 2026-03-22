@@ -10,4 +10,6 @@ allowed_command_scopes:
 approval_rules:
   network_enabled_run: human_only
   sensitive_orchestrator_action: human_only
-
+literature:
+  fulltext_budget:
+    max_fetches: 3

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import hashlib
+import re
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
@@ -56,9 +57,64 @@ from libs.storage.models import (
     SkillVersionModel,
 )
 
+DEFAULT_SOURCE_SCOPE: dict[str, Any] = {
+    "mode": "internal+arxiv",
+    "keywords": [],
+    "categories": ["cs"],
+    "date_from": None,
+    "date_until": None,
+    "max_results": 50,
+    "fulltext_budget": {"max_fetches": 3},
+}
+
 
 def token_hash(value: str) -> str:
     return hashlib.sha256(value.encode("utf-8")).hexdigest()
+
+
+def normalize_source_scope(source_scope: dict[str, Any] | None) -> dict[str, Any]:
+    raw = dict(source_scope or {})
+    merged = {
+        **DEFAULT_SOURCE_SCOPE,
+        **raw,
+    }
+
+    def _split_csv(value: Any) -> list[str]:
+        if isinstance(value, list):
+            return [str(item).strip() for item in value if str(item).strip()]
+        if isinstance(value, str):
+            return [item.strip() for item in re.split(r"[,\n]", value) if item.strip()]
+        return []
+
+    keywords = _split_csv(merged.get("keywords"))
+    categories = _split_csv(merged.get("categories")) or ["cs"]
+
+    budget_raw = merged.get("fulltext_budget")
+    if isinstance(budget_raw, int):
+        fulltext_budget = {"max_fetches": max(0, budget_raw)}
+    elif isinstance(budget_raw, dict):
+        default_max_fetches = DEFAULT_SOURCE_SCOPE["fulltext_budget"]["max_fetches"]
+        max_fetches = budget_raw.get("max_fetches", default_max_fetches)
+        try:
+            max_fetches = int(max_fetches)
+        except (TypeError, ValueError):
+            max_fetches = default_max_fetches
+        fulltext_budget = {**budget_raw, "max_fetches": max(0, max_fetches)}
+    else:
+        fulltext_budget = dict(DEFAULT_SOURCE_SCOPE["fulltext_budget"])
+
+    try:
+        max_results = int(merged.get("max_results", DEFAULT_SOURCE_SCOPE["max_results"]))
+    except (TypeError, ValueError):
+        max_results = DEFAULT_SOURCE_SCOPE["max_results"]
+
+    return {
+        **merged,
+        "keywords": keywords,
+        "categories": categories,
+        "max_results": max(1, max_results),
+        "fulltext_budget": fulltext_budget,
+    }
 
 
 def seed_dev_client_and_token(session: Session, config: AppConfig) -> None:
@@ -162,9 +218,11 @@ def append_event(
 
 
 def create_cycle(session: Session, actor: Actor, payload: CreateCycleRequest) -> ResearchCycleModel:
+    charter_payload = payload.model_dump(mode="python")
+    charter_payload["source_scope"] = normalize_source_scope(charter_payload.get("source_scope"))
     charter = ResearchCharterModel(
         public_id=generate_public_id("charter"),
-        **payload.model_dump(mode="python"),
+        **charter_payload,
     )
     session.add(charter)
     session.flush()
@@ -337,7 +395,7 @@ def bind_skills_for_cycle(
                 cycle_id=cycle.id,
                 skill_version_id=version.id,
                 operator_name=operator_name,
-                binding_reason="Eligible for operator during Phase 0 initialization",
+                binding_reason=f"Eligible for operator `{operator_name}` based on skill manifest",
                 is_active=True,
             )
             session.add(binding)
@@ -405,7 +463,7 @@ def apply_operator_result(
         cycle=cycle,
         job=job,
         title=result.operator_report.title,
-        report_type="operator_report",
+        report_type=result.operator_report.report_type,
         body_markdown=result.operator_report.body_markdown,
     )
     append_event(
@@ -829,6 +887,7 @@ def _has_pending_jobs(session: Session, cycle_id: int) -> bool:
 def list_papers_for_cycle(
     session: Session, cycle_public_id: str, status_filter: str | None = None,
 ) -> list[PaperCardSummary]:
+    from libs.literature.services import retrieval_provenance_summary
     from libs.storage.models import PaperCardModel
 
     cycle = get_cycle_by_public_id(session, cycle_public_id)
@@ -852,7 +911,12 @@ def list_papers_for_cycle(
             external_id=p.external_id,
             lifecycle_status=p.lifecycle_status,
             triage_score=p.triage_score,
+            triage_rationale=p.triage_rationale,
             shortlist_rank=p.shortlist_rank,
+            shortlist_reason=p.shortlist_reason,
+            escalation_reason=p.escalation_reason,
+            escalation_type=p.escalation_type,
+            retrieval_provenance_summary=retrieval_provenance_summary(p.metadata_extra or {}),
             created_at=p.created_at,
         )
         for p in papers
@@ -862,6 +926,7 @@ def list_papers_for_cycle(
 def get_paper_detail(
     session: Session, cycle_public_id: str, paper_public_id: str,
 ) -> PaperCardDetail:
+    from libs.literature.services import retrieval_provenance_summary
     from libs.schemas.domain import PaperCard as PaperCardSchema
     from libs.schemas.domain import ScreeningDecision
     from libs.storage.models import PaperCardModel, ScreeningDecisionModel
@@ -885,6 +950,7 @@ def get_paper_detail(
     return PaperCardDetail(
         **PaperCardSchema.model_validate(paper).model_dump(),
         screening_decisions=[ScreeningDecision.model_validate(d) for d in decisions],
+        retrieval_provenance_summary=retrieval_provenance_summary(paper.metadata_extra or {}),
     )
 
 

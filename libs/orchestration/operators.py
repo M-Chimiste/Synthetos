@@ -32,9 +32,62 @@ from libs.storage.models import (
     SkillVersionModel,
     SourceRetrievalSessionModel,
 )
-from libs.storage.services import bind_skills_for_cycle
+from libs.storage.services import bind_skills_for_cycle, normalize_source_scope
 
 log = structlog.get_logger(__name__)
+
+
+def _bound_skill_context(
+    session: Session,
+    cycle: ResearchCycleModel,
+    operator_name: str,
+) -> tuple[list[str], list[SkillExecutionOutcome]]:
+    skill_keys: list[str] = []
+    outcomes: list[SkillExecutionOutcome] = []
+    for binding in bind_skills_for_cycle(session, cycle, operator_name):
+        version = session.get(SkillVersionModel, binding.skill_version_id)
+        skill_key = (
+            str(version.manifest.get("id", version.public_id))
+            if version is not None
+            else binding.public_id
+        )
+        skill_keys.append(skill_key)
+        outcomes.append(
+            SkillExecutionOutcome(
+                skill_version_public_id=version.public_id if version else "",
+                skill_binding_public_id=binding.public_id,
+                operator_name=operator_name,
+                status="applied",
+                payload={
+                    "reason": binding.binding_reason,
+                    "skill_key": skill_key,
+                    "influence": "context_and_reporting",
+                },
+            )
+        )
+    return skill_keys, outcomes
+
+
+def _format_skill_line(skill_keys: list[str]) -> str:
+    return ", ".join(skill_keys) if skill_keys else "none"
+
+
+def _resolve_fulltext_budget(config: AppConfig, source_scope: dict) -> int:
+    policy = config.load_yaml(config.policy_config_path)
+    default_budget = (
+        policy.get("literature", {})
+        .get("fulltext_budget", {})
+        .get("max_fetches", 3)
+    )
+    budget = source_scope.get("fulltext_budget", {})
+    if isinstance(budget, int):
+        return max(0, budget)
+    if isinstance(budget, dict):
+        try:
+            return max(0, int(budget.get("max_fetches", default_budget)))
+        except (TypeError, ValueError):
+            return max(0, int(default_budget))
+    return max(0, int(default_budget))
 
 
 def initialize_cycle_operator(
@@ -152,6 +205,7 @@ def source_retrieval_operator(
         raise ValueError("Cycle is missing a charter")
 
     source_scope = job.payload.get("source_scope", charter.source_scope or {})
+    source_scope = normalize_source_scope(source_scope)
     overrides = job.payload.get("source_overrides", {})
 
     keywords = source_scope.get("keywords", [])
@@ -250,8 +304,18 @@ def source_retrieval_operator(
                 f"# Source Retrieval Report: {charter.title}",
                 "",
                 f"- Total papers ingested: **{len(all_papers)}**",
+                f"- Source scope mode: {source_scope.get('mode', 'internal+arxiv')}",
+                (
+                    f"- Keywords: {', '.join(keywords)}"
+                    if keywords
+                    else "- Keywords: derived from problem statement"
+                ),
                 f"- Query categories: {', '.join(categories)}",
                 f"- Date range: {date_from or 'any'} to {date_until or 'any'}",
+                (
+                    "- Fulltext budget: "
+                    f"{source_scope.get('fulltext_budget', {}).get('max_fetches', 'n/a')}"
+                ),
             ]),
         ),
         next_actions=[
@@ -275,6 +339,7 @@ def literature_screen_operator(
     if charter is None:
         raise ValueError("Cycle is missing a charter")
 
+    skill_keys, skill_outcomes = _bound_skill_context(session, cycle, job.operator_name)
     batch_size = 20
     papers = lit_svc.get_papers_for_screening(session, cycle.id, batch_size=batch_size)
 
@@ -297,8 +362,13 @@ def literature_screen_operator(
             operator_report=OperatorReport(
                 title="Literature screening complete",
                 prompt_id="prompts/literature/v1/title_abstract_triage.md",
-                body_markdown="All papers screened. Moving to shortlisting.",
+                body_markdown="\n".join([
+                    "All papers screened. Moving to shortlisting.",
+                    "",
+                    f"- Bound skills: { _format_skill_line(skill_keys) }",
+                ]),
             ),
+            skill_execution_records=skill_outcomes,
             next_actions=[
                 NextAction(
                     action="shortlist_rank",
@@ -319,23 +389,13 @@ def literature_screen_operator(
         for paper in papers
     ]
 
-    # Call LLM triage
-    try:
-        gateway = ModelGateway.from_config(config)
-        responses = triage_batch(gateway, triage_requests)
-    except Exception as exc:
-        log.warning("triage_batch_failed_fallback", error=str(exc))
-        # If LLM is unavailable, mark all as uncertain with 0.5 score
-        from libs.literature.triage import TriageResponse
-        responses = [
-            TriageResponse(
-                paper_id=r.paper_id,
-                decision="uncertain",
-                score=0.5,
-                rationale=f"LLM unavailable: {exc}",
-            )
-            for r in triage_requests
-        ]
+    gateway = ModelGateway.from_config(config)
+    triage_route = gateway.resolve_route("triage")
+    responses = triage_batch(
+        gateway,
+        triage_requests,
+        preferred_route_id=triage_route.id,
+    )
 
     # Record decisions
     response_map = {r.paper_id: r for r in responses}
@@ -350,7 +410,7 @@ def literature_screen_operator(
             decision=resp.decision,
             score=resp.score,
             rationale=resp.rationale,
-            model_route_id="triage",
+            model_route_id=triage_route.id,
             prompt_id="prompts/literature/v1/title_abstract_triage.md",
             batch_index=0,
         )
@@ -393,9 +453,12 @@ def literature_screen_operator(
                 "# Screening Batch Report",
                 "",
                 f"- Papers screened in this batch: **{len(papers)}**",
+                f"- Model route: **{triage_route.id}**",
+                f"- Bound skills: **{_format_skill_line(skill_keys)}**",
                 f"- Next step: **{next_op}**",
             ]),
         ),
+        skill_execution_records=skill_outcomes,
         next_actions=[
             NextAction(
                 action=next_op,
@@ -415,6 +478,7 @@ def shortlist_rank_operator(
     """Rank screened papers and identify escalation candidates."""
     charter = session.get(ResearchCharterModel, cycle.charter_id)
     charter_title = charter.title if charter else cycle.public_id
+    skill_keys, skill_outcomes = _bound_skill_context(session, cycle, job.operator_name)
 
     max_shortlist = 20
     shortlisted = lit_svc.compute_shortlist(session, cycle.id, max_shortlist=max_shortlist)
@@ -426,10 +490,29 @@ def shortlist_rank_operator(
                 "paper_public_id": paper.public_id,
                 "rank": paper.shortlist_rank,
                 "score": paper.triage_score,
+                "shortlist_reason": paper.shortlist_reason,
             },
         }
         for paper in shortlisted
     ]
+    events.extend([
+        {
+            "event_type": "paper_shortlist_finalized",
+            "payload": {
+                "paper_public_id": paper.public_id,
+                "rank": paper.shortlist_rank,
+                "shortlist_reason": paper.shortlist_reason,
+            },
+        }
+        for paper in shortlisted
+    ])
+    events.append({
+        "event_type": "shortlist_decisions_finalized",
+        "payload": {
+            "cycle_public_id": cycle.public_id,
+            "shortlisted_count": len(shortlisted),
+        },
+    })
 
     escalation_candidates = lit_svc.get_escalation_candidates(session, cycle.id)
     if escalation_candidates:
@@ -452,9 +535,11 @@ def shortlist_rank_operator(
                 "",
                 f"- Shortlisted papers: **{len(shortlisted)}**",
                 f"- Escalation candidates: **{len(escalation_candidates)}**",
+                f"- Bound skills: **{_format_skill_line(skill_keys)}**",
                 f"- Next step: **{next_op}**",
             ]),
         ),
+        skill_execution_records=skill_outcomes,
         next_actions=[
             NextAction(
                 action=next_op,
@@ -472,7 +557,16 @@ def fulltext_escalation_operator(
     job: JobModel,
 ) -> OperatorResult:
     """Fetch full text for escalation candidates. HTML first, PDF fallback."""
-    candidates = lit_svc.get_escalation_candidates(session, cycle.id)
+    charter = session.get(ResearchCharterModel, cycle.charter_id)
+    source_scope = normalize_source_scope((charter.source_scope if charter else {}) or {})
+    max_fetches = _resolve_fulltext_budget(config, source_scope)
+    all_candidates = lit_svc.get_escalation_candidates(session, cycle.id)
+    candidates, skipped_count = lit_svc.select_escalation_candidates(
+        session,
+        cycle.id,
+        max_fetches=max_fetches,
+    )
+    skill_keys, skill_outcomes = _bound_skill_context(session, cycle, job.operator_name)
     artifact_dir = Path(config.data_root) / "artifacts" / "literature"
     fetcher = FulltextFetcher(artifact_dir=artifact_dir)
 
@@ -480,7 +574,15 @@ def fulltext_escalation_operator(
     fetched_count = 0
 
     for paper in candidates:
-        reason = f"Shortlisted #{paper.shortlist_rank}, score {paper.triage_score}"
+        reason = lit_svc.build_escalation_reason(paper)
+        events.append({
+            "event_type": "paper_escalation_decision_finalized",
+            "payload": {
+                "paper_public_id": paper.public_id,
+                "reason": reason,
+                "budget_limit": max_fetches,
+            },
+        })
         events.append({
             "event_type": "fulltext_fetch_requested",
             "payload": {"paper_public_id": paper.public_id, "reason": reason},
@@ -513,12 +615,36 @@ def fulltext_escalation_operator(
             })
         else:
             log.warning("fulltext_fetch_skipped", paper_id=paper.public_id)
+            events.append({
+                "event_type": "fulltext_fetch_skipped",
+                "payload": {
+                    "paper_public_id": paper.public_id,
+                    "reason": reason,
+                },
+            })
+
+    if skipped_count:
+        events.append({
+            "event_type": "fulltext_budget_exhausted",
+            "payload": {
+                "cycle_public_id": cycle.public_id,
+                "candidate_count": len(all_candidates),
+                "selected_count": len(candidates),
+                "skipped_count": skipped_count,
+                "budget_limit": max_fetches,
+            },
+        })
 
     return OperatorResult(
         state_patch=StatePatch(
             target_state=CycleStatus.READY,
             reason=f"Fetched full text for {fetched_count} papers",
-            context={"phase": "intake_escalation", "fetched_count": fetched_count},
+            context={
+                "phase": "intake_escalation",
+                "fetched_count": fetched_count,
+                "budget_limit": max_fetches,
+                "skipped_due_to_budget": skipped_count,
+            },
         ),
         emitted_events=events,
         operator_report=OperatorReport(
@@ -527,10 +653,15 @@ def fulltext_escalation_operator(
             body_markdown="\n".join([
                 "# Fulltext Escalation Report",
                 "",
-                f"- Candidates: **{len(candidates)}**",
+                f"- Candidates considered: **{len(all_candidates)}**",
+                f"- Budget limit: **{max_fetches}**",
+                f"- Selected for escalation: **{len(candidates)}**",
+                f"- Skipped due to budget: **{skipped_count}**",
                 f"- Successfully fetched: **{fetched_count}**",
+                f"- Bound skills: **{_format_skill_line(skill_keys)}**",
             ]),
         ),
+        skill_execution_records=skill_outcomes,
         next_actions=[
             NextAction(
                 action="literature_report",
@@ -566,6 +697,7 @@ def literature_report_operator(
         operator_report=OperatorReport(
             title=f"Literature Screening Report: {charter_title}",
             prompt_id="prompts/literature/v1/screening_report.md",
+            report_type="literature_screening_report",
             body_markdown=markdown,
         ),
     )

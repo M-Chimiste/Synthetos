@@ -97,6 +97,7 @@ def triage_batch(
     papers: list[TriageRequest],
     prompt_path: str = DEFAULT_PROMPT_PATH,
     model_role: str = "triage",
+    preferred_route_id: str | None = None,
 ) -> list[TriageResponse]:
     """Score a batch of papers using the triage model route.
 
@@ -104,6 +105,7 @@ def triage_batch(
     per-paper lineage. Returns one TriageResponse per paper.
     """
     template_text = _load_prompt_template(prompt_path)
+    route = gateway.resolve_route(model_role, preferred_route_id=preferred_route_id)
     responses: list[TriageResponse] = []
 
     for request in papers:
@@ -111,6 +113,7 @@ def triage_batch(
         try:
             result = gateway.call_chat_completion(
                 role=model_role,
+                preferred_route_id=route.id,
                 messages=[
                     {
                         "role": "system",
