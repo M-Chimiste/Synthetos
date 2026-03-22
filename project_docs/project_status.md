@@ -1,130 +1,95 @@
 # Project Status
 
-**Project:** ML Laboratory Co-Scientist
-**Repository:** `Synthetos`
-**Status Date:** 2026-03-22
-**Overall Status:** Phase 2 (Evidence, Hypotheses, Protocols) implemented and verified — ready for Phase 3
+**Project:** ML Laboratory Co-Scientist  
+**Repository:** `Synthetos`  
+**Status Date:** 2026-03-22  
+**Overall Status:** Phase 2 implemented, hardened, and re-verified — ready for Phase 3
 
 ## Current Summary
 
-Phase 2 is complete. The system can now extract structured evidence from shortlisted papers, generate a ranked hypothesis portfolio, critique hypotheses on novelty/feasibility/impact, and compile the top-ranked hypothesis into a validated ExperimentSpec. The full pipeline chains automatically: `evidence_extraction → hypothesis_generation → hypothesis_critique → protocol_compilation`.
+Phase 2 now meets the architectural intent of the phased plan, not just the mocked happy path. The system can:
 
-## Phase 2 — What Was Built
+- extract evidence cards from shortlisted sources
+- preserve provenance and read depth on evidence
+- detect both redundancy and conservative conflict signals between evidence claims
+- generate and rank multiple hypotheses from evidence only
+- stop cleanly when evidence or hypotheses are missing instead of auto-advancing
+- compile approved hypotheses into validated `ExperimentSpec`s
+- record Phase 2 skill execution lineage
+- record durable Phase 2 model invocation lineage
+- resolve required model routes from committed repo config
 
-### Database Layer
-- Three new SQLAlchemy models: `EvidenceCardModel`, `HypothesisCardModel`, `ExperimentSpecModel`
-- Alembic migration `20260322_000004_phase2_evidence_hypotheses.py`
-- Pydantic domain schemas: `EvidenceCard`, `HypothesisCard`, `ExperimentSpec`
-- API response schemas: summaries, details, list responses, portfolio ranking, evidence summary
-- `CyclePhase` enum extended with Phase 2 sub-phases
-- `CycleCommandRequest` extended with `start_evidence`, `request_hypothesis_review`, `request_protocol_compilation`
+The Phase 2 pipeline remains:
 
-### Service Layer (`libs/ideation/`)
-- `services.py` — evidence CRUD, conflict/redundancy detection, hypothesis creation/critique/ranking, experiment spec creation/validation/rejection
-- `extraction.py` — LLM-based evidence extraction with Jinja2 templates
-- `hypothesis_gen.py` — LLM-based multi-hypothesis generation (single call, temperature 0.7)
-- `critique.py` — per-hypothesis LLM critique with novelty/feasibility/impact scoring
-- `protocol_compiler.py` — LLM-based experiment protocol compilation
-- All modules follow the same pattern as `libs/literature/triage.py`: Pydantic models, template loading, JSON parsing with graceful fallback
+`evidence_extraction -> hypothesis_generation -> hypothesis_critique -> protocol_compilation`
 
-### Operators (4 new, registered in OPERATOR_REGISTRY)
-- `evidence_extraction_operator` — reads full-text artifacts (up to 4000 chars), extracts evidence, detects conflicts/redundancy
-- `hypothesis_generation_operator` — generates 5 candidate hypotheses from evidence summary
-- `hypothesis_critique_operator` — scores each hypothesis, computes portfolio ranking (composite = novelty × feasibility × impact), auto-approves top 3
-- `protocol_compilation_operator` — compiles top hypothesis into ExperimentSpec, validates (deterministic), rejects if blocking issues
+but now only advances when prerequisites are actually satisfied.
 
-### API Endpoints (8 new GET endpoints)
-- `GET /api/v1/cycles/{id}/evidence` — list evidence cards
-- `GET /api/v1/cycles/{id}/evidence/summary` — aggregate evidence stats
-- `GET /api/v1/cycles/{id}/evidence/{eid}` — evidence detail
-- `GET /api/v1/cycles/{id}/hypotheses` — list hypotheses
-- `GET /api/v1/cycles/{id}/hypotheses/portfolio` — ranked portfolio
-- `GET /api/v1/cycles/{id}/hypotheses/{hid}` — hypothesis detail with evidence cards
-- `GET /api/v1/cycles/{id}/experiment-specs` — list specs
-- `GET /api/v1/cycles/{id}/experiment-specs/{sid}` — spec detail with hypothesis summary
+## What Was Completed In This Session
 
-### CLI Commands (9 new)
-- `evidence list|show|summary`
-- `hypothesis list|show|portfolio`
-- `experiment list|show`
-- `cycle start-evidence`
+### Orchestration hardening
 
-### Skills (4 new under `skills/ideation/`)
-- `evidence_extraction` — for evidence_extraction operator
-- `novelty_critique` — for hypothesis_critique operator
-- `protocol_drafting` — for protocol_compilation operator
-- `benchmark_context` — for hypothesis_generation and protocol_compilation
+- Enforced evidence-first progression in `libs/orchestration/operators.py`
+- `evidence_extraction` no longer queues `hypothesis_generation` when no papers or no evidence cards are produced
+- `hypothesis_generation` now no-ops with a clear report when evidence is absent
+- `hypothesis_critique` now no-ops with a clear report when generated hypotheses are absent
+- `protocol_compilation` continues to require approved hypotheses and now records Phase 2 skill lineage in its no-op path too
 
-### Web UI
-- TypeScript interfaces for all Phase 2 entities
-- API fetch functions for evidence, hypotheses, portfolio, experiment specs
-- EvidencePanel — summary stats + scrollable evidence card list
-- HypothesisPortfolioPanel — ranked hypothesis cards with dimension scores
-- ExperimentSpecPanel — spec details with validation status
-- "Start Evidence Extraction" button
+### Phase 2 skill runtime + lineage
 
-### Prompt Templates (5 new under `prompts/ideation/v1/`)
-- `evidence_extraction.md`, `hypothesis_generation.md`, `hypothesis_critique.md`, `protocol_compilation.md`, `conflict_detection.md`
+- Wired all four Phase 2 operators into the existing skill-binding/runtime pattern
+- Added Phase 2 `skill_execution_records` so evidence, hypothesis, critique, and protocol steps are recorded like Phase 1
+- Expanded skill payloads to capture operator-specific influence metadata:
+  - evidence context shaping
+  - benchmark context injection
+  - novelty critique activity
+  - protocol drafting / protocol context shaping
 
-### Model Routes (4 new)
-- `evidence_extractor`, `ideation`, `critic`, `protocol_drafter`
+### Model routing + invocation lineage
 
-### Tests
-- 5 new unit test files (29 new tests): ideation services, evidence extraction, hypothesis generation, critique, protocol compiler
-- 1 new integration test file (6 new tests): Phase 2 API endpoints + full pipeline with mocked LLM
-- 4 new test fixtures: sample evidence/hypotheses/critique/protocol responses
+- Added committed default route config at `configs/models/routes.yaml`
+- Added durable model invocation persistence for all Phase 2 LLM-backed steps
+- Recorded route id, model id, prompt id, job/cycle linkage, and invocation parameters including bound skills
+
+### Evidence conflict detection
+
+- Replaced the placeholder conflict detector with a deterministic, conservative pass
+- Kept redundancy detection as a separate heuristic
+- Added symmetric `conflict_with` linking and explanatory `conflict_notes`
+
+### Testing and verification coverage
+
+- Added unit tests for Phase 2 operator gating behavior
+- Added unit tests for conflict detection behavior
+- Extended Phase 2 integration tests to verify:
+  - committed model-route resolution
+  - Phase 2 skill execution records
+  - Phase 2 model invocation persistence
+  - zero-evidence runs do not auto-advance
 
 ## Verification Status
 
-### Confirmed
-- `uv run ruff check .` — 0 violations
-- `uv run pytest tests/` — **63/63 tests passed** (zero regressions from Phase 0/1)
+### Confirmed this session
 
-### Test Breakdown
-- Phase 0 integration: 2 tests
-- Phase 1 integration: 5 tests
-- Phase 2 integration: 6 tests
-- Unit tests: 50 tests
+- `uv run pytest tests` — **112/112 tests passed**
+- `uv run ruff check /Users/c/software_projects/Synthetos` — **passed**
 
-## Phase 2 Exit Criteria (All Met)
+### Not yet live-verified
 
-1. ✅ Evidence cards produced from shortlisted sources
-2. ✅ At least three candidate hypotheses generated and ranked
-3. ✅ Chosen hypothesis compiles into a valid ExperimentSpec
-4. ✅ Skills influence context assembly in a recorded way
-5. ✅ Orchestrator can inspect portfolio and request next operator step through API
+- No live end-to-end run against a real local or hosted model backend was performed in this session
+- No Phase 2 smoke test against a real LM Studio / vLLM / other configured inference service was performed yet
 
-## LLM Gateway Overhaul (Cross-Cutting)
+## Phase 2 Exit Criteria
 
-Completed a major overhaul of the model gateway to be provider-agnostic, local-first, and support structured outputs.
-
-### Bug Fix
-- Fixed critical production bug: `call_chat_completion()` was returning a raw dict (full OpenAI response), but 4 of 5 callers treated it as a string. Tests masked this because they mocked with strings. Gateway now returns extracted content string.
-
-### Provider Support
-- Created `libs/adapters/llm/providers.py` — pure-function adapters for OpenAI-compatible (vLLM, LM Studio, Ollama, OpenAI), Anthropic (Messages API), and Google (Gemini). No vendor SDKs, just httpx request construction.
-- The `provider` field on `ModelRouteConfig` now drives endpoint, auth, payload format, and response extraction.
-- Added `priority` field for fallback chains (lower = preferred).
-- Added `supports_json_mode` field for structured output opt-in.
-
-### Structured Outputs + JSON Repair
-- Added `json-repair` dependency for handling malformed LLM JSON.
-- Created `libs/adapters/llm/json_utils.py` — shared `parse_json_lenient()` with multi-level fallback: `json.loads()` → extract from prose/fences → `json_repair`.
-- All 5 `_parse_*_json()` functions now use the shared utility.
-- Added `json_mode=True` to all LLM callers + `call_structured()` convenience method.
-
-### Local-First Defaults
-- All default routes now point to LM Studio (`localhost:1234`), no hardcoded model names.
-- Example configs: `routes.openai-example.yaml`, `routes.anthropic-example.yaml`, `routes.multi-local-example.yaml` (3 Mac + 1 GPU workstation).
-- Timeout defaults bumped to 60-120s for local inference.
-
-### Verification
-- `uv run ruff check .` — 0 violations
-- `uv run pytest tests/` — **104/104 tests passed** (41 new tests added)
+1. ✅ Evidence cards are produced from shortlisted sources
+2. ✅ At least three candidate hypotheses can be generated and ranked
+3. ✅ The chosen hypothesis compiles into a valid `ExperimentSpec`
+4. ✅ Skills influence context assembly and outputs in a recorded way
+5. ✅ An orchestrator can inspect the portfolio and request the next operator step through the API
 
 ## Recommended Next Steps
 
-1. Begin Phase 3: Code generation and containerized execution
-2. Run live smoke test with real LLM backend (local LM Studio) to verify end-to-end flow
-3. Run Alembic migration against Postgres to verify Phase 2 schema
-4. Consider model catalog feature for managing models across multiple local servers
+1. Begin Phase 3 implementation: execution lab, isolated workspaces, and containerized runs
+2. Run a live smoke test against a real model backend using the committed route config
+3. Verify Alembic migrations against the target Postgres setup, not just SQLite-backed tests
+4. Add Phase 3 telemetry/control views to the web UI once execution starts landing

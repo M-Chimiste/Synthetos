@@ -7,9 +7,11 @@ from typing import Any
 
 import structlog
 from pydantic import BaseModel
+from sqlalchemy.orm import Session
 
 from libs.adapters.llm.gateway import ModelGateway
 from libs.adapters.llm.json_utils import parse_json_lenient
+from libs.storage.services import record_model_invocation
 
 log = structlog.get_logger(__name__)
 
@@ -86,14 +88,20 @@ def generate_hypotheses(
     request: HypothesisGenRequest,
     prompt_path: str = PROMPT_PATH,
     model_role: str = "ideation",
+    session: Session | None = None,
+    cycle_id: int | None = None,
+    job_id: int | None = None,
+    invocation_parameters: dict[str, Any] | None = None,
 ) -> HypothesisGenResponse:
     """Generate N candidate hypotheses from evidence (single LLM call)."""
     template_text = _load_prompt_template(prompt_path)
     user_content = _render_prompt(template_text, request)
+    route = gateway.resolve_route(model_role)
 
     try:
         response_text = gateway.call_chat_completion(
             role=model_role,
+            preferred_route_id=route.id,
             messages=[
                 {"role": "system", "content": SYSTEM_PROMPT},
                 {"role": "user", "content": user_content},
@@ -102,6 +110,21 @@ def generate_hypotheses(
             max_tokens=2048,
             json_mode=True,
         )
+        if session is not None and cycle_id is not None:
+            record_model_invocation(
+                session,
+                cycle_id=cycle_id,
+                job_id=job_id,
+                route_id=route.id,
+                model_id=route.model,
+                prompt_id=prompt_path,
+                parameters={
+                    **(invocation_parameters or {}),
+                    "evidence_count": len(request.evidence_summary),
+                    "num_hypotheses": request.num_hypotheses,
+                },
+                usage={},
+            )
         hypotheses = _parse_hypotheses_json(response_text)
     except Exception as exc:
         log.warning("hypothesis_generation_failed", error=str(exc))

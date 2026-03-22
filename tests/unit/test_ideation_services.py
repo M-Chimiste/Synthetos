@@ -170,6 +170,77 @@ def test_detect_conflicts_and_redundancy(db_session, cycle, shortlisted_paper):
     assert redundancy_count == 1
 
 
+def test_detect_conflicts_and_redundancy_opposing_claims(db_session, cycle, shortlisted_paper):
+    first = create_evidence_card(
+        db_session, cycle.id, shortlisted_paper.id,
+        claim="The method improves validation accuracy on CIFAR benchmark",
+        evidence_type="finding",
+        strength="strong",
+        relevance_score=0.91,
+        relevance_rationale="Direct experimental result",
+        source_section=None,
+        source_quote=None,
+        read_depth="abstract",
+        model_route_id="ev",
+        prompt_id="p",
+    )
+    second = create_evidence_card(
+        db_session, cycle.id, shortlisted_paper.id,
+        claim="The method worsens validation accuracy on CIFAR benchmark",
+        evidence_type="finding",
+        strength="moderate",
+        relevance_score=0.82,
+        relevance_rationale="Countervailing result",
+        source_section=None,
+        source_quote=None,
+        read_depth="abstract",
+        model_route_id="ev",
+        prompt_id="p",
+    )
+
+    conflict_count, redundancy_count = detect_conflicts_and_redundancy(db_session, cycle.id)
+
+    assert conflict_count == 1
+    assert redundancy_count == 0
+    assert second.public_id in (first.conflict_with or [])
+    assert first.public_id in (second.conflict_with or [])
+    assert "opposing polarity cues" in (first.conflict_notes or "")
+
+
+def test_detect_conflicts_and_redundancy_unrelated_claims(db_session, cycle, shortlisted_paper):
+    create_evidence_card(
+        db_session, cycle.id, shortlisted_paper.id,
+        claim="The method improves validation accuracy on CIFAR benchmark",
+        evidence_type="finding",
+        strength="strong",
+        relevance_score=0.91,
+        relevance_rationale="Direct experimental result",
+        source_section=None,
+        source_quote=None,
+        read_depth="abstract",
+        model_route_id="ev",
+        prompt_id="p",
+    )
+    create_evidence_card(
+        db_session, cycle.id, shortlisted_paper.id,
+        claim="The dataset uses synthetic labels for pretraining",
+        evidence_type="dataset",
+        strength="moderate",
+        relevance_score=0.6,
+        relevance_rationale="Dataset detail",
+        source_section=None,
+        source_quote=None,
+        read_depth="abstract",
+        model_route_id="ev",
+        prompt_id="p",
+    )
+
+    conflict_count, redundancy_count = detect_conflicts_and_redundancy(db_session, cycle.id)
+
+    assert conflict_count == 0
+    assert redundancy_count == 0
+
+
 def test_get_papers_for_evidence_extraction(db_session, cycle, shortlisted_paper):
     papers = get_papers_for_evidence_extraction(db_session, cycle.id)
     assert len(papers) == 1

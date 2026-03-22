@@ -1,0 +1,48 @@
+routes:
+  - id: local-default
+    role: planning
+    provider: openai_compatible
+    base_url: http://localhost:1234/v1
+    model: local-model
+    supports_json_mode: true
+    priority: 0
+
+  - id: local-triage
+    role: triage
+    provider: openai_compatible
+    base_url: http://localhost:1234/v1
+    model: local-model
+    supports_json_mode: true
+    priority: 0
+
+  - id: local-evidence-extractor
+    role: evidence_extractor
+    provider: openai_compatible
+    base_url: http://localhost:1234/v1
+    model: local-model
+    supports_json_mode: true
+    priority: 0
+
+  - id: local-ideation
+    role: ideation
+    provider: openai_compatible
+    base_url: http://localhost:1234/v1
+    model: local-model
+    supports_json_mode: true
+    priority: 0
+
+  - id: local-critic
+    role: critic
+    provider: openai_compatible
+    base_url: http://localhost:1234/v1
+    model: local-model
+    supports_json_mode: true
+    priority: 0
+
+  - id: local-protocol-drafter
+    role: protocol_drafter
+    provider: openai_compatible
+    base_url: http://localhost:1234/v1
+    model: local-model
+    supports_json_mode: true
+    priority: 0

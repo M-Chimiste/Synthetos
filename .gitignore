@@ -38,6 +38,8 @@ models/
 data/
 database/
 temp_data/
+!configs/models/
+!configs/models/routes.yaml
 
 # IDE
 .vscode/

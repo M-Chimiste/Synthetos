@@ -1,0 +1,58 @@
+# Example: OpenAI hosted routes
+#
+# Copy this to routes.yaml and set OPENAI_API_KEY in your .env file.
+
+routes:
+  - id: openai-planning
+    role: planning
+    provider: openai_compatible
+    base_url: https://api.openai.com/v1
+    model: gpt-4o-mini
+    api_key_env: OPENAI_API_KEY
+    timeout_seconds: 30
+    priority: 0
+
+  - id: openai-triage
+    role: triage
+    provider: openai_compatible
+    base_url: https://api.openai.com/v1
+    model: gpt-4o-mini
+    api_key_env: OPENAI_API_KEY
+    timeout_seconds: 30
+    priority: 0
+
+  - id: openai-evidence
+    role: evidence_extractor
+    provider: openai_compatible
+    base_url: https://api.openai.com/v1
+    model: gpt-4o-mini
+    api_key_env: OPENAI_API_KEY
+    timeout_seconds: 60
+    priority: 0
+
+  - id: openai-ideation
+    role: ideation
+    provider: openai_compatible
+    base_url: https://api.openai.com/v1
+    model: gpt-4o
+    api_key_env: OPENAI_API_KEY
+    timeout_seconds: 60
+    priority: 0
+
+  - id: openai-critic
+    role: critic
+    provider: openai_compatible
+    base_url: https://api.openai.com/v1
+    model: gpt-4o-mini
+    api_key_env: OPENAI_API_KEY
+    timeout_seconds: 30
+    priority: 0
+
+  - id: openai-protocol
+    role: protocol_drafter
+    provider: openai_compatible
+    base_url: https://api.openai.com/v1
+    model: gpt-4o
+    api_key_env: OPENAI_API_KEY
+    timeout_seconds: 60
+    priority: 0

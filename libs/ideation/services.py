@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import re
 from typing import Any
 
 from sqlalchemy import select
@@ -14,6 +15,58 @@ from libs.storage.models import (
     HypothesisCardModel,
     PaperCardModel,
 )
+
+_CLAIM_STOPWORDS = {
+    "a",
+    "an",
+    "and",
+    "are",
+    "as",
+    "at",
+    "be",
+    "by",
+    "for",
+    "from",
+    "in",
+    "is",
+    "it",
+    "of",
+    "on",
+    "or",
+    "that",
+    "the",
+    "this",
+    "to",
+    "was",
+    "were",
+    "with",
+}
+_POLARITY_GROUPS: dict[str, set[str]] = {
+    "positive": {
+        "better",
+        "effective",
+        "effectively",
+        "improve",
+        "improved",
+        "improves",
+        "improving",
+    },
+    "negative": {
+        "ineffective",
+        "worse",
+        "worsen",
+        "worsened",
+        "worsens",
+        "worsening",
+    },
+    "up": {"higher", "increase", "increased", "increases", "increasing"},
+    "down": {"decrease", "decreased", "decreases", "decreasing", "lower"},
+}
+_POLARITY_TERMS = {term for terms in _POLARITY_GROUPS.values() for term in terms}
+_OPPOSING_GROUPS = {
+    frozenset({"positive", "negative"}),
+    frozenset({"up", "down"}),
+}
 
 # ---------------------------------------------------------------------------
 # Evidence
@@ -81,13 +134,86 @@ def create_evidence_card(
     return card
 
 
+def _tokenize_claim(claim: str) -> list[str]:
+    return re.findall(r"[a-z0-9]+", claim.lower())
+
+
+def _shape_tokens(tokens: list[str]) -> set[str]:
+    return {
+        token
+        for token in tokens
+        if token not in _CLAIM_STOPWORDS and token not in _POLARITY_TERMS and len(token) > 2
+    }
+
+
+def _claims_are_redundant(claim_a: str, claim_b: str) -> bool:
+    normalized_a = " ".join(_tokenize_claim(claim_a))
+    normalized_b = " ".join(_tokenize_claim(claim_b))
+    if not normalized_a or not normalized_b:
+        return False
+    if normalized_a == normalized_b:
+        return True
+    return (
+        len(normalized_a) > 20
+        and len(normalized_b) > 20
+        and (normalized_a in normalized_b or normalized_b in normalized_a)
+    )
+
+
+def _claim_polarities(tokens: list[str]) -> set[str]:
+    groups: set[str] = set()
+    token_set = set(tokens)
+    for group, terms in _POLARITY_GROUPS.items():
+        if token_set & terms:
+            groups.add(group)
+    return groups
+
+
+def _conflict_note(claim_a: str, claim_b: str) -> str | None:
+    tokens_a = _tokenize_claim(claim_a)
+    tokens_b = _tokenize_claim(claim_b)
+    shape_a = _shape_tokens(tokens_a)
+    shape_b = _shape_tokens(tokens_b)
+    shared_terms = sorted(shape_a & shape_b)
+    if len(shared_terms) < 2:
+        return None
+
+    groups_a = _claim_polarities(tokens_a)
+    groups_b = _claim_polarities(tokens_b)
+    if not groups_a or not groups_b:
+        return None
+
+    for group_a in groups_a:
+        for group_b in groups_b:
+            if frozenset({group_a, group_b}) in _OPPOSING_GROUPS:
+                shared_preview = ", ".join(shared_terms[:4])
+                return (
+                    "Potential conflict on overlapping terms "
+                    f"({shared_preview}) with opposing polarity cues "
+                    f"{group_a} vs {group_b}"
+                )
+    return None
+
+
+def _append_unique(existing: list[str] | None, value: str) -> list[str]:
+    items = list(existing or [])
+    if value not in items:
+        items.append(value)
+    return items
+
+
+def _append_note(existing: str | None, note: str) -> str:
+    if not existing:
+        return note
+    if note in existing:
+        return existing
+    return f"{existing}; {note}"
+
+
 def detect_conflicts_and_redundancy(
     session: Session, cycle_id: int,
 ) -> tuple[int, int]:
-    """Simple pairwise comparison of evidence claims by exact substring overlap.
-
-    Returns (conflict_count, redundancy_count).
-    """
+    """Detect conservative redundancy and conflict signals between evidence claims."""
     cards = list(
         session.scalars(
             select(EvidenceCardModel)
@@ -100,18 +226,20 @@ def detect_conflicts_and_redundancy(
 
     for i, a in enumerate(cards):
         for b in cards[i + 1 :]:
-            claim_a = a.claim.lower().strip()
-            claim_b = b.claim.lower().strip()
-            # Very simple heuristic: high overlap → redundant
-            if claim_a == claim_b or (
-                len(claim_a) > 20 and len(claim_b) > 20 and (
-                    claim_a in claim_b or claim_b in claim_a
-                )
-            ):
+            if _claims_are_redundant(a.claim, b.claim):
                 if b.public_id not in (a.redundant_with or []):
-                    a.redundant_with = list(a.redundant_with or []) + [b.public_id]
-                    b.redundant_with = list(b.redundant_with or []) + [a.public_id]
+                    a.redundant_with = _append_unique(a.redundant_with, b.public_id)
+                    b.redundant_with = _append_unique(b.redundant_with, a.public_id)
                     redundancy_count += 1
+                continue
+
+            note = _conflict_note(a.claim, b.claim)
+            if note and b.public_id not in (a.conflict_with or []):
+                a.conflict_with = _append_unique(a.conflict_with, b.public_id)
+                b.conflict_with = _append_unique(b.conflict_with, a.public_id)
+                a.conflict_notes = _append_note(a.conflict_notes, note)
+                b.conflict_notes = _append_note(b.conflict_notes, note)
+                conflict_count += 1
 
     session.flush()
     return conflict_count, redundancy_count

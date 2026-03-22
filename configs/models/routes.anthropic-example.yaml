@@ -1,0 +1,61 @@
+# Example: Anthropic hosted routes
+#
+# Copy this to routes.yaml and set ANTHROPIC_API_KEY in your .env file.
+#
+# Note: provider is "anthropic" — the gateway will use x-api-key header
+# and POST to /messages instead of /chat/completions.
+
+routes:
+  - id: anthropic-planning
+    role: planning
+    provider: anthropic
+    base_url: https://api.anthropic.com/v1
+    model: claude-sonnet-4-20250514
+    api_key_env: ANTHROPIC_API_KEY
+    timeout_seconds: 30
+    priority: 0
+
+  - id: anthropic-triage
+    role: triage
+    provider: anthropic
+    base_url: https://api.anthropic.com/v1
+    model: claude-haiku-4-20250514
+    api_key_env: ANTHROPIC_API_KEY
+    timeout_seconds: 30
+    priority: 0
+
+  - id: anthropic-evidence
+    role: evidence_extractor
+    provider: anthropic
+    base_url: https://api.anthropic.com/v1
+    model: claude-sonnet-4-20250514
+    api_key_env: ANTHROPIC_API_KEY
+    timeout_seconds: 60
+    priority: 0
+
+  - id: anthropic-ideation
+    role: ideation
+    provider: anthropic
+    base_url: https://api.anthropic.com/v1
+    model: claude-sonnet-4-20250514
+    api_key_env: ANTHROPIC_API_KEY
+    timeout_seconds: 60
+    priority: 0
+
+  - id: anthropic-critic
+    role: critic
+    provider: anthropic
+    base_url: https://api.anthropic.com/v1
+    model: claude-haiku-4-20250514
+    api_key_env: ANTHROPIC_API_KEY
+    timeout_seconds: 30
+    priority: 0
+
+  - id: anthropic-protocol
+    role: protocol_drafter
+    provider: anthropic
+    base_url: https://api.anthropic.com/v1
+    model: claude-sonnet-4-20250514
+    api_key_env: ANTHROPIC_API_KEY
+    timeout_seconds: 60
+    priority: 0

@@ -8,13 +8,19 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 from fastapi.testclient import TestClient
-from sqlalchemy import create_engine
+from sqlalchemy import create_engine, select
 from sqlalchemy.orm import sessionmaker
 
 from apps.api.main import app, get_db
 from libs.adapters.literature import RawPaperRecord
+from libs.adapters.llm.gateway import ModelGateway
 from libs.core.config import AppConfig
 from libs.storage.base import Base
+from libs.storage.models import (
+    ModelInvocationRecordModel,
+    ResearchCycleModel,
+    SkillExecutionRecordModel,
+)
 
 FIXTURES_DIR = Path(__file__).parent.parent / "fixtures"
 
@@ -224,12 +230,23 @@ def test_experiment_spec_list_endpoint(client):
     assert resp.json()["total"] == 0
 
 
+def test_phase2_model_routes_configured(tmp_config):
+    gateway = ModelGateway.from_config(tmp_config)
+
+    assert gateway.resolve_route("planning").id == "local-default"
+    assert gateway.resolve_route("triage").id == "local-triage"
+    assert gateway.resolve_route("evidence_extractor").id == "local-evidence-extractor"
+    assert gateway.resolve_route("ideation").id == "local-ideation"
+    assert gateway.resolve_route("critic").id == "local-critic"
+    assert gateway.resolve_route("protocol_drafter").id == "local-protocol-drafter"
+
+
 def _load_fixture(name: str) -> str:
     with open(FIXTURES_DIR / name) as f:
         return f.read()
 
 
-def test_full_phase2_pipeline_with_mocks(client, tmp_config):
+def test_full_phase2_pipeline_with_mocks(client, tmp_config, test_session):
     """Full Phase 2 pipeline: evidence → hypotheses → critique → protocol."""
     cycle_data = _create_cycle(client)
     cycle_id = cycle_data["cycle"]["public_id"]
@@ -334,3 +351,83 @@ def test_full_phase2_pipeline_with_mocks(client, tmp_config):
     state = detail.get("current_state_snapshot")
     assert state is not None
     assert state["context"].get("phase") == "phase2_complete"
+
+    with test_session() as session:
+        cycle = session.scalar(
+            select(ResearchCycleModel).where(ResearchCycleModel.public_id == cycle_id)
+        )
+        assert cycle is not None
+
+        skill_records = session.scalars(
+            select(SkillExecutionRecordModel).where(SkillExecutionRecordModel.cycle_id == cycle.id)
+        ).all()
+        operator_names = {record.operator_name for record in skill_records}
+        assert {
+            "evidence_extraction",
+            "hypothesis_generation",
+            "hypothesis_critique",
+            "protocol_compilation",
+        }.issubset(operator_names)
+        assert any(
+            record.payload.get("influence") == "protocol_context_shaping"
+            for record in skill_records
+        )
+
+        invocations = session.scalars(
+            select(ModelInvocationRecordModel).where(
+                ModelInvocationRecordModel.cycle_id == cycle.id
+            )
+        ).all()
+        assert len(invocations) >= 4
+        prompt_ids = {item.prompt_id for item in invocations}
+        assert "prompts/ideation/v1/evidence_extraction.md" in prompt_ids
+        assert "prompts/ideation/v1/hypothesis_generation.md" in prompt_ids
+        assert "prompts/ideation/v1/hypothesis_critique.md" in prompt_ids
+        assert "prompts/ideation/v1/protocol_compilation.md" in prompt_ids
+        assert all(item.parameters.get("bound_skills") for item in invocations)
+
+
+def test_zero_evidence_does_not_auto_advance(client, test_session):
+    cycle_data = _create_cycle(client)
+    cycle_id = cycle_data["cycle"]["public_id"]
+    _run_phase1(client, cycle_id)
+
+    resp = client.post(
+        f"/api/v1/cycles/{cycle_id}/commands",
+        json={"command": "start_evidence"},
+        headers=AUTH_HEADERS,
+    )
+    assert resp.status_code == 200
+
+    with patch(
+        "libs.adapters.llm.gateway.ModelGateway.call_chat_completion",
+        return_value="[]",
+    ):
+        result = _run_worker(client)
+        assert result == "job_succeeded"
+
+    resp = client.get(f"/api/v1/cycles/{cycle_id}/evidence", headers=AUTH_HEADERS)
+    assert resp.status_code == 200
+    assert resp.json()["total"] == 0
+
+    resp = client.get("/api/v1/jobs", headers=AUTH_HEADERS)
+    jobs = resp.json()["items"]
+    assert not any(job["operator_name"] == "hypothesis_generation" for job in jobs)
+
+    resp = client.get(f"/api/v1/cycles/{cycle_id}", headers=AUTH_HEADERS)
+    detail = resp.json()
+    report_titles = [report["title"] for report in detail["reports"]]
+    assert "Evidence Extraction (zero evidence)" in report_titles
+
+    with test_session() as session:
+        cycle = session.scalar(
+            select(ResearchCycleModel).where(ResearchCycleModel.public_id == cycle_id)
+        )
+        assert cycle is not None
+        skill_records = session.scalars(
+            select(SkillExecutionRecordModel).where(
+                SkillExecutionRecordModel.cycle_id == cycle.id,
+                SkillExecutionRecordModel.operator_name == "evidence_extraction",
+            )
+        ).all()
+        assert skill_records

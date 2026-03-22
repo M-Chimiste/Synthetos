@@ -54,6 +54,7 @@ from libs.skills.loader import load_all_skills
 from libs.storage.models import (
     DomainEventModel,
     JobModel,
+    ModelInvocationRecordModel,
     OrchestratorClientModel,
     OrchestratorCommandModel,
     OrchestratorTokenModel,
@@ -440,6 +441,32 @@ def create_report(
     session.add(report)
     session.flush()
     return report
+
+
+def record_model_invocation(
+    session: Session,
+    *,
+    cycle_id: int | None,
+    job_id: int | None,
+    route_id: str,
+    model_id: str,
+    prompt_id: str,
+    parameters: dict[str, Any] | None = None,
+    usage: dict[str, Any] | None = None,
+) -> ModelInvocationRecordModel:
+    record = ModelInvocationRecordModel(
+        public_id=generate_public_id("modelinv"),
+        cycle_id=cycle_id,
+        job_id=job_id,
+        route_id=route_id,
+        model_id=model_id,
+        prompt_id=prompt_id,
+        parameters=parameters or {},
+        usage=usage or {},
+    )
+    session.add(record)
+    session.flush()
+    return record
 
 
 def apply_operator_result(

@@ -42,6 +42,9 @@ def _bound_skill_context(
     session: Session,
     cycle: ResearchCycleModel,
     operator_name: str,
+    *,
+    influence: str = "context_and_reporting",
+    payload: dict[str, object] | None = None,
 ) -> tuple[list[str], list[SkillExecutionOutcome]]:
     skill_keys: list[str] = []
     outcomes: list[SkillExecutionOutcome] = []
@@ -62,7 +65,8 @@ def _bound_skill_context(
                 payload={
                     "reason": binding.binding_reason,
                     "skill_key": skill_key,
-                    "influence": "context_and_reporting",
+                    "influence": influence,
+                    **(payload or {}),
                 },
             )
         )
@@ -725,6 +729,18 @@ def evidence_extraction_operator(
         raise ValueError("Cycle is missing a charter")
 
     papers = ideation_svc.get_papers_for_evidence_extraction(session, cycle.id)
+    fulltext_aware = any(bool(paper.fulltext_artifact_path) for paper in papers)
+    skill_keys, skill_outcomes = _bound_skill_context(
+        session,
+        cycle,
+        job.operator_name,
+        influence="evidence_context_shaping",
+        payload={
+            "fulltext_aware": fulltext_aware,
+            "read_depth_strategy": "abstract_or_fulltext",
+        },
+    )
+
     if not papers:
         return OperatorResult(
             state_patch=StatePatch(
@@ -739,14 +755,13 @@ def evidence_extraction_operator(
             operator_report=OperatorReport(
                 title="Evidence Extraction (no papers)",
                 prompt_id="prompts/ideation/v1/evidence_extraction.md",
-                body_markdown="No shortlisted papers available for evidence extraction.",
+                body_markdown="\n".join([
+                    "No shortlisted papers available for evidence extraction.",
+                    "",
+                    f"- Bound skills: {_format_skill_line(skill_keys)}",
+                ]),
             ),
-            next_actions=[
-                NextAction(
-                    action="hypothesis_generation",
-                    payload={"cycle_public_id": cycle.public_id},
-                ),
-            ],
+            skill_execution_records=skill_outcomes,
         )
 
     requests = []
@@ -774,7 +789,18 @@ def evidence_extraction_operator(
         ))
 
     gateway = ModelGateway.from_config(config)
-    responses = extract_evidence_batch(gateway, requests)
+    responses = extract_evidence_batch(
+        gateway,
+        requests,
+        session=session,
+        cycle_id=cycle.id,
+        job_id=job.id,
+        invocation_parameters={
+            "operator_name": job.operator_name,
+            "bound_skills": skill_keys,
+            "read_depth_strategy": "abstract_or_fulltext",
+        },
+    )
 
     events: list[dict] = [{
         "event_type": "evidence_extraction_started",
@@ -833,6 +859,33 @@ def evidence_extraction_operator(
         "payload": {"cycle_public_id": cycle.public_id, "total_evidence": total_evidence},
     })
 
+    if total_evidence == 0:
+        return OperatorResult(
+            state_patch=StatePatch(
+                target_state=CycleStatus.READY,
+                reason=f"No evidence extracted from {len(papers)} papers",
+                context={"phase": "evidence_extraction", "total_evidence": 0},
+            ),
+            emitted_events=events,
+            operator_report=OperatorReport(
+                title="Evidence Extraction (zero evidence)",
+                prompt_id="prompts/ideation/v1/evidence_extraction.md",
+                body_markdown="\n".join([
+                    "# Evidence Extraction Report",
+                    "",
+                    f"- Papers processed: **{len(papers)}**",
+                    "- Evidence cards created: **0**",
+                    f"- Bound skills: **{_format_skill_line(skill_keys)}**",
+                    "",
+                    (
+                        "No evidence cards were extracted, so the cycle will not "
+                        "advance to hypothesis generation."
+                    ),
+                ]),
+            ),
+            skill_execution_records=skill_outcomes,
+        )
+
     return OperatorResult(
         state_patch=StatePatch(
             target_state=CycleStatus.READY,
@@ -850,8 +903,10 @@ def evidence_extraction_operator(
                 f"- Evidence cards created: **{total_evidence}**",
                 f"- Conflicts detected: **{conflict_count}**",
                 f"- Redundancies detected: **{redundancy_count}**",
+                f"- Bound skills: **{_format_skill_line(skill_keys)}**",
             ]),
         ),
+        skill_execution_records=skill_outcomes,
         next_actions=[
             NextAction(
                 action="hypothesis_generation",
@@ -877,6 +932,47 @@ def hypothesis_generation_operator(
         raise ValueError("Cycle is missing a charter")
 
     evidence_cards = ideation_svc.list_evidence_for_cycle(session, cycle.id)
+    benchmark_context_injected = False
+    skill_keys, skill_outcomes = _bound_skill_context(
+        session,
+        cycle,
+        job.operator_name,
+        influence="hypothesis_context_shaping",
+        payload={
+            "benchmark_context_injected": True,
+            "evidence_required": True,
+        },
+    )
+    benchmark_context_injected = any("benchmark_context" in key for key in skill_keys)
+    for outcome in skill_outcomes:
+        outcome.payload["benchmark_context_injected"] = benchmark_context_injected
+
+    if not evidence_cards:
+        return OperatorResult(
+            state_patch=StatePatch(
+                target_state=CycleStatus.READY,
+                reason="No evidence available for hypothesis generation",
+                context={"phase": "hypothesis_generation", "hypothesis_count": 0},
+            ),
+            emitted_events=[{
+                "event_type": "hypothesis_generation_skipped",
+                "payload": {
+                    "cycle_public_id": cycle.public_id,
+                    "reason": "no_evidence",
+                },
+            }],
+            operator_report=OperatorReport(
+                title="Hypothesis Generation (skipped)",
+                prompt_id="prompts/ideation/v1/hypothesis_generation.md",
+                body_markdown="\n".join([
+                    "No evidence cards are available, so hypothesis generation was skipped.",
+                    "",
+                    f"- Bound skills: {_format_skill_line(skill_keys)}",
+                ]),
+            ),
+            skill_execution_records=skill_outcomes,
+        )
+
     evidence_summary = [
         {
             "public_id": e.public_id,
@@ -895,7 +991,18 @@ def hypothesis_generation_operator(
         evidence_summary=evidence_summary,
         num_hypotheses=5,
     )
-    response = generate_hypotheses(gateway, request)
+    response = generate_hypotheses(
+        gateway,
+        request,
+        session=session,
+        cycle_id=cycle.id,
+        job_id=job.id,
+        invocation_parameters={
+            "operator_name": job.operator_name,
+            "bound_skills": skill_keys,
+            "benchmark_context_injected": benchmark_context_injected,
+        },
+    )
 
     events: list[dict] = [{
         "event_type": "hypothesis_generation_started",
@@ -926,6 +1033,33 @@ def hypothesis_generation_operator(
         "payload": {"cycle_public_id": cycle.public_id, "count": len(created)},
     })
 
+    if not created:
+        return OperatorResult(
+            state_patch=StatePatch(
+                target_state=CycleStatus.READY,
+                reason="Hypothesis generation produced no candidates",
+                context={"phase": "hypothesis_generation", "hypothesis_count": 0},
+            ),
+            emitted_events=events,
+            operator_report=OperatorReport(
+                title="Hypothesis Generation (zero candidates)",
+                prompt_id="prompts/ideation/v1/hypothesis_generation.md",
+                body_markdown="\n".join([
+                    "# Hypothesis Generation Report",
+                    "",
+                    f"- Evidence cards used: **{len(evidence_cards)}**",
+                    "- Hypotheses generated: **0**",
+                    f"- Bound skills: **{_format_skill_line(skill_keys)}**",
+                    "",
+                    (
+                        "No hypothesis candidates were generated, so the cycle will "
+                        "not advance to critique."
+                    ),
+                ]),
+            ),
+            skill_execution_records=skill_outcomes,
+        )
+
     return OperatorResult(
         state_patch=StatePatch(
             target_state=CycleStatus.READY,
@@ -941,12 +1075,14 @@ def hypothesis_generation_operator(
                 "",
                 f"- Evidence cards used: **{len(evidence_cards)}**",
                 f"- Hypotheses generated: **{len(created)}**",
+                f"- Bound skills: **{_format_skill_line(skill_keys)}**",
                 "",
             ] + [
                 f"### {i+1}. {c.title}\n{c.statement}\n"
                 for i, c in enumerate(created)
             ]),
         ),
+        skill_execution_records=skill_outcomes,
         next_actions=[
             NextAction(
                 action="hypothesis_critique",
@@ -972,6 +1108,17 @@ def hypothesis_critique_operator(
     if charter is None:
         raise ValueError("Cycle is missing a charter")
 
+    skill_keys, skill_outcomes = _bound_skill_context(
+        session,
+        cycle,
+        job.operator_name,
+        influence="hypothesis_critique_scoring",
+        payload={"novelty_critique_active": True},
+    )
+    novelty_critique_active = any("novelty_critique" in key for key in skill_keys)
+    for outcome in skill_outcomes:
+        outcome.payload["novelty_critique_active"] = novelty_critique_active
+
     hypotheses = list(
         session.scalars(
             select(HypothesisCardModel).where(
@@ -980,6 +1127,35 @@ def hypothesis_critique_operator(
             )
         ).all()
     )
+
+    if not hypotheses:
+        return OperatorResult(
+            state_patch=StatePatch(
+                target_state=CycleStatus.READY,
+                reason="No generated hypotheses available for critique",
+                context={"phase": "hypothesis_critique", "ranked_count": 0},
+            ),
+            emitted_events=[{
+                "event_type": "hypothesis_critique_skipped",
+                "payload": {
+                    "cycle_public_id": cycle.public_id,
+                    "reason": "no_generated_hypotheses",
+                },
+            }],
+            operator_report=OperatorReport(
+                title="Hypothesis Critique (skipped)",
+                prompt_id="prompts/ideation/v1/hypothesis_critique.md",
+                body_markdown="\n".join([
+                    (
+                        "No generated hypotheses are available, so critique and "
+                        "portfolio ranking were skipped."
+                    ),
+                    "",
+                    f"- Bound skills: {_format_skill_line(skill_keys)}",
+                ]),
+            ),
+            skill_execution_records=skill_outcomes,
+        )
 
     gateway = ModelGateway.from_config(config)
     events: list[dict] = [{
@@ -1019,7 +1195,19 @@ def hypothesis_critique_operator(
             counter_evidence=ctr_evidence,
             charter_problem=charter.problem_statement,
         )
-        response = critique_hypothesis(gateway, critique_req)
+        response = critique_hypothesis(
+            gateway,
+            critique_req,
+            session=session,
+            cycle_id=cycle.id,
+            job_id=job.id,
+            invocation_parameters={
+                "operator_name": job.operator_name,
+                "bound_skills": skill_keys,
+                "hypothesis_public_id": hyp.public_id,
+                "novelty_critique_active": novelty_critique_active,
+            },
+        )
         ideation_svc.record_hypothesis_critique(session, hyp, response.model_dump())
 
         events.append({
@@ -1057,6 +1245,29 @@ def hypothesis_critique_operator(
         "payload": {"cycle_public_id": cycle.public_id},
     })
 
+    if not ranked:
+        return OperatorResult(
+            state_patch=StatePatch(
+                target_state=CycleStatus.READY,
+                reason="Hypothesis critique produced no ranked portfolio",
+                context={"phase": "hypothesis_critique", "ranked_count": 0},
+            ),
+            emitted_events=events,
+            operator_report=OperatorReport(
+                title="Hypothesis Critique (zero ranked)",
+                prompt_id="prompts/ideation/v1/hypothesis_critique.md",
+                body_markdown="\n".join([
+                    "# Hypothesis Critique & Ranking Report",
+                    "",
+                    "- Portfolio ranked: **0**",
+                    f"- Bound skills: **{_format_skill_line(skill_keys)}**",
+                    "",
+                    "No ranked hypotheses were produced, so protocol compilation was not queued.",
+                ]),
+            ),
+            skill_execution_records=skill_outcomes,
+        )
+
     return OperatorResult(
         state_patch=StatePatch(
             target_state=CycleStatus.READY,
@@ -1072,6 +1283,7 @@ def hypothesis_critique_operator(
                 "",
                 f"- Hypotheses critiqued: **{len(hypotheses)}**",
                 f"- Portfolio ranked: **{len(ranked)}**",
+                f"- Bound skills: **{_format_skill_line(skill_keys)}**",
                 "",
             ] + [
                 f"### #{h.portfolio_rank}. {h.title}\n"
@@ -1083,6 +1295,7 @@ def hypothesis_critique_operator(
                 for h in ranked
             ]),
         ),
+        skill_execution_records=skill_outcomes,
         next_actions=[
             NextAction(
                 action="protocol_compilation",
@@ -1108,6 +1321,22 @@ def protocol_compilation_operator(
     if charter is None:
         raise ValueError("Cycle is missing a charter")
 
+    skill_keys, skill_outcomes = _bound_skill_context(
+        session,
+        cycle,
+        job.operator_name,
+        influence="protocol_context_shaping",
+        payload={
+            "benchmark_context_injected": True,
+            "protocol_drafting_active": True,
+        },
+    )
+    benchmark_context_injected = any("benchmark_context" in key for key in skill_keys)
+    protocol_drafting_active = any("protocol_drafting" in key for key in skill_keys)
+    for outcome in skill_outcomes:
+        outcome.payload["benchmark_context_injected"] = benchmark_context_injected
+        outcome.payload["protocol_drafting_active"] = protocol_drafting_active
+
     approved = ideation_svc.get_approved_hypotheses(session, cycle.id)
     if not approved:
         return OperatorResult(
@@ -1126,8 +1355,13 @@ def protocol_compilation_operator(
             operator_report=OperatorReport(
                 title="Protocol Compilation (no approved hypotheses)",
                 prompt_id="prompts/ideation/v1/protocol_compilation.md",
-                body_markdown="No approved hypotheses available for protocol compilation.",
+                body_markdown="\n".join([
+                    "No approved hypotheses available for protocol compilation.",
+                    "",
+                    f"- Bound skills: {_format_skill_line(skill_keys)}",
+                ]),
             ),
+            skill_execution_records=skill_outcomes,
         )
 
     hyp = approved[0]
@@ -1163,7 +1397,20 @@ def protocol_compilation_operator(
         charter_criteria=charter.success_criteria or {},
         constraints=charter.constraints or {},
     )
-    response = compile_protocol(gateway, compile_req)
+    response = compile_protocol(
+        gateway,
+        compile_req,
+        session=session,
+        cycle_id=cycle.id,
+        job_id=job.id,
+        invocation_parameters={
+            "operator_name": job.operator_name,
+            "bound_skills": skill_keys,
+            "hypothesis_public_id": hyp.public_id,
+            "benchmark_context_injected": benchmark_context_injected,
+            "protocol_drafting_active": protocol_drafting_active,
+        },
+    )
 
     spec = ideation_svc.create_experiment_spec(
         session, cycle.id, hyp.id,
@@ -1235,6 +1482,7 @@ def protocol_compilation_operator(
                 f"- Status: **{spec.status}**",
                 f"- Validation issues: **{len(issues)}**",
                 f"- GPU required: **{spec.gpu_required}**",
+                f"- Bound skills: **{_format_skill_line(skill_keys)}**",
                 "",
                 "## Objective",
                 spec.objective or "(empty)",
@@ -1246,6 +1494,7 @@ def protocol_compilation_operator(
                 spec.method_description or "(empty)",
             ]),
         ),
+        skill_execution_records=skill_outcomes,
     )
 
 

@@ -1,0 +1,98 @@
+# Example: Multi-server local setup
+#
+# 3 Mac servers running LM Studio + 1 GPU workstation running vLLM.
+# Uses priority to distribute roles across servers.
+#
+# - mac-1 (localhost:1234): planning, triage
+# - mac-2 (192.168.1.101:1234): evidence extraction, ideation
+# - mac-3 (192.168.1.102:1234): critic
+# - gpu-workstation (192.168.1.200:8000): protocol drafting (GPU-heavy)
+#
+# Lower priority = preferred. Add higher-priority fallback routes
+# for resilience (e.g., if mac-2 is down, mac-1 can handle ideation).
+
+routes:
+  # ── Mac 1: planning + triage ──
+  - id: mac1-planning
+    role: planning
+    provider: openai_compatible
+    base_url: http://localhost:1234/v1
+    model: default
+    timeout_seconds: 120
+    priority: 0
+
+  - id: mac1-triage
+    role: triage
+    provider: openai_compatible
+    base_url: http://localhost:1234/v1
+    model: default
+    timeout_seconds: 120
+    priority: 0
+
+  # ── Mac 2: evidence + ideation ──
+  - id: mac2-evidence
+    role: evidence_extractor
+    provider: openai_compatible
+    base_url: http://192.168.1.101:1234/v1
+    model: default
+    timeout_seconds: 120
+    priority: 0
+
+  - id: mac2-ideation
+    role: ideation
+    provider: openai_compatible
+    base_url: http://192.168.1.101:1234/v1
+    model: default
+    timeout_seconds: 120
+    priority: 0
+
+  # ── Mac 3: critic ──
+  - id: mac3-critic
+    role: critic
+    provider: openai_compatible
+    base_url: http://192.168.1.102:1234/v1
+    model: default
+    timeout_seconds: 120
+    priority: 0
+
+  # ── GPU workstation: protocol drafting ──
+  - id: gpu-protocol
+    role: protocol_drafter
+    provider: openai_compatible
+    base_url: http://192.168.1.200:8000/v1
+    model: default
+    timeout_seconds: 180
+    priority: 0
+
+  # ── Fallbacks: mac-1 can handle anything if primary is down ──
+  - id: mac1-evidence-fallback
+    role: evidence_extractor
+    provider: openai_compatible
+    base_url: http://localhost:1234/v1
+    model: default
+    timeout_seconds: 120
+    priority: 10
+
+  - id: mac1-ideation-fallback
+    role: ideation
+    provider: openai_compatible
+    base_url: http://localhost:1234/v1
+    model: default
+    timeout_seconds: 120
+    priority: 10
+
+  - id: mac1-critic-fallback
+    role: critic
+    provider: openai_compatible
+    base_url: http://localhost:1234/v1
+    model: default
+    timeout_seconds: 120
+    priority: 10
+
+  - id: mac1-protocol-fallback
+    role: protocol_drafter
+    provider: openai_compatible
+    base_url: http://localhost:1234/v1
+    model: default
+    timeout_seconds: 120
+    priority: 10

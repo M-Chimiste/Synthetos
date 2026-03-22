@@ -7,9 +7,11 @@ from typing import Any
 
 import structlog
 from pydantic import BaseModel
+from sqlalchemy.orm import Session
 
 from libs.adapters.llm.gateway import ModelGateway
 from libs.adapters.llm.json_utils import parse_json_lenient
+from libs.storage.services import record_model_invocation
 
 log = structlog.get_logger(__name__)
 
@@ -93,16 +95,22 @@ def extract_evidence_batch(
     requests: list[EvidenceExtractionRequest],
     prompt_path: str = PROMPT_PATH,
     model_role: str = "evidence_extractor",
+    session: Session | None = None,
+    cycle_id: int | None = None,
+    job_id: int | None = None,
+    invocation_parameters: dict[str, Any] | None = None,
 ) -> list[EvidenceExtractionResponse]:
     """Call LLM for each paper to extract structured evidence claims."""
     template_text = _load_prompt_template(prompt_path)
     results: list[EvidenceExtractionResponse] = []
+    route = gateway.resolve_route(model_role)
 
     for req in requests:
         user_content = _render_prompt(template_text, req)
         try:
             response_text = gateway.call_chat_completion(
                 role=model_role,
+                preferred_route_id=route.id,
                 messages=[
                     {"role": "system", "content": SYSTEM_PROMPT},
                     {"role": "user", "content": user_content},
@@ -111,6 +119,21 @@ def extract_evidence_batch(
                 max_tokens=1024,
                 json_mode=True,
             )
+            if session is not None and cycle_id is not None:
+                record_model_invocation(
+                    session,
+                    cycle_id=cycle_id,
+                    job_id=job_id,
+                    route_id=route.id,
+                    model_id=route.model,
+                    prompt_id=prompt_path,
+                    parameters={
+                        **(invocation_parameters or {}),
+                        "paper_id": req.paper_id,
+                        "has_fulltext_excerpt": bool(req.fulltext_excerpt),
+                    },
+                    usage={},
+                )
             items = _parse_evidence_json(response_text, req.paper_id)
         except Exception as exc:
             log.warning("evidence_extraction_failed", paper_id=req.paper_id, error=str(exc))
