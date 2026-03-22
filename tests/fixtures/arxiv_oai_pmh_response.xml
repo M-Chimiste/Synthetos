@@ -1,0 +1,56 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<OAI-PMH xmlns="http://www.openarchives.org/OAI/2.0/">
+  <responseDate>2024-01-15T00:00:00Z</responseDate>
+  <request verb="ListRecords" metadataPrefix="arXiv" set="cs" from="2024-01-01" until="2024-01-31">https://export.arxiv.org/oai2</request>
+  <ListRecords>
+    <record>
+      <header>
+        <identifier>oai:arXiv.org:2401.00001</identifier>
+        <datestamp>2024-01-15</datestamp>
+        <setSpec>cs</setSpec>
+      </header>
+      <metadata>
+        <arXiv xmlns="http://arxiv.org/OAI/arXiv/">
+          <id>2401.00001</id>
+          <created>2024-01-15</created>
+          <updated>2024-01-16</updated>
+          <authors>
+            <author>
+              <keyname>Smith</keyname>
+              <forenames>Alice</forenames>
+            </author>
+            <author>
+              <keyname>Jones</keyname>
+              <forenames>Bob</forenames>
+            </author>
+          </authors>
+          <title>A Novel Approach to Neural Architecture Search</title>
+          <categories>cs.LG cs.AI</categories>
+          <abstract>We propose a new method for efficient neural architecture search that reduces compute by 10x.</abstract>
+        </arXiv>
+      </metadata>
+    </record>
+    <record>
+      <header>
+        <identifier>oai:arXiv.org:2401.00002</identifier>
+        <datestamp>2024-01-20</datestamp>
+        <setSpec>cs</setSpec>
+      </header>
+      <metadata>
+        <arXiv xmlns="http://arxiv.org/OAI/arXiv/">
+          <id>2401.00002</id>
+          <created>2024-01-20</created>
+          <authors>
+            <author>
+              <keyname>White</keyname>
+              <forenames>Carol</forenames>
+            </author>
+          </authors>
+          <title>Improving Transformer Efficiency with Sparse Attention</title>
+          <categories>cs.CL cs.LG</categories>
+          <abstract>This paper presents a sparse attention mechanism.</abstract>
+        </arXiv>
+      </metadata>
+    </record>
+  </ListRecords>
+</OAI-PMH>

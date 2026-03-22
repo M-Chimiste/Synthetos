@@ -29,7 +29,12 @@ ALLOWED_TRANSITIONS: dict[CycleStatus, set[CycleStatus]] = {
         CycleStatus.CANCEL_REQUESTED,
         CycleStatus.FAILED,
     },
-    CycleStatus.READY: {CycleStatus.PAUSED, CycleStatus.CANCEL_REQUESTED, CycleStatus.CANCELLED},
+    CycleStatus.READY: {
+        CycleStatus.QUEUED,
+        CycleStatus.PAUSED,
+        CycleStatus.CANCEL_REQUESTED,
+        CycleStatus.CANCELLED,
+    },
     CycleStatus.PAUSED: {CycleStatus.QUEUED, CycleStatus.READY, CycleStatus.CANCEL_REQUESTED},
     CycleStatus.CANCEL_REQUESTED: {CycleStatus.CANCELLED, CycleStatus.FAILED},
     CycleStatus.CANCELLED: set(),

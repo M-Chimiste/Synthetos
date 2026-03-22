@@ -3,173 +3,127 @@
 **Project:** ML Laboratory Co-Scientist
 **Repository:** `Synthetos`
 **Status Date:** 2026-03-22
-**Overall Status:** Phase 0 foundation implemented, hardened, and verified — ready for Phase 1
+**Overall Status:** Phase 1 (Research Intake & Literature Triage) implemented and verified — ready for Phase 2
 
 ## Current Summary
 
-The repository has moved from planning-only documents through a working Phase 0 bootstrap to a hardened foundation. The control-plane foundation now exists across backend, worker, CLI, shared libraries, config assets, sample skills, and a web dashboard shell. A post-implementation inspection identified and resolved code quality, robustness, and performance issues.
+Phase 1 is complete. The system now delivers a full literature intake pipeline: a user can define a research problem, start literature intake, and the system will automatically retrieve papers from arXiv (and internal corpus), screen them by title + abstract using LLM triage, rank a shortlist, optionally fetch full text (HTML-first, PDF fallback with markitdown conversion), and generate a comprehensive literature screening report.
 
-The implemented vertical slice supports:
+Five new operators chain together via `next_actions` auto-enqueue:
+1. `source_retrieval` — fetches from arXiv OAI-PMH + internal corpus
+2. `literature_screen` — LLM-based title+abstract triage (loops until all papers screened)
+3. `shortlist_rank` — ranks screened papers, identifies escalation candidates
+4. `fulltext_escalation` — HTML-first (ar5iv), PDF fallback with markitdown conversion
+5. `literature_report` — generates the screening packet markdown report
 
-- creating a research cycle through the API
-- persisting the charter, cycle, state snapshots, jobs, events, reports, skills, and orchestrator records
-- enqueuing and claiming an `initialize_cycle` job
-- running a worker that transitions the cycle to `ready`
-- emitting append-only domain events for the cycle lifecycle
-- loading first-party `skill.md` packages from the repo
-- exposing a skill catalog and report retrieval endpoints
-- rendering a Phase 0 web shell and building it successfully
-- structured logging with cycle/job/operator correlation
-- graceful worker shutdown on SIGTERM/SIGINT
-- automatic reclamation of expired job leases
-- model invocation recording (table and migration ready for Phase 1)
+## Phase 1 Completed Work
 
-## Completed Work
+### Core Infrastructure Changes
 
-### Repository bootstrap
+- **next_actions auto-enqueue**: `apply_operator_result()` now auto-enqueues follow-up jobs from `OperatorResult.next_actions`, enabling operator chaining
+- **Worker auto-QUEUED**: Worker transitions cycle to QUEUED when pending jobs exist after an operator succeeds
+- **State machine**: Added READY → QUEUED transition to support pipeline re-entry
+- **CyclePhase enum**: Advisory sub-phase tracker (`libs/core/phases.py`) for tracking pipeline progress in state snapshot context
+- **start_intake command**: Extended `CycleCommandRequest` to accept `"start_intake"`, which enqueues the `source_retrieval` job
 
-- Created the Phase 0 monorepo shape under `apps/`, `libs/`, `configs/`, `prompts/`, `skills/`, `tests/`, and `scripts/`.
-- Added top-level Python and frontend workspace config with `pyproject.toml`, `package.json`, and `pnpm-workspace.yaml`.
-- Added local environment/bootstrap assets including `.env.example`, `docker-compose.yml`, `alembic.ini`, `scripts/bootstrap.sh`, and `scripts/check.sh`.
+### Database & Schemas
 
-### Backend and shared contracts
+- **3 new tables** via Alembic migration `20260322_000003_phase1_literature.py`:
+  - `source_retrieval_sessions` — tracks retrieval runs against sources
+  - `paper_cards` — core literature entity with lifecycle status, triage scores, shortlist rank, escalation info, dedup hash
+  - `screening_decisions` — individual triage decisions (audit trail)
+- **New Pydantic domain schemas**: `PaperCard`, `SourceRetrievalSession`, `ScreeningDecision`
+- **New API schemas**: `PaperCardSummary`, `PaperCardDetail`, `PaperListResponse`, `LiteratureTriageResponse`, `RetrievalSessionListResponse`
 
-- Implemented shared core contracts for:
-  - public ID generation
-  - cycle state transitions
-  - token scopes and actor identity
-  - operator input/output types
-  - app configuration loading
-  - structured logging (`libs/core/logging.py`)
-- Added Pydantic schemas for:
-  - `ResearchCharter`
-  - `ResearchStateSnapshot`
-  - `ResearchCycle`
-  - `JobRecord`
-  - `DomainEventEnvelope`
-  - `ModelInvocationRecord`
-  - skill and model route types
-  - API request/response envelopes
+### Source Adapters
 
-### Storage and orchestration
+- **arXiv OAI-PMH adapter** (`libs/adapters/arxiv/`): Rate-limited harvester with XML parsing, resumption token support, category/date filtering, subcategory support
+- **Internal corpus adapter** (`libs/adapters/corpus/`): Searches local markdown/text files under `$LAB_DATA_ROOT/corpus`
+- **Fulltext fetcher** (`libs/adapters/literature/fulltext.py`): HTML-first (ar5iv), PDF fallback with **markitdown** conversion to markdown
 
-- Added SQLAlchemy models for Phase 0 durable entities:
-  - research charters and cycles
-  - state snapshots
-  - jobs
-  - domain events
-  - report bundles
-  - approval events
-  - skill definitions, versions, bindings, execution records, and validation issues
-  - orchestrator clients, tokens, and commands
-  - model invocations (added during hardening)
-- Added Alembic environment with two migrations:
-  - `20260322_000001_phase0.py` — initial schema (15 tables)
-  - `20260322_000002_add_model_invocations.py` — model invocation tracking table
-- Implemented storage services for:
-  - cycle creation
-  - event appends
-  - report persistence
-  - skill syncing
-  - cycle detail assembly (with batch job lookup, no N+1 queries)
-  - command recording
-  - efficient event listing (scoped ID lookups instead of full-table loads)
-- Implemented worker/job runtime with:
-  - queue enqueue and claim logic (`FOR UPDATE SKIP LOCKED`)
-  - `initialize_cycle` operator
-  - job success/failure handling with exponential backoff (5s, 10s, 20s)
-  - expired lease reclamation on worker startup
-  - graceful shutdown via SIGTERM/SIGINT signal handling
-  - structured logging for operator start/success/failure
-  - state updates and report creation
+### Literature Services
 
-### API, CLI, and web shell
+- `libs/literature/services.py`: Business logic for paper ingestion (with dedup), screening, shortlisting, escalation recording, triage summary building, and screening report generation
+- `libs/literature/triage.py`: LLM triage integration with Jinja2 prompt rendering, structured JSON response parsing, graceful fallback for malformed responses
 
-- Added FastAPI control-plane endpoints for cycles, jobs, skills, reports, health, event streaming, and admin worker/model utilities.
-- Added bearer-token auth with seeded local development token storage.
-- SSE endpoint uses per-poll sessions (no long-held DB connections).
-- Session factory is cached per `db_url` (not recreated per request).
-- Added Typer CLI commands for cycle creation/list/show, cycle commands, skills listing, model probing, and worker run-once.
-- Added a React + Vite + Tailwind Phase 0 dashboard shell with:
-  - cycle creation form
-  - cycle list
-  - cycle detail panel
-  - event timeline
-  - report viewer
-  - skill catalog
+### LLM Gateway
 
-### Skills, prompts, and configs
+- Added `call_chat_completion()` to `ModelGateway` — OpenAI-compatible chat completions endpoint
+- Added `triage` model route in `configs/models/routes.yaml`
 
-- Added Phase 0 sample skills:
-  - `literature.problem_scoping_support`
-  - `literature.title_abstract_triage`
-- Added YAML-frontmatter skill parsing and hook export discovery.
-- Added placeholder prompt assets under `prompts/`.
-- Added initial model route and policy configs under `configs/`.
+### Five New Operators
 
-### Code quality and documentation
+All registered in `OPERATOR_REGISTRY`:
+- `source_retrieval_operator` — arXiv + corpus retrieval → PaperCards
+- `literature_screen_operator` — LLM triage with batch processing + loop
+- `shortlist_rank_operator` — score-based ranking + escalation detection
+- `fulltext_escalation_operator` — HTML/PDF fetch + markitdown conversion
+- `literature_report_operator` — screening packet generation
 
-- All 90 ruff lint violations resolved (0 remaining).
-- Ruff configured with per-file ignores for FastAPI `Depends()` patterns (B008) and Alembic migrations (E501).
-- Deduplicated `co-scientist_phased_implementation_plan.md` (958 → 625 lines, removed all duplicate sections).
-- Structured logging configured via structlog with console renderer (dev) and JSON renderer (production).
+### Skills & Prompts
+
+- **2 new skills**: `literature.shortlist_critique`, `literature.escalation_rationale`
+- **4 prompt assets**: `title_abstract_triage.md` (real Jinja2 template), `shortlist_ranking.md`, `escalation_rationale.md`, `screening_report.md`
+
+### API Endpoints
+
+- `GET /api/v1/cycles/{id}/papers` — list papers with optional status filter
+- `GET /api/v1/cycles/{id}/papers/{paper_id}` — paper detail with screening decisions
+- `GET /api/v1/cycles/{id}/literature` — triage summary (counts + paper list)
+- `GET /api/v1/cycles/{id}/retrieval-sessions` — retrieval session list
+- `POST /api/v1/cycles/{id}/commands` extended with `"start_intake"`
+
+### Web UI
+
+- "Start Literature Intake" button on cycle detail panel (visible when cycle is READY)
+- Literature Triage panel with retrieval progress, paper list, lifecycle status badges, triage scores, shortlist ranks
+- Header updated to "Phase 1 Control Tower"
+
+### CLI
+
+- `cycle start-intake <cycle_id>` — sends start_intake command
+- `papers list <cycle_id> [--status=]` — lists papers
+- `papers show <cycle_id> <paper_id>` — paper detail
+- `literature summary <cycle_id>` — triage summary
+
+### Dependencies
+
+- Added `jinja2`, `markitdown`, `tenacity` to `pyproject.toml`
 
 ## Verification Status
 
 ### Confirmed
 
-- `uv run ruff check .` — 0 violations.
-- `uv run pytest tests/` — 7/7 tests passed (2 integration, 5 unit).
-- Frontend build succeeds with `pnpm --dir apps/web build`.
-- Manual API smoke test succeeded for:
-  - cycle creation
-  - job enqueue
-  - worker run
-  - transition to `ready`
-  - report retrieval
-  - skill catalog retrieval
-  - pause/resume cycle commands
-  - event listing through the storage/event path
+- `uv run ruff check .` — 0 violations
+- `uv run pytest tests/` — 23/23 tests passed (6 integration, 17 unit)
+- Phase 0 integration tests still pass (no regressions)
+- Full pipeline integration test: create cycle → initialize → start intake → source retrieval → screening → shortlist → escalation → report (all with mocked external calls)
 
-### Issues found and fixed
+### Test Coverage
 
-During initial implementation (by Codex):
-- Renamed the SQLAlchemy `ReportBundleModel.metadata` mapped attribute to avoid the reserved declarative `metadata` name while keeping the database column name intact.
-- Added a proper `[dependency-groups].dev` section in `pyproject.toml` so `uv sync --dev` installs `pytest`.
-- Added `apps/web/src/vite-env.d.ts` so the frontend build recognizes `import.meta.env`.
-- Adjusted the integration test setup so config env vars are applied before the FastAPI app is imported.
+- **Unit tests** (17): core, skills, gateway, arxiv adapter XML parsing, literature services (ingest, screen, shortlist, escalation, report), triage JSON parsing
+- **Integration tests** (6): Phase 0 cycle+worker, Phase 0 skills, start_intake command, paper listing, literature triage endpoint, full pipeline with mock adapters
 
-During hardening pass:
-- Fixed session factory being recreated on every API request (now cached per `db_url`).
-- Fixed SSE endpoint holding a DB session for the entire stream lifetime (now opens/closes per poll).
-- Fixed N+1 queries in `build_cycle_detail()` (batch job ID lookup) and `list_events_after()` (scoped queries instead of full-table loads).
-- Added `ModelInvocationRecordModel` ORM model and Alembic migration (schema existed in Pydantic but had no table).
-- Added worker graceful shutdown via SIGTERM/SIGINT signal handling.
-- Added expired job lease reclamation at worker startup.
-- Added exponential backoff for job retries (was hardcoded 5s delay).
-- Added structured logging throughout the worker runtime.
-- Fixed all 90 ruff lint violations (line length, unused imports, import sorting, f-string cleanup).
-- Deduplicated the phased implementation plan document.
+## Phase 0 Work (Still In Place)
 
-### Still pending
-
-- No real Postgres-backed migration run or Docker-backed verification has been completed yet in this repo state.
-- SSE was validated structurally but not yet through a dedicated automated streaming test.
-- pyright is not yet installed as a dev dependency (listed in tech_context.md but missing from pyproject.toml).
-- Alembic is not yet the primary migration path (`Base.metadata.create_all()` still used for dev/test initialization).
-- Test coverage is narrow (7 tests — no coverage of auth rejection, cycle commands, invalid transitions, or error paths).
+All Phase 0 foundation remains intact and operational:
+- Monorepo structure, config, Docker Compose
+- State machine, job queue, operator pattern
+- API, CLI, Web UI (extended for Phase 1)
+- Skill system, event streaming, auth
 
 ## Current Risks / Gaps
 
-- The app currently relies on `Base.metadata.create_all()` for immediate local initialization; Alembic exists but has not yet been exercised as the primary migration path.
-- Test coverage is minimal (7 tests). Key gaps: auth/scope enforcement, cycle commands, state machine edge cases, worker error paths.
-- Integration tests use SQLite which differs from production PostgreSQL (JSON column behavior, `FOR UPDATE SKIP LOCKED` not available).
-- Model probing exists, but no durable model invocation recording has been wired into operator execution yet (table is ready).
+- Integration tests use SQLite (no `FOR UPDATE SKIP LOCKED`, JSON column behavior differs from PostgreSQL)
+- arXiv OAI-PMH has not been tested against live endpoint (only fixture-based XML parsing tests)
+- LLM triage tests mock the gateway; no end-to-end LLM test
+- pyright not yet in dev dependencies
+- Alembic not yet primary migration path (still using `create_all()` for dev/test)
 
 ## Recommended Next Steps
 
-1. Run a local Postgres-backed verification pass with Alembic and the API/worker loop.
-2. Add pyright as a dev dependency and fix any critical type errors.
-3. Switch `initialize_database()` to run Alembic programmatically (keep `create_all()` for tests only).
-4. Expand test coverage: auth rejection, cycle commands, invalid state transitions, worker error paths.
-5. Begin Phase 1 planning: research intake, arXiv metadata adapter, title/abstract triage operator.
+1. Run a local Postgres-backed verification with Alembic migrations
+2. Test arXiv adapter against live OAI-PMH endpoint
+3. Begin Phase 2: Evidence extraction, hypothesis portfolio, protocol compilation
+4. Add pyright as dev dependency and fix type errors
+5. Expand test coverage: auth rejection, error paths, concurrent worker scenarios

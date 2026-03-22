@@ -138,3 +138,34 @@ export interface SkillDetailResponse {
   validation_issues: Dictionary[];
 }
 
+export interface PaperCardSummary {
+  public_id: string;
+  title: string;
+  source_type: string;
+  external_id: string;
+  lifecycle_status: string;
+  triage_score?: number | null;
+  shortlist_rank?: number | null;
+  created_at: string;
+}
+
+export interface SourceRetrievalSession {
+  public_id: string;
+  source_type: string;
+  query_params: Dictionary;
+  status: string;
+  result_count: number;
+  error_message?: string | null;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface LiteratureTriageResponse {
+  retrieval_sessions: SourceRetrievalSession[];
+  total_papers: number;
+  screened_count: number;
+  shortlisted_count: number;
+  escalated_count: number;
+  papers: PaperCardSummary[];
+}
+

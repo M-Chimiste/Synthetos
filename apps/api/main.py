@@ -25,8 +25,12 @@ from libs.schemas.api import (
     HealthResponse,
     JobDetailResponse,
     JobListResponse,
+    LiteratureTriageResponse,
+    PaperCardDetail,
+    PaperListResponse,
     ReportDetailResponse,
     ReportListResponse,
+    RetrievalSessionListResponse,
     SkillDetailResponse,
     SkillListResponse,
 )
@@ -144,7 +148,7 @@ def cycle_command(
     actor: Actor = Depends(require_scopes(TokenScope.RUNS_CONTROL)),
     session: Session = Depends(get_db),
 ) -> CycleDetailResponse:
-    services.apply_cycle_command(session, actor, cycle_id, payload.command)
+    services.apply_cycle_command(session, actor, cycle_id, payload.command, payload.payload)
     services.record_command(
         session,
         actor=actor,
@@ -207,6 +211,49 @@ def get_report(
     session: Session = Depends(get_db),
 ) -> ReportDetailResponse:
     return services.get_report_detail(session, report_id)
+
+
+@app.get("/api/v1/cycles/{cycle_id}/papers", response_model=PaperListResponse)
+def list_papers(
+    cycle_id: str,
+    status: str | None = Query(default=None),
+    actor: Actor = Depends(require_scopes(TokenScope.CYCLES_READ)),
+    session: Session = Depends(get_db),
+) -> PaperListResponse:
+    items = services.list_papers_for_cycle(session, cycle_id, status_filter=status)
+    return PaperListResponse(items=items, total=len(items))
+
+
+@app.get("/api/v1/cycles/{cycle_id}/papers/{paper_id}", response_model=PaperCardDetail)
+def get_paper(
+    cycle_id: str,
+    paper_id: str,
+    actor: Actor = Depends(require_scopes(TokenScope.CYCLES_READ)),
+    session: Session = Depends(get_db),
+) -> PaperCardDetail:
+    return services.get_paper_detail(session, cycle_id, paper_id)
+
+
+@app.get("/api/v1/cycles/{cycle_id}/literature", response_model=LiteratureTriageResponse)
+def get_literature_triage(
+    cycle_id: str,
+    actor: Actor = Depends(require_scopes(TokenScope.CYCLES_READ)),
+    session: Session = Depends(get_db),
+) -> LiteratureTriageResponse:
+    return services.get_literature_summary(session, cycle_id)
+
+
+@app.get(
+    "/api/v1/cycles/{cycle_id}/retrieval-sessions",
+    response_model=RetrievalSessionListResponse,
+)
+def list_retrieval_sessions(
+    cycle_id: str,
+    actor: Actor = Depends(require_scopes(TokenScope.CYCLES_READ)),
+    session: Session = Depends(get_db),
+) -> RetrievalSessionListResponse:
+    items = services.list_retrieval_sessions_for_cycle(session, cycle_id)
+    return RetrievalSessionListResponse(items=items)
 
 
 @app.get("/api/v1/events/stream")

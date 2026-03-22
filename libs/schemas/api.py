@@ -8,13 +8,16 @@ from pydantic import BaseModel, Field
 from libs.schemas.domain import (
     DomainEventEnvelope,
     JobRecord,
+    PaperCard,
     ResearchCharter,
     ResearchCycle,
     ResearchStateSnapshot,
+    ScreeningDecision,
     SkillBinding,
     SkillDefinition,
     SkillExecutionRecord,
     SkillVersion,
+    SourceRetrievalSession,
 )
 
 
@@ -30,7 +33,8 @@ class CreateCycleRequest(BaseModel):
 
 
 class CycleCommandRequest(BaseModel):
-    command: Literal["pause", "cancel", "resume"]
+    command: Literal["pause", "cancel", "resume", "start_intake"]
+    payload: dict[str, Any] | None = None
 
 
 class ReportSummary(BaseModel):
@@ -96,6 +100,39 @@ class ReportListResponse(BaseModel):
 
 class JobListEnvelope(BaseModel):
     items: list[JobRecord]
+
+
+class PaperCardSummary(BaseModel):
+    public_id: str
+    title: str
+    source_type: str
+    external_id: str
+    lifecycle_status: str
+    triage_score: float | None = None
+    shortlist_rank: int | None = None
+    created_at: datetime
+
+
+class PaperCardDetail(PaperCard):
+    screening_decisions: list[ScreeningDecision] = Field(default_factory=list)
+
+
+class PaperListResponse(BaseModel):
+    items: list[PaperCardSummary]
+    total: int
+
+
+class LiteratureTriageResponse(BaseModel):
+    retrieval_sessions: list[SourceRetrievalSession]
+    total_papers: int
+    screened_count: int
+    shortlisted_count: int
+    escalated_count: int
+    papers: list[PaperCardSummary]
+
+
+class RetrievalSessionListResponse(BaseModel):
+    items: list[SourceRetrievalSession]
 
 
 class HealthResponse(BaseModel):

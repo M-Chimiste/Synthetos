@@ -124,6 +124,57 @@ class SkillExecutionRecord(BaseModel):
     updated_at: datetime
 
 
+class SourceRetrievalSession(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+
+    public_id: str
+    source_type: str
+    query_params: dict[str, Any]
+    status: str
+    result_count: int
+    error_message: str | None = None
+    created_at: datetime
+    updated_at: datetime
+
+
+class PaperCard(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+
+    public_id: str
+    source_type: str
+    external_id: str
+    title: str
+    abstract: str | None = None
+    authors: list[str]
+    categories: list[str]
+    publication_date: datetime | None = None
+    source_url: str | None = None
+    pdf_url: str | None = None
+    metadata_extra: dict[str, Any] = Field(default_factory=dict)
+    lifecycle_status: str
+    triage_score: float | None = None
+    triage_rationale: str | None = None
+    shortlist_rank: int | None = None
+    shortlist_reason: str | None = None
+    escalation_reason: str | None = None
+    escalation_type: str | None = None
+    created_at: datetime
+    updated_at: datetime
+
+
+class ScreeningDecision(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+
+    public_id: str
+    decision: str
+    score: float
+    rationale: str
+    model_route_id: str
+    prompt_id: str
+    batch_index: int
+    created_at: datetime
+
+
 class OrchestratorClient(BaseModel):
     model_config = ConfigDict(from_attributes=True)
 

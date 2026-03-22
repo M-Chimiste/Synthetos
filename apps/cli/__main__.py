@@ -86,6 +86,53 @@ def command_cycle(cycle_id: str, command: str) -> None:
         echo_json(response.json())
 
 
+@cycle_app.command("start-intake")
+def start_intake(cycle_id: str) -> None:
+    """Start literature intake for a research cycle."""
+    with api_client() as client:
+        response = client.post(
+            f"/api/v1/cycles/{cycle_id}/commands",
+            json={"command": "start_intake"},
+        )
+        response.raise_for_status()
+        echo_json(response.json())
+
+
+papers_app = typer.Typer()
+app.add_typer(papers_app, name="papers")
+
+literature_app = typer.Typer()
+app.add_typer(literature_app, name="literature")
+
+
+@papers_app.command("list")
+def list_papers(cycle_id: str, status: str | None = None) -> None:
+    """List papers for a research cycle."""
+    with api_client() as client:
+        params = {"status": status} if status else {}
+        response = client.get(f"/api/v1/cycles/{cycle_id}/papers", params=params)
+        response.raise_for_status()
+        echo_json(response.json())
+
+
+@papers_app.command("show")
+def show_paper(cycle_id: str, paper_id: str) -> None:
+    """Show paper detail."""
+    with api_client() as client:
+        response = client.get(f"/api/v1/cycles/{cycle_id}/papers/{paper_id}")
+        response.raise_for_status()
+        echo_json(response.json())
+
+
+@literature_app.command("summary")
+def literature_summary(cycle_id: str) -> None:
+    """Show literature triage summary for a cycle."""
+    with api_client() as client:
+        response = client.get(f"/api/v1/cycles/{cycle_id}/literature")
+        response.raise_for_status()
+        echo_json(response.json())
+
+
 @skills_app.command("list")
 def list_skills() -> None:
     with api_client() as client:

@@ -4,6 +4,7 @@ import signal
 import threading
 
 import structlog
+from sqlalchemy import select
 from sqlalchemy.orm import Session, sessionmaker
 
 from libs.core.config import AppConfig
@@ -17,6 +18,7 @@ from libs.orchestration.job_queue import (
     reclaim_expired_leases,
 )
 from libs.orchestration.operators import OPERATOR_REGISTRY
+from libs.storage.models import JobModel
 from libs.storage.services import (
     append_event,
     apply_operator_result,
@@ -26,6 +28,16 @@ from libs.storage.services import (
 log = structlog.get_logger(__name__)
 
 _shutdown_event = threading.Event()
+
+
+def _has_pending_jobs(session: Session, cycle_id: int) -> bool:
+    job = session.scalar(
+        select(JobModel).where(
+            JobModel.cycle_id == cycle_id,
+            JobModel.status.in_(["pending", "claimed"]),
+        )
+    )
+    return job is not None
 
 
 def run_worker_once(
@@ -83,6 +95,18 @@ def run_worker_once(
             actor=actor, result=result, config=config,
         )
         mark_job_succeeded(session, job)
+        # If next_actions enqueued new jobs, ensure cycle is QUEUED so they run
+        if result.next_actions and _has_pending_jobs(session, cycle.id):
+            current = CycleStatus(cycle.current_status)
+            if current == CycleStatus.READY:
+                create_state_snapshot(
+                    session,
+                    cycle=cycle,
+                    target_state=CycleStatus.QUEUED,
+                    actor=actor,
+                    reason="Auto-queued for next pipeline step",
+                    context={"next_operator": result.next_actions[0].action},
+                )
         log.info(
             "operator_succeeded",
             job_id=job.public_id,

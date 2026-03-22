@@ -241,6 +241,82 @@ class OrchestratorCommandModel(TimestampMixin, Base):
     result: Mapped[dict[str, Any]] = mapped_column(JSON, default=dict)
 
 
+class SourceRetrievalSessionModel(TimestampMixin, Base):
+    __tablename__ = "source_retrieval_sessions"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    public_id: Mapped[str] = mapped_column(String(64), unique=True, index=True)
+    cycle_id: Mapped[int] = mapped_column(ForeignKey("research_cycles.id"), index=True)
+    source_type: Mapped[str] = mapped_column(String(64))
+    query_params: Mapped[dict[str, Any]] = mapped_column(JSON, default=dict)
+    status: Mapped[str] = mapped_column(String(64), default="pending")
+    result_count: Mapped[int] = mapped_column(Integer, default=0)
+    error_message: Mapped[str | None] = mapped_column(Text, nullable=True)
+
+
+class PaperCardModel(TimestampMixin, Base):
+    __tablename__ = "paper_cards"
+    __table_args__ = (
+        UniqueConstraint("cycle_id", "content_hash", name="uq_paper_card_dedup"),
+    )
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    public_id: Mapped[str] = mapped_column(String(64), unique=True, index=True)
+    cycle_id: Mapped[int] = mapped_column(ForeignKey("research_cycles.id"), index=True)
+    retrieval_session_id: Mapped[int] = mapped_column(
+        ForeignKey("source_retrieval_sessions.id"), index=True,
+    )
+    source_type: Mapped[str] = mapped_column(String(64))  # arxiv, internal_corpus, external
+    external_id: Mapped[str] = mapped_column(String(255))
+    title: Mapped[str] = mapped_column(Text)
+    abstract: Mapped[str | None] = mapped_column(Text, nullable=True)
+    authors: Mapped[list[str]] = mapped_column(JSON, default=list)
+    categories: Mapped[list[str]] = mapped_column(JSON, default=list)
+    publication_date: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True,
+    )
+    source_url: Mapped[str | None] = mapped_column(String(512), nullable=True)
+    pdf_url: Mapped[str | None] = mapped_column(String(512), nullable=True)
+    metadata_extra: Mapped[dict[str, Any]] = mapped_column(JSON, default=dict)
+
+    # Lifecycle
+    lifecycle_status: Mapped[str] = mapped_column(
+        String(64), index=True, default="retrieved",
+    )  # retrieved, screened, shortlisted, html_fetched, pdf_fetched, rejected
+
+    # Triage
+    triage_score: Mapped[float | None] = mapped_column(nullable=True)
+    triage_rationale: Mapped[str | None] = mapped_column(Text, nullable=True)
+    triage_model_route: Mapped[str | None] = mapped_column(String(128), nullable=True)
+
+    # Shortlist
+    shortlist_rank: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    shortlist_reason: Mapped[str | None] = mapped_column(Text, nullable=True)
+
+    # Escalation
+    escalation_reason: Mapped[str | None] = mapped_column(Text, nullable=True)
+    escalation_type: Mapped[str | None] = mapped_column(String(32), nullable=True)  # html, pdf
+    fulltext_artifact_path: Mapped[str | None] = mapped_column(String(512), nullable=True)
+
+    # Dedup
+    content_hash: Mapped[str | None] = mapped_column(String(128), index=True, nullable=True)
+
+
+class ScreeningDecisionModel(TimestampMixin, Base):
+    __tablename__ = "screening_decisions"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    public_id: Mapped[str] = mapped_column(String(64), unique=True, index=True)
+    cycle_id: Mapped[int] = mapped_column(ForeignKey("research_cycles.id"), index=True)
+    paper_card_id: Mapped[int] = mapped_column(ForeignKey("paper_cards.id"), index=True)
+    decision: Mapped[str] = mapped_column(String(64))  # advance, reject, uncertain
+    score: Mapped[float] = mapped_column()
+    rationale: Mapped[str] = mapped_column(Text)
+    model_route_id: Mapped[str] = mapped_column(String(128))
+    prompt_id: Mapped[str] = mapped_column(String(255))
+    batch_index: Mapped[int] = mapped_column(Integer, default=0)
+
+
 class ModelInvocationRecordModel(TimestampMixin, Base):
     __tablename__ = "model_invocations"
 

@@ -66,6 +66,40 @@ class ModelGateway:
                 detail=str(exc),
             )
 
+    def call_chat_completion(
+        self,
+        role: str,
+        messages: list[dict[str, str]],
+        *,
+        preferred_route_id: str | None = None,
+        temperature: float = 0.3,
+        max_tokens: int = 1024,
+    ) -> dict:
+        """Call the OpenAI-compatible chat completions endpoint.
+
+        Returns the parsed JSON response dict.
+        """
+        route = self.resolve_route(role, preferred_route_id)
+        headers: dict[str, str] = {"Content-Type": "application/json"}
+        if route.api_key_env and os.getenv(route.api_key_env):
+            headers["Authorization"] = f"Bearer {os.getenv(route.api_key_env)}"
+
+        payload = {
+            "model": route.model,
+            "messages": messages,
+            "temperature": temperature,
+            "max_tokens": max_tokens,
+        }
+
+        response = httpx.post(
+            f"{route.base_url.rstrip('/')}/chat/completions",
+            headers=headers,
+            json=payload,
+            timeout=route.timeout_seconds,
+        )
+        response.raise_for_status()
+        return response.json()
+
     def probe_all(self) -> list[ModelProbeResult]:
         return [self.probe_route(route) for route in self.routes]
 

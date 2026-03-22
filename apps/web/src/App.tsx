@@ -9,11 +9,13 @@ import {
   cycleCommand,
   eventSource,
   getCycle,
+  getLiteratureTriage,
   getReport,
   listCycles,
   listSkills,
+  startIntake,
 } from "./lib/api";
-import type { CycleDetailResponse, CycleSummaryResponse, ReportDetail, SkillSummaryResponse } from "./lib/types";
+import type { CycleDetailResponse, CycleSummaryResponse, LiteratureTriageResponse, PaperCardSummary, ReportDetail, SkillSummaryResponse } from "./lib/types";
 
 const defaultForm = {
   title: "Phase 0 bootstrap cycle",
@@ -105,7 +107,23 @@ export default function App() {
     onSuccess: () => {
       client.invalidateQueries({ queryKey: ["cycle", selectedCycleId] });
       client.invalidateQueries({ queryKey: ["cycles"] });
+      client.invalidateQueries({ queryKey: ["literature", selectedCycleId] });
     },
+  });
+
+  const intakeMutation = useMutation({
+    mutationFn: async () => startIntake(selectedCycleId!),
+    onSuccess: () => {
+      client.invalidateQueries({ queryKey: ["cycle", selectedCycleId] });
+      client.invalidateQueries({ queryKey: ["cycles"] });
+    },
+  });
+
+  const literatureQuery = useQuery({
+    queryKey: ["literature", selectedCycleId],
+    queryFn: () => getLiteratureTriage(selectedCycleId!),
+    enabled: Boolean(selectedCycleId),
+    refetchInterval: 5000,
   });
 
   return (
@@ -115,10 +133,10 @@ export default function App() {
           <div className="flex flex-col gap-3 md:flex-row md:items-end md:justify-between">
             <div>
               <p className="text-xs uppercase tracking-[0.3em] text-slate-500">Synthetos</p>
-              <h1 className="text-3xl font-semibold">Phase 0 Control Tower</h1>
+              <h1 className="text-3xl font-semibold">Phase 1 Control Tower</h1>
               <p className="mt-2 max-w-2xl text-sm text-slate-600">
-                Create a cycle, watch the initialization worker drive it to <code>ready</code>,
-                inspect the event log, and browse the skill/report catalog through the same API contracts.
+                Create a cycle, start literature intake, watch the pipeline triage papers,
+                and browse shortlists, reports, and the skill catalog.
               </p>
             </div>
             <div className="rounded-2xl bg-slate-900 px-4 py-3 text-xs text-slate-100">
@@ -199,9 +217,12 @@ export default function App() {
           <CycleDetailPanel
             detail={cycleDetailQuery.data}
             onCommand={(command) => commandMutation.mutate(command)}
+            onStartIntake={() => intakeMutation.mutate()}
+            intakePending={intakeMutation.isPending}
             onSelectReport={setSelectedReportId}
           />
           <aside className="space-y-6">
+            <LiteraturePanel triage={literatureQuery.data} />
             <SkillsPanel skills={skillsQuery.data?.items ?? []} />
             <ReportPanel report={reportQuery.data} />
           </aside>
@@ -214,10 +235,14 @@ export default function App() {
 function CycleDetailPanel({
   detail,
   onCommand,
+  onStartIntake,
+  intakePending,
   onSelectReport,
 }: {
   detail?: CycleDetailResponse;
   onCommand: (command: string) => void;
+  onStartIntake: () => void;
+  intakePending: boolean;
   onSelectReport: (reportId: string) => void;
 }) {
   if (!detail) {
@@ -233,6 +258,15 @@ function CycleDetailPanel({
           <p className="mt-1 text-sm text-slate-600">{detail.charter.problem_statement}</p>
         </div>
         <div className="flex gap-2">
+          {detail.cycle.current_status === "ready" && (
+            <button
+              className="button-primary"
+              onClick={onStartIntake}
+              disabled={intakePending}
+            >
+              {intakePending ? "Starting..." : "Start Literature Intake"}
+            </button>
+          )}
           <button className="button-secondary" onClick={() => onCommand("pause")}>Pause</button>
           <button className="button-secondary" onClick={() => onCommand("resume")}>Resume</button>
           <button className="button-secondary" onClick={() => onCommand("cancel")}>Cancel</button>
@@ -294,6 +328,57 @@ function CycleDetailPanel({
             ))}
           </Subsection>
         </div>
+      </div>
+    </section>
+  );
+}
+
+function LiteraturePanel({ triage }: { triage?: LiteratureTriageResponse }) {
+  if (!triage || triage.total_papers === 0) {
+    return null;
+  }
+  const statusColor: Record<string, string> = {
+    retrieved: "bg-slate-100 text-slate-700",
+    screened: "bg-blue-100 text-blue-700",
+    shortlisted: "bg-emerald-100 text-emerald-700",
+    html_fetched: "bg-teal-100 text-teal-700",
+    pdf_fetched: "bg-teal-100 text-teal-700",
+    rejected: "bg-red-100 text-red-700",
+  };
+  return (
+    <section className="panel p-5">
+      <div className="mb-4">
+        <p className="text-xs uppercase tracking-[0.25em] text-slate-500">Literature Triage</p>
+        <h2 className="text-xl font-semibold">Paper Pipeline</h2>
+      </div>
+      <div className="mb-4 grid grid-cols-2 gap-2 text-sm">
+        <div>Total: <strong>{triage.total_papers}</strong></div>
+        <div>Screened: <strong>{triage.screened_count}</strong></div>
+        <div>Shortlisted: <strong>{triage.shortlisted_count}</strong></div>
+        <div>Escalated: <strong>{triage.escalated_count}</strong></div>
+      </div>
+      <div className="max-h-80 space-y-2 overflow-y-auto">
+        {triage.papers.map((paper: PaperCardSummary) => (
+          <div key={paper.public_id} className="rounded-xl border border-slate-200 p-3">
+            <div className="flex items-start justify-between gap-2">
+              <div className="min-w-0 flex-1">
+                <div className="truncate font-medium text-sm">{paper.title}</div>
+                <div className="text-xs text-slate-500">
+                  {paper.source_type} · {paper.external_id}
+                </div>
+              </div>
+              <span className={`shrink-0 rounded-full px-2 py-0.5 text-xs font-medium ${statusColor[paper.lifecycle_status] ?? "bg-slate-100 text-slate-700"}`}>
+                {paper.lifecycle_status}
+              </span>
+            </div>
+            {paper.triage_score != null && (
+              <div className="mt-1 text-xs text-slate-500">
+                Score: {paper.triage_score.toFixed(2)}
+                {paper.shortlist_rank != null && ` · Rank #${paper.shortlist_rank}`}
+              </div>
+            )}
+          </div>
+        ))}
       </div>
     </section>
   );

@@ -19,6 +19,9 @@ from libs.schemas.api import (
     CycleDetailResponse,
     CycleSummaryResponse,
     JobDetailResponse,
+    LiteratureTriageResponse,
+    PaperCardDetail,
+    PaperCardSummary,
     ReportDetailResponse,
     ReportSummary,
     SkillDetailResponse,
@@ -427,6 +430,13 @@ def apply_operator_result(
                 payload=outcome.payload,
             )
         )
+    from libs.orchestration.job_queue import enqueue_job as _enqueue
+
+    for action in result.next_actions:
+        _enqueue(
+            session, actor, cycle.id,
+            action.action, action.payload,
+        )
     append_event(
         session,
         actor=actor,
@@ -743,7 +753,10 @@ def record_command(
     )
 
 
-def apply_cycle_command(session: Session, actor: Actor, cycle_public_id: str, command: str) -> None:
+def apply_cycle_command(
+    session: Session, actor: Actor, cycle_public_id: str, command: str,
+    payload: dict | None = None,
+) -> None:
     cycle = get_cycle_by_public_id(session, cycle_public_id)
     current = CycleStatus(cycle.current_status)
     if command == "pause":
@@ -759,6 +772,23 @@ def apply_cycle_command(session: Session, actor: Actor, cycle_public_id: str, co
         )
     elif command == "resume":
         target = CycleStatus.QUEUED if _has_pending_jobs(session, cycle.id) else CycleStatus.READY
+    elif command == "start_intake":
+        if current != CycleStatus.READY:
+            raise HTTPException(
+                status_code=400,
+                detail=f"Cannot start intake from state {current.value}; cycle must be READY",
+            )
+        charter = session.get(ResearchCharterModel, cycle.charter_id)
+        source_scope = charter.source_scope if charter else {}
+        job_payload = {
+            "cycle_public_id": cycle.public_id,
+            "source_scope": source_scope,
+        }
+        if payload:
+            job_payload["source_overrides"] = payload
+        from libs.orchestration.job_queue import enqueue_job as _enqueue_job
+        _enqueue_job(session, actor, cycle.id, "source_retrieval", job_payload)
+        target = CycleStatus.QUEUED
     else:
         raise HTTPException(status_code=400, detail="Unsupported command")
     ensure_transition(current, target)
@@ -789,3 +819,94 @@ def _has_pending_jobs(session: Session, cycle_id: int) -> bool:
         )
     )
     return job is not None
+
+
+# ---------------------------------------------------------------------------
+# Phase 1 — Literature query helpers
+# ---------------------------------------------------------------------------
+
+
+def list_papers_for_cycle(
+    session: Session, cycle_public_id: str, status_filter: str | None = None,
+) -> list[PaperCardSummary]:
+    from libs.storage.models import PaperCardModel
+
+    cycle = get_cycle_by_public_id(session, cycle_public_id)
+    query = (
+        select(PaperCardModel)
+        .where(PaperCardModel.cycle_id == cycle.id)
+    )
+    if status_filter:
+        query = query.where(PaperCardModel.lifecycle_status == status_filter)
+    query = query.order_by(
+        PaperCardModel.shortlist_rank.asc().nullslast(),
+        PaperCardModel.triage_score.desc().nullslast(),
+        PaperCardModel.created_at.asc(),
+    ).limit(200)
+    papers = session.scalars(query).all()
+    return [
+        PaperCardSummary(
+            public_id=p.public_id,
+            title=p.title,
+            source_type=p.source_type,
+            external_id=p.external_id,
+            lifecycle_status=p.lifecycle_status,
+            triage_score=p.triage_score,
+            shortlist_rank=p.shortlist_rank,
+            created_at=p.created_at,
+        )
+        for p in papers
+    ]
+
+
+def get_paper_detail(
+    session: Session, cycle_public_id: str, paper_public_id: str,
+) -> PaperCardDetail:
+    from libs.schemas.domain import PaperCard as PaperCardSchema
+    from libs.schemas.domain import ScreeningDecision
+    from libs.storage.models import PaperCardModel, ScreeningDecisionModel
+
+    cycle = get_cycle_by_public_id(session, cycle_public_id)
+    paper = session.scalar(
+        select(PaperCardModel).where(
+            PaperCardModel.public_id == paper_public_id,
+            PaperCardModel.cycle_id == cycle.id,
+        )
+    )
+    if paper is None:
+        raise HTTPException(status_code=404, detail="Paper not found")
+
+    decisions = session.scalars(
+        select(ScreeningDecisionModel)
+        .where(ScreeningDecisionModel.paper_card_id == paper.id)
+        .order_by(ScreeningDecisionModel.created_at.desc())
+    ).all()
+
+    return PaperCardDetail(
+        **PaperCardSchema.model_validate(paper).model_dump(),
+        screening_decisions=[ScreeningDecision.model_validate(d) for d in decisions],
+    )
+
+
+def get_literature_summary(
+    session: Session, cycle_public_id: str,
+) -> LiteratureTriageResponse:
+    from libs.literature.services import build_literature_triage_summary
+
+    cycle = get_cycle_by_public_id(session, cycle_public_id)
+    return build_literature_triage_summary(session, cycle)
+
+
+def list_retrieval_sessions_for_cycle(
+    session: Session, cycle_public_id: str,
+) -> list:
+    from libs.schemas.domain import SourceRetrievalSession as SRSDomain
+    from libs.storage.models import SourceRetrievalSessionModel
+
+    cycle = get_cycle_by_public_id(session, cycle_public_id)
+    sessions = session.scalars(
+        select(SourceRetrievalSessionModel)
+        .where(SourceRetrievalSessionModel.cycle_id == cycle.id)
+        .order_by(SourceRetrievalSessionModel.created_at.asc())
+    ).all()
+    return [SRSDomain.model_validate(s) for s in sessions]

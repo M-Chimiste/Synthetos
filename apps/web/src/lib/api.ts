@@ -1,6 +1,8 @@
 import type {
   CycleDetailResponse,
   CycleSummaryResponse,
+  LiteratureTriageResponse,
+  PaperCardSummary,
   ReportDetail,
   SkillDetailResponse,
   SkillSummaryResponse,
@@ -69,6 +71,19 @@ export function streamUrl(cycleId?: string): string {
 
 export function eventSource(cycleId?: string): EventSource {
   return new EventSource(streamUrl(cycleId), { withCredentials: false });
+}
+
+export function listPapers(cycleId: string, status?: string): Promise<{ items: PaperCardSummary[]; total: number }> {
+  const params = status ? `?status=${status}` : "";
+  return request(`/api/v1/cycles/${cycleId}/papers${params}`);
+}
+
+export function getLiteratureTriage(cycleId: string): Promise<LiteratureTriageResponse> {
+  return request(`/api/v1/cycles/${cycleId}/literature`);
+}
+
+export function startIntake(cycleId: string): Promise<CycleDetailResponse> {
+  return cycleCommand(cycleId, "start_intake");
 }
 
 export { API_BASE, API_TOKEN };
