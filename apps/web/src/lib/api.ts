@@ -9,6 +9,8 @@ import type {
   PaperCardSummary,
   PortfolioRankingResponse,
   ReportDetail,
+  RunDetailResponse,
+  RunListResponse,
   SkillDetailResponse,
   SkillSummaryResponse,
 } from "./types";
@@ -113,6 +115,41 @@ export function listExperimentSpecs(cycleId: string) {
 
 export function startEvidence(cycleId: string) {
   return cycleCommand(cycleId, "start_evidence");
+}
+
+export function listRuns(cycleId: string) {
+  return request<RunListResponse>(`/api/v1/cycles/${cycleId}/runs`);
+}
+
+export function getRun(runId: string) {
+  return request<RunDetailResponse>(`/api/v1/runs/${runId}`);
+}
+
+export function createRun(specId: string, executionProfile = "cpu-small", forceStart = false) {
+  return request<RunDetailResponse>(`/api/v1/experiment-specs/${specId}/runs`, {
+    method: "POST",
+    body: JSON.stringify({
+      execution_profile: executionProfile,
+      force_start: forceStart,
+    }),
+  });
+}
+
+export function runCommand(runId: string, command: "pause" | "cancel" | "retry") {
+  return request<RunDetailResponse>(`/api/v1/runs/${runId}/commands`, {
+    method: "POST",
+    body: JSON.stringify({ command }),
+  });
+}
+
+export function runStreamUrl(runId: string): string {
+  const url = new URL(`${API_BASE}/api/v1/runs/${runId}/telemetry/stream`);
+  url.searchParams.set("token", API_TOKEN);
+  return url.toString();
+}
+
+export function runEventSource(runId: string): EventSource {
+  return new EventSource(runStreamUrl(runId), { withCredentials: false });
 }
 
 export { API_BASE, API_TOKEN };

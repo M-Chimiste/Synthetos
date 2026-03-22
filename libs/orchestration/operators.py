@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import json
+from datetime import UTC, datetime
 from pathlib import Path
 
 import structlog
@@ -7,7 +9,9 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from libs.adapters.arxiv.adapter import ArxivAdapterConfig, ArxivMetadataAdapter
+from libs.adapters.container import DockerContainerAdapter
 from libs.adapters.corpus.adapter import CorpusAdapterConfig, InternalCorpusAdapter
+from libs.adapters.git import GitWorktreeAdapter
 from libs.adapters.literature import SourceQuery
 from libs.adapters.literature.fulltext import FulltextFetcher
 from libs.adapters.llm.gateway import ModelGateway
@@ -24,16 +28,29 @@ from libs.core.operators import (
 )
 from libs.core.policy import Actor
 from libs.core.state_machine import CycleStatus
+from libs.execution import (
+    build_run_spec,
+    classify_failure,
+    collect_artifact_manifest,
+    preflight_run_spec,
+    stage_execution_harness,
+)
 from libs.literature import services as lit_svc
 from libs.literature.triage import TriageRequest, triage_batch
 from libs.storage.models import (
+    ExperimentSpecModel,
     JobModel,
     ResearchCharterModel,
     ResearchCycleModel,
     SkillVersionModel,
     SourceRetrievalSessionModel,
 )
-from libs.storage.services import bind_skills_for_cycle, normalize_source_scope
+from libs.storage.services import (
+    append_run_telemetry_event,
+    bind_skills_for_cycle,
+    get_run_by_public_id,
+    normalize_source_scope,
+)
 
 log = structlog.get_logger(__name__)
 
@@ -75,6 +92,43 @@ def _bound_skill_context(
 
 def _format_skill_line(skill_keys: list[str]) -> str:
     return ", ".join(skill_keys) if skill_keys else "none"
+
+
+def _assign_run_public_id(
+    outcomes: list[SkillExecutionOutcome], run_public_id: str
+) -> list[SkillExecutionOutcome]:
+    for outcome in outcomes:
+        outcome.run_public_id = run_public_id
+    return outcomes
+
+
+def _experiment_spec_schema(spec: ExperimentSpecModel):
+    from libs.schemas.domain import ExperimentSpec
+
+    return ExperimentSpec(
+        public_id=spec.public_id,
+        hypothesis_public_id="",
+        title=spec.title,
+        objective=spec.objective,
+        baseline_description=spec.baseline_description,
+        method_description=spec.method_description,
+        controls=spec.controls or [],
+        metrics=spec.metrics or [],
+        datasets=spec.datasets or [],
+        artifacts=spec.artifacts or [],
+        stop_conditions=spec.stop_conditions or [],
+        expected_outputs=spec.expected_outputs or [],
+        status=spec.status,
+        validation_issues=spec.validation_issues or [],
+        rejection_reason=spec.rejection_reason,
+        estimated_runtime_minutes=spec.estimated_runtime_minutes,
+        gpu_required=spec.gpu_required,
+        resource_requirements=spec.resource_requirements or {},
+        model_route_id=spec.model_route_id,
+        prompt_id=spec.prompt_id,
+        created_at=spec.created_at,
+        updated_at=spec.updated_at,
+    )
 
 
 def _resolve_fulltext_budget(config: AppConfig, source_scope: dict) -> int:
@@ -1498,6 +1552,444 @@ def protocol_compilation_operator(
     )
 
 
+# ---------------------------------------------------------------------------
+# Phase 3 — Run execution lab
+# ---------------------------------------------------------------------------
+
+
+def run_prepare_operator(
+    session: Session,
+    config: AppConfig,
+    actor: Actor,
+    cycle: ResearchCycleModel,
+    job: JobModel,
+) -> OperatorResult:
+    run = get_run_by_public_id(session, job.payload["run_public_id"])
+    spec = session.get(ExperimentSpecModel, run.experiment_spec_id)
+    if spec is None:
+        raise ValueError("Run is missing its experiment spec")
+    if spec.status not in {"valid", "approved"}:
+        raise ValueError("Experiment spec must be valid or approved before run preparation")
+
+    skill_keys, skill_outcomes = _bound_skill_context(
+        session,
+        cycle,
+        job.operator_name,
+        influence="execution_patch_authoring",
+        payload={
+            "prompt_id": "prompts/coding/v1/experiment_patch_author.md",
+            "harness_template": "offline_baseline",
+        },
+    )
+    _assign_run_public_id(skill_outcomes, run.public_id)
+
+    worktree = GitWorktreeAdapter(Path.cwd()).create_worktree(config.workspaces_dir, run.public_id)
+    spec_schema = _experiment_spec_schema(spec)
+    paths = stage_execution_harness(
+        config=config,
+        workspace_path=worktree.workspace_path,
+        run_public_id=run.public_id,
+        experiment_spec=spec_schema,
+    )
+    patch_archive_path = GitWorktreeAdapter(Path.cwd()).capture_patch_archive(
+        worktree.workspace_path,
+        paths.patch_archive_path,
+    )
+    run_spec = build_run_spec(
+        config=config,
+        run_public_id=run.public_id,
+        workspace_path=worktree.workspace_path,
+        experiment_spec=spec_schema,
+        execution_profile=run.execution_profile,
+        patch_archive_path=patch_archive_path,
+        artifact_root=paths.artifact_root,
+        env_overrides=run.env_vars,
+    )
+    issues = preflight_run_spec(run_spec)
+
+    run.workspace_path = run_spec.workspace_path
+    run.artifact_root = run_spec.artifact_output_path
+    run.stdout_path = str(paths.stdout_path)
+    run.stderr_path = str(paths.stderr_path)
+    run.patch_archive_path = str(patch_archive_path)
+    run.base_commit = worktree.base_commit
+    run.base_branch = worktree.base_branch
+    run.image = run_spec.image
+    run.build_recipe = run_spec.build_recipe
+    run.command = run_spec.command
+    run.env_vars = run_spec.env_vars
+    run.mounts = run_spec.mounts
+    run.hardware_profile = run_spec.hardware_profile
+    run.timeout_seconds = run_spec.timeout_seconds
+    run.memory_limit_mb = run_spec.memory_limit_mb
+    run.cpu_limit = run_spec.cpu_limit
+    run.gpu_enabled = run_spec.gpu_enabled
+    run.network_mode = run_spec.network_mode
+    run.bound_skill_keys = skill_keys
+    run.prompt_lineage = [
+        {"prompt_id": "prompts/coding/v1/experiment_patch_author.md", "mode": "deterministic"}
+    ]
+    run.model_lineage = [{"mode": "deterministic_patch_authoring"}]
+    run.attempt_count += 1
+
+    events = [
+        {
+            "event_type": "run_preparation_started",
+            "payload": {"cycle_public_id": cycle.public_id, "run_public_id": run.public_id},
+        }
+    ]
+    if issues:
+        run.status = "failed"
+        run.failure_classification = "harness_mismatch"
+        run.last_error = "; ".join(issues)
+        events.append(
+            {
+                "event_type": "run_preparation_failed",
+                "payload": {
+                    "run_public_id": run.public_id,
+                    "issues": issues,
+                },
+            }
+        )
+        return OperatorResult(
+            state_patch=StatePatch(
+                target_state=CycleStatus.READY,
+                reason="Run preparation failed preflight",
+                context={"run_public_id": run.public_id, "phase": "run_prepare"},
+            ),
+            emitted_events=events,
+            operator_report=OperatorReport(
+                title=f"Run Preparation Failed: {run.public_id}",
+                prompt_id="prompts/coding/v1/experiment_patch_author.md",
+                body_markdown="\n".join(
+                    [
+                        "# Run Preparation",
+                        "",
+                        f"- Run: **{run.public_id}**",
+                        f"- Bound skills: **{_format_skill_line(skill_keys)}**",
+                        "",
+                        "## Preflight issues",
+                        *[f"- {issue}" for issue in issues],
+                    ]
+                ),
+            ),
+            skill_execution_records=skill_outcomes,
+        )
+
+    run.status = "ready_to_execute"
+    events.append(
+        {
+            "event_type": "run_prepared",
+            "payload": {
+                "run_public_id": run.public_id,
+                "workspace_path": run.workspace_path,
+                "patch_archive_path": run.patch_archive_path,
+            },
+        }
+    )
+    return OperatorResult(
+        state_patch=StatePatch(
+            target_state=CycleStatus.READY,
+            reason="Run prepared for execution",
+            context={"run_public_id": run.public_id, "phase": "run_prepare"},
+        ),
+        emitted_events=events,
+        operator_report=OperatorReport(
+            title=f"Run Preparation: {run.public_id}",
+            prompt_id="prompts/coding/v1/experiment_patch_author.md",
+            body_markdown="\n".join(
+                [
+                    "# Run Preparation",
+                    "",
+                    f"- Run: **{run.public_id}**",
+                    f"- Experiment spec: **{spec.public_id}**",
+                    f"- Execution profile: **{run.execution_profile}**",
+                    f"- Patch archive: **{run.patch_archive_path}**",
+                    f"- Bound skills: **{_format_skill_line(skill_keys)}**",
+                ]
+            ),
+        ),
+        skill_execution_records=skill_outcomes,
+        next_actions=[NextAction(action="run_execute", payload=job.payload)],
+    )
+
+
+def run_execute_operator(
+    session: Session,
+    config: AppConfig,
+    actor: Actor,
+    cycle: ResearchCycleModel,
+    job: JobModel,
+) -> OperatorResult:
+    run = get_run_by_public_id(session, job.payload["run_public_id"])
+    if run.status == "cancelled":
+        return OperatorResult(
+            state_patch=StatePatch(
+                target_state=CycleStatus.READY,
+                reason="Run already cancelled before execution",
+                context={"run_public_id": run.public_id, "phase": "run_execute"},
+            ),
+            emitted_events=[],
+            operator_report=OperatorReport(
+                title=f"Run Execution Skipped: {run.public_id}",
+                prompt_id="prompts/coding/v1/experiment_patch_author.md",
+                body_markdown="Run was cancelled before container execution started.",
+            ),
+        )
+
+    telemetry_settings = config.load_yaml(config.execution_settings_path).get("telemetry", {})
+    adapter = DockerContainerAdapter(
+        poll_interval_seconds=float(telemetry_settings.get("poll_interval_seconds", 1))
+    )
+
+    run.status = "running"
+    run.started_at = run.started_at or datetime.now(UTC)
+    append_run_telemetry_event(
+        session,
+        run=run,
+        event_type="run_started",
+        payload={"run_public_id": run.public_id},
+    )
+
+    def _status_checker() -> str | None:
+        session.refresh(run)
+        if run.status in {"pause_requested", "cancel_requested"}:
+            return run.status
+        return None
+
+    def _telemetry_callback(
+        event_type: str, payload: dict[str, object], stream: str | None, message: str | None
+    ) -> None:
+        append_run_telemetry_event(
+            session,
+            run=run,
+            event_type=event_type,
+            payload=payload,
+            stream=stream,
+            message=message,
+        )
+        session.flush()
+
+    from libs.schemas.domain import RunSpec
+
+    execution_result = adapter.run(
+        spec=RunSpec(
+            workspace_path=run.workspace_path,
+            image=run.image,
+            build_recipe=run.build_recipe or {},
+            command=run.command or [],
+            env_vars=run.env_vars or {},
+            mounts=run.mounts or [],
+            hardware_profile=run.hardware_profile,
+            timeout_seconds=run.timeout_seconds,
+            memory_limit_mb=run.memory_limit_mb,
+            cpu_limit=run.cpu_limit,
+            gpu_enabled=run.gpu_enabled,
+            network_mode=run.network_mode,
+            artifact_output_path=run.artifact_root,
+            patch_archive_path=run.patch_archive_path,
+        ),
+        stdout_path=Path(run.stdout_path or ""),
+        stderr_path=Path(run.stderr_path or ""),
+        telemetry_callback=_telemetry_callback,
+        status_checker=_status_checker,
+        container_name=f"synthetos-{run.public_id[:18]}",
+    )
+
+    artifact_manifest = collect_artifact_manifest(Path(run.artifact_root))
+    metrics_path = artifact_manifest.get("metrics_path")
+    metrics_summary = {}
+    if metrics_path and Path(str(metrics_path)).exists():
+        metrics_summary = json.loads(Path(str(metrics_path)).read_text(encoding="utf-8"))
+
+    run.latest_resource_snapshot = execution_result.latest_resource_snapshot
+    run.artifact_manifest = artifact_manifest
+    run.metrics_summary = metrics_summary
+    run.exit_code = execution_result.exit_code
+    run.completed_at = datetime.now(UTC)
+    run.failure_classification = classify_failure(
+        exit_code=execution_result.exit_code,
+        interrupted_status=execution_result.interrupted_status,
+        artifact_manifest=artifact_manifest,
+        stderr_path=Path(run.stderr_path or ""),
+    )
+    run.last_error = None if run.failure_classification is None else run.failure_classification
+    if execution_result.interrupted_status == "paused":
+        run.status = "paused"
+    elif execution_result.interrupted_status == "cancelled":
+        run.status = "cancelled"
+    elif run.failure_classification is None:
+        run.status = "succeeded"
+    else:
+        run.status = "failed"
+
+    events = [
+        {
+            "event_type": "run_execution_complete",
+            "payload": {
+                "cycle_public_id": cycle.public_id,
+                "run_public_id": run.public_id,
+                "status": run.status,
+                "failure_classification": run.failure_classification,
+            },
+        }
+    ]
+    return OperatorResult(
+        state_patch=StatePatch(
+            target_state=CycleStatus.READY,
+            reason=f"Run execution finished with status {run.status}",
+            context={"run_public_id": run.public_id, "phase": "run_execute"},
+        ),
+        emitted_events=events,
+        operator_report=OperatorReport(
+            title=f"Run Execution: {run.public_id}",
+            prompt_id="prompts/coding/v1/experiment_patch_author.md",
+            body_markdown="\n".join(
+                [
+                    "# Run Execution",
+                    "",
+                    f"- Run: **{run.public_id}**",
+                    f"- Status: **{run.status}**",
+                    f"- Exit code: **{run.exit_code}**",
+                    f"- Failure classification: **{run.failure_classification or 'none'}**",
+                ]
+            ),
+        ),
+        next_actions=[NextAction(action="run_finalize", payload=job.payload)],
+    )
+
+
+def run_finalize_operator(
+    session: Session,
+    config: AppConfig,
+    actor: Actor,
+    cycle: ResearchCycleModel,
+    job: JobModel,
+) -> OperatorResult:
+    run = get_run_by_public_id(session, job.payload["run_public_id"])
+    skill_keys, skill_outcomes = _bound_skill_context(
+        session,
+        cycle,
+        job.operator_name,
+        influence="run_evaluation_and_summary",
+        payload={"artifact_manifest_present": bool(run.artifact_manifest)},
+    )
+    _assign_run_public_id(skill_outcomes, run.public_id)
+
+    events = [
+        {
+            "event_type": "run_finalized",
+            "payload": {
+                "cycle_public_id": cycle.public_id,
+                "run_public_id": run.public_id,
+                "status": run.status,
+            },
+        }
+    ]
+    return OperatorResult(
+        state_patch=StatePatch(
+            target_state=CycleStatus.READY,
+            reason="Run finalized",
+            context={"run_public_id": run.public_id, "phase": "phase3_complete"},
+        ),
+        emitted_events=events,
+        operator_report=OperatorReport(
+            title=f"Run Summary: {run.public_id}",
+            prompt_id="prompts/coding/v1/experiment_patch_author.md",
+            report_type="run_summary_report",
+            body_markdown="\n".join(
+                [
+                    "# Run Summary",
+                    "",
+                    f"- Run: **{run.public_id}**",
+                    f"- Status: **{run.status}**",
+                    f"- Execution profile: **{run.execution_profile}**",
+                    f"- Metrics: `{json.dumps(run.metrics_summary or {}, sort_keys=True)}`",
+                    f"- Bound skills: **{_format_skill_line(skill_keys)}**",
+                    "",
+                    f"- Artifact root: `{run.artifact_root}`",
+                ]
+            ),
+        ),
+        skill_execution_records=skill_outcomes,
+    )
+
+
+def run_retry_repair_operator(
+    session: Session,
+    config: AppConfig,
+    actor: Actor,
+    cycle: ResearchCycleModel,
+    job: JobModel,
+) -> OperatorResult:
+    run = get_run_by_public_id(session, job.payload["run_public_id"])
+    skill_keys, skill_outcomes = _bound_skill_context(
+        session,
+        cycle,
+        job.operator_name,
+        influence="run_repair_revision",
+        payload={
+            "prompt_id": "prompts/coding/v1/experiment_repair.md",
+            "failure_classification": run.failure_classification,
+        },
+    )
+    _assign_run_public_id(skill_outcomes, run.public_id)
+
+    repair_path = Path(run.workspace_path) / "generated_runs" / run.public_id / "repair_notes.json"
+    repair_path.parent.mkdir(parents=True, exist_ok=True)
+    repair_path.write_text(
+        json.dumps(
+            {
+                "run_public_id": run.public_id,
+                "failure_classification": run.failure_classification,
+                "repaired_at": datetime.now(UTC).isoformat(),
+                "strategy": "deterministic_harness_retry",
+            },
+            indent=2,
+        ),
+        encoding="utf-8",
+    )
+    run.status = "ready_to_execute"
+    run.last_error = None
+    run.prompt_lineage = [
+        *list(run.prompt_lineage or []),
+        {"prompt_id": "prompts/coding/v1/experiment_repair.md", "mode": "deterministic"},
+    ]
+    run.model_lineage = [*list(run.model_lineage or []), {"mode": "deterministic_repair"}]
+
+    return OperatorResult(
+        state_patch=StatePatch(
+            target_state=CycleStatus.READY,
+            reason="Run repair prepared for retry",
+            context={"run_public_id": run.public_id, "phase": "run_retry_repair"},
+        ),
+        emitted_events=[
+            {
+                "event_type": "run_repair_prepared",
+                "payload": {
+                    "run_public_id": run.public_id,
+                    "failure_classification": run.failure_classification,
+                },
+            }
+        ],
+        operator_report=OperatorReport(
+            title=f"Run Repair: {run.public_id}",
+            prompt_id="prompts/coding/v1/experiment_repair.md",
+            body_markdown="\n".join(
+                [
+                    "# Run Repair",
+                    "",
+                    f"- Run: **{run.public_id}**",
+                    f"- Failure classification: **{run.failure_classification}**",
+                    f"- Bound skills: **{_format_skill_line(skill_keys)}**",
+                ]
+            ),
+        ),
+        skill_execution_records=skill_outcomes,
+        next_actions=[NextAction(action="run_execute", payload=job.payload)],
+    )
+
+
 OPERATOR_REGISTRY = {
     # Phase 0
     "initialize_cycle": initialize_cycle_operator,
@@ -1512,4 +2004,9 @@ OPERATOR_REGISTRY = {
     "hypothesis_generation": hypothesis_generation_operator,
     "hypothesis_critique": hypothesis_critique_operator,
     "protocol_compilation": protocol_compilation_operator,
+    # Phase 3
+    "run_prepare": run_prepare_operator,
+    "run_execute": run_execute_operator,
+    "run_finalize": run_finalize_operator,
+    "run_retry_repair": run_retry_repair_operator,
 }

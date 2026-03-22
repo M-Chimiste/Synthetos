@@ -1,0 +1,5 @@
+approved_images:
+  offline-baseline:
+    image: python:3.12-slim
+    description: Minimal CPU-first image for the offline benchmark harness.
+    default: true

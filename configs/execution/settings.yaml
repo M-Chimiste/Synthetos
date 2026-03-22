@@ -1,0 +1,3 @@
+telemetry:
+  poll_interval_seconds: 1
+  max_events_per_stream_page: 200

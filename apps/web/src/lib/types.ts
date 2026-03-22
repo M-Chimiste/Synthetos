@@ -71,6 +71,7 @@ export interface SkillExecutionRecord {
   public_id: string;
   operator_name: string;
   status: string;
+  run_public_id?: string | null;
   payload: Dictionary;
   created_at: string;
   updated_at: string;
@@ -235,4 +236,95 @@ export interface ExperimentSpecSummary {
 export interface ExperimentSpecListResponse {
   items: ExperimentSpecSummary[];
   total: number;
+}
+
+export interface RunSummary {
+  public_id: string;
+  experiment_spec_public_id: string;
+  status: string;
+  execution_profile: string;
+  failure_classification?: string | null;
+  started_at?: string | null;
+  completed_at?: string | null;
+  created_at: string;
+}
+
+export interface RunSpec {
+  workspace_path: string;
+  image: string;
+  build_recipe: Dictionary;
+  command: string[];
+  env_vars: Record<string, string>;
+  mounts: Dictionary[];
+  hardware_profile: string;
+  timeout_seconds: number;
+  memory_limit_mb: number;
+  cpu_limit?: string | null;
+  gpu_enabled: boolean;
+  network_mode: string;
+  artifact_output_path: string;
+  patch_archive_path?: string | null;
+}
+
+export interface RunRecord {
+  public_id: string;
+  cycle_public_id: string;
+  experiment_spec_public_id: string;
+  status: string;
+  execution_profile: string;
+  run_spec: RunSpec;
+  workspace_path: string;
+  artifact_root: string;
+  stdout_path?: string | null;
+  stderr_path?: string | null;
+  patch_archive_path?: string | null;
+  base_commit?: string | null;
+  base_branch?: string | null;
+  bound_skill_keys: string[];
+  prompt_lineage: Dictionary[];
+  model_lineage: Dictionary[];
+  latest_resource_snapshot: Dictionary;
+  metrics_summary: Dictionary;
+  artifact_manifest: Dictionary;
+  failure_classification?: string | null;
+  last_error?: string | null;
+  exit_code?: number | null;
+  attempt_count: number;
+  started_at?: string | null;
+  completed_at?: string | null;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface RunTelemetryEvent {
+  sequence_id: number;
+  public_id: string;
+  run_public_id: string;
+  event_type: string;
+  stream?: string | null;
+  message?: string | null;
+  payload: Dictionary;
+  created_at: string;
+}
+
+export interface RunArtifactManifest {
+  run_public_id: string;
+  manifest_path: string;
+  metrics_path?: string | null;
+  checkpoint_path?: string | null;
+  predictions_path?: string | null;
+  artifacts: Dictionary[];
+}
+
+export interface RunListResponse {
+  items: RunSummary[];
+  total: number;
+}
+
+export interface RunDetailResponse {
+  run: RunRecord;
+  artifact_manifest?: RunArtifactManifest | null;
+  telemetry_events: RunTelemetryEvent[];
+  skill_execution_records: SkillExecutionRecord[];
+  reports: ReportSummary[];
 }

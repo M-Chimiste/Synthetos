@@ -6,6 +6,7 @@ import {
   API_BASE,
   API_TOKEN,
   createCycle,
+  createRun,
   cycleCommand,
   eventSource,
   getCycle,
@@ -13,10 +14,14 @@ import {
   getLiteratureTriage,
   getPortfolio,
   getReport,
+  getRun,
   listCycles,
   listEvidence,
   listExperimentSpecs,
+  listRuns,
   listSkills,
+  runCommand,
+  runEventSource,
   startEvidence,
   startIntake,
 } from "./lib/api";
@@ -33,6 +38,9 @@ import type {
   PaperCardSummary,
   PortfolioRankingResponse,
   ReportDetail,
+  RunDetailResponse,
+  RunListResponse,
+  RunSummary,
   SkillSummaryResponse,
 } from "./lib/types";
 
@@ -68,6 +76,7 @@ export default function App() {
   const client = useQueryClient();
   const [selectedCycleId, setSelectedCycleId] = useState<string | null>(null);
   const [selectedReportId, setSelectedReportId] = useState<string | null>(null);
+  const [selectedRunId, setSelectedRunId] = useState<string | null>(null);
   const [form, setForm] = useState(defaultForm);
 
   const cyclesQuery = useQuery({
@@ -94,11 +103,30 @@ export default function App() {
     enabled: Boolean(selectedReportId),
   });
 
+  const runsQuery = useQuery({
+    queryKey: ["runs", selectedCycleId],
+    queryFn: () => listRuns(selectedCycleId!),
+    enabled: Boolean(selectedCycleId),
+    refetchInterval: 5000,
+  });
+
+  const runDetailQuery = useQuery({
+    queryKey: ["run", selectedRunId],
+    queryFn: () => getRun(selectedRunId!),
+    enabled: Boolean(selectedRunId),
+  });
+
   useEffect(() => {
     if (!selectedCycleId && cyclesQuery.data?.items?.[0]) {
       setSelectedCycleId(cyclesQuery.data.items[0].cycle.public_id);
     }
   }, [cyclesQuery.data, selectedCycleId]);
+
+  useEffect(() => {
+    if (!selectedRunId && runsQuery.data?.items?.[0]) {
+      setSelectedRunId(runsQuery.data.items[0].public_id);
+    }
+  }, [runsQuery.data, selectedRunId]);
 
   useEffect(() => {
     if (!selectedCycleId) {
@@ -114,6 +142,22 @@ export default function App() {
     };
     return () => source.close();
   }, [client, selectedCycleId]);
+
+  useEffect(() => {
+    if (!selectedRunId) {
+      return;
+    }
+    const source = runEventSource(selectedRunId);
+    source.onmessage = () => {
+      client.invalidateQueries({ queryKey: ["run", selectedRunId] });
+      client.invalidateQueries({ queryKey: ["runs", selectedCycleId] });
+      client.invalidateQueries({ queryKey: ["cycle", selectedCycleId] });
+    };
+    source.onerror = () => {
+      source.close();
+    };
+    return () => source.close();
+  }, [client, selectedCycleId, selectedRunId]);
 
   const createMutation = useMutation({
     mutationFn: async () =>
@@ -206,6 +250,26 @@ export default function App() {
     },
   });
 
+  const createRunMutation = useMutation({
+    mutationFn: async (specId: string) => createRun(specId),
+    onSuccess: (payload) => {
+      setSelectedRunId(payload.run.public_id);
+      client.invalidateQueries({ queryKey: ["runs", selectedCycleId] });
+      client.invalidateQueries({ queryKey: ["run", payload.run.public_id] });
+      client.invalidateQueries({ queryKey: ["cycle", selectedCycleId] });
+    },
+  });
+
+  const runCommandMutation = useMutation({
+    mutationFn: async ({ runId, command }: { runId: string; command: "pause" | "cancel" | "retry" }) =>
+      runCommand(runId, command),
+    onSuccess: (_, variables) => {
+      client.invalidateQueries({ queryKey: ["run", variables.runId] });
+      client.invalidateQueries({ queryKey: ["runs", selectedCycleId] });
+      client.invalidateQueries({ queryKey: ["cycle", selectedCycleId] });
+    },
+  });
+
   return (
     <main className="min-h-screen bg-[radial-gradient(circle_at_top,_rgba(15,118,110,0.14),_transparent_35%),linear-gradient(180deg,_#f8fafc_0%,_#eef2ff_100%)] px-4 py-6 text-ink md:px-8">
       <div className="mx-auto max-w-7xl space-y-6">
@@ -213,10 +277,10 @@ export default function App() {
           <div className="flex flex-col gap-3 md:flex-row md:items-end md:justify-between">
             <div>
               <p className="text-xs uppercase tracking-[0.3em] text-slate-500">Synthetos</p>
-              <h1 className="text-3xl font-semibold">Phase 1 Control Tower</h1>
+              <h1 className="text-3xl font-semibold">Phase 3 Control Tower</h1>
               <p className="mt-2 max-w-2xl text-sm text-slate-600">
-                Create a cycle, start literature intake, watch the pipeline triage papers,
-                and browse shortlists, reports, and the skill catalog.
+                Create a cycle, drive it through ideation, launch bounded experiment runs,
+                and watch live execution telemetry with the same local-first control plane.
               </p>
             </div>
             <div className="rounded-2xl bg-slate-900 px-4 py-3 text-xs text-slate-100">
@@ -324,6 +388,7 @@ export default function App() {
         <section className="grid gap-6 xl:grid-cols-[1.5fr,1fr]">
           <CycleDetailPanel
             detail={cycleDetailQuery.data}
+            currentRun={runsQuery.data?.items?.[0]}
             onCommand={(command) => commandMutation.mutate(command)}
             onStartIntake={() => intakeMutation.mutate()}
             intakePending={intakeMutation.isPending}
@@ -335,7 +400,25 @@ export default function App() {
             <LiteraturePanel triage={literatureQuery.data} />
             <EvidencePanel evidence={evidenceQuery.data} summary={evidenceSummaryQuery.data} />
             <HypothesisPortfolioPanel portfolio={portfolioQuery.data} />
-            <ExperimentSpecPanel specs={experimentSpecsQuery.data} />
+            <ExperimentSpecPanel
+              specs={experimentSpecsQuery.data}
+              onStartRun={(specId) => createRunMutation.mutate(specId)}
+              startingSpecId={createRunMutation.variables ?? null}
+            />
+            <RunQueuePanel
+              runs={runsQuery.data}
+              selectedRunId={selectedRunId}
+              onSelectRun={setSelectedRunId}
+            />
+            <RunTelemetryPanel
+              detail={runDetailQuery.data}
+              onRunCommand={(command) => {
+                if (selectedRunId) {
+                  runCommandMutation.mutate({ runId: selectedRunId, command });
+                }
+              }}
+              commandPending={runCommandMutation.isPending}
+            />
             <SkillsPanel skills={skillsQuery.data?.items ?? []} />
             <ReportPanel report={reportQuery.data} />
           </aside>
@@ -347,6 +430,7 @@ export default function App() {
 
 function CycleDetailPanel({
   detail,
+  currentRun,
   onCommand,
   onStartIntake,
   intakePending,
@@ -355,6 +439,7 @@ function CycleDetailPanel({
   onSelectReport,
 }: {
   detail?: CycleDetailResponse;
+  currentRun?: RunSummary;
   onCommand: (command: string) => void;
   onStartIntake: () => void;
   intakePending: boolean;
@@ -402,7 +487,10 @@ function CycleDetailPanel({
       <div className="grid gap-4 md:grid-cols-3">
         <InfoCard label="Cycle ID" value={detail.cycle.public_id} />
         <InfoCard label="Current Status" value={detail.cycle.current_status} />
-        <InfoCard label="Snapshot" value={detail.current_state_snapshot?.state ?? "none"} />
+        <InfoCard
+          label="Current Run"
+          value={currentRun ? `${currentRun.status} (${currentRun.execution_profile})` : "none"}
+        />
       </div>
 
       <div className="mt-6 grid gap-6 lg:grid-cols-2">
@@ -632,7 +720,15 @@ function HypothesisPortfolioPanel({ portfolio }: { portfolio?: PortfolioRankingR
   );
 }
 
-function ExperimentSpecPanel({ specs }: { specs?: ExperimentSpecListResponse }) {
+function ExperimentSpecPanel({
+  specs,
+  onStartRun,
+  startingSpecId,
+}: {
+  specs?: ExperimentSpecListResponse;
+  onStartRun: (specId: string) => void;
+  startingSpecId?: string | null;
+}) {
   if (!specs || specs.total === 0) {
     return null;
   }
@@ -667,10 +763,110 @@ function ExperimentSpecPanel({ specs }: { specs?: ExperimentSpecListResponse }) 
                 {spec.gpu_required && (
                   <span className="rounded-full bg-purple-100 px-2 py-0.5 text-xs font-medium text-purple-700">GPU</span>
                 )}
+                {(spec.status === "valid" || spec.status === "approved") && (
+                  <button
+                    className="button-secondary text-xs"
+                    onClick={() => onStartRun(spec.public_id)}
+                  >
+                    {startingSpecId === spec.public_id ? "Starting..." : "Start Run"}
+                  </button>
+                )}
               </div>
             </div>
           </div>
         ))}
+      </div>
+    </section>
+  );
+}
+
+function RunQueuePanel({
+  runs,
+  selectedRunId,
+  onSelectRun,
+}: {
+  runs?: RunListResponse;
+  selectedRunId?: string | null;
+  onSelectRun: (runId: string) => void;
+}) {
+  if (!runs || runs.total === 0) {
+    return null;
+  }
+  return (
+    <section className="panel p-5">
+      <div className="mb-4">
+        <p className="text-xs uppercase tracking-[0.25em] text-slate-500">Run Queue</p>
+        <h2 className="text-xl font-semibold">Execution Runs</h2>
+      </div>
+      <div className="space-y-3">
+        {runs.items.map((run) => (
+          <button
+            key={run.public_id}
+            className={`w-full rounded-xl border p-3 text-left ${
+              selectedRunId === run.public_id ? "border-accent bg-teal-50" : "border-slate-200"
+            }`}
+            onClick={() => onSelectRun(run.public_id)}
+          >
+            <div className="font-medium">{run.public_id}</div>
+            <div className="text-xs text-slate-500">
+              {run.status} · {run.execution_profile}
+              {run.failure_classification ? ` · ${run.failure_classification}` : ""}
+            </div>
+          </button>
+        ))}
+      </div>
+    </section>
+  );
+}
+
+function RunTelemetryPanel({
+  detail,
+  onRunCommand,
+  commandPending,
+}: {
+  detail?: RunDetailResponse;
+  onRunCommand: (command: "pause" | "cancel" | "retry") => void;
+  commandPending: boolean;
+}) {
+  if (!detail) {
+    return null;
+  }
+  return (
+    <section className="panel p-5">
+      <div className="mb-4 flex items-start justify-between gap-3">
+        <div>
+          <p className="text-xs uppercase tracking-[0.25em] text-slate-500">Live Run</p>
+          <h2 className="text-xl font-semibold">{detail.run.public_id}</h2>
+          <p className="text-xs text-slate-500">
+            {detail.run.status} · {detail.run.execution_profile}
+          </p>
+        </div>
+        <div className="flex gap-2">
+          <button className="button-secondary" disabled={commandPending} onClick={() => onRunCommand("pause")}>Pause</button>
+          <button className="button-secondary" disabled={commandPending} onClick={() => onRunCommand("cancel")}>Cancel</button>
+          <button className="button-secondary" disabled={commandPending} onClick={() => onRunCommand("retry")}>Retry</button>
+        </div>
+      </div>
+      <div className="mb-4 grid gap-3 md:grid-cols-2">
+        <InfoCard label="Artifact Root" value={detail.run.artifact_root} />
+        <InfoCard label="Patch Archive" value={detail.run.patch_archive_path ?? "none"} />
+      </div>
+      <div className="space-y-3">
+        <Subsection title="Telemetry">
+          {(detail.telemetry_events ?? []).slice(-12).reverse().map((event) => (
+            <div key={event.public_id} className="rounded-xl border border-slate-200 p-3">
+              <div className="font-medium">{event.event_type}</div>
+              <div className="text-xs text-slate-500">
+                {new Date(event.created_at).toLocaleString()}
+                {event.stream ? ` · ${event.stream}` : ""}
+              </div>
+              {event.message ? <div className="mt-2 text-sm text-slate-700">{event.message}</div> : null}
+              <pre className="mt-2 overflow-auto rounded-lg bg-slate-50 p-2 text-xs text-slate-700">
+                {JSON.stringify(event.payload, null, 2)}
+              </pre>
+            </div>
+          ))}
+        </Subsection>
       </div>
     </section>
   );

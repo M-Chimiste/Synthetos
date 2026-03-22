@@ -70,6 +70,15 @@ def run_worker_once(
         reason=f"Worker claimed job {job.public_id}",
         context={"job_public_id": job.public_id},
     )
+    if job.operator_name == "run_execute":
+        create_state_snapshot(
+            session,
+            cycle=cycle,
+            target_state=CycleStatus.RUNNING,
+            actor=actor,
+            reason=f"Run execution started for job {job.public_id}",
+            context={"job_public_id": job.public_id},
+        )
     append_event(
         session,
         actor=actor,

@@ -127,7 +127,9 @@ hypothesis_app = typer.Typer()
 app.add_typer(hypothesis_app, name="hypothesis")
 
 experiment_app = typer.Typer()
+run_app = typer.Typer()
 app.add_typer(experiment_app, name="experiment")
+app.add_typer(run_app, name="run")
 
 
 @papers_app.command("list")
@@ -226,6 +228,61 @@ def show_experiment(cycle_id: str, spec_id: str) -> None:
     """Show experiment spec detail."""
     with api_client() as client:
         response = client.get(f"/api/v1/cycles/{cycle_id}/experiment-specs/{spec_id}")
+        response.raise_for_status()
+        echo_json(response.json())
+
+
+@run_app.command("list")
+def list_runs(cycle_id: str) -> None:
+    with api_client() as client:
+        response = client.get(f"/api/v1/cycles/{cycle_id}/runs")
+        response.raise_for_status()
+        echo_json(response.json())
+
+
+@run_app.command("show")
+def show_run(run_id: str) -> None:
+    with api_client() as client:
+        response = client.get(f"/api/v1/runs/{run_id}")
+        response.raise_for_status()
+        echo_json(response.json())
+
+
+@run_app.command("start")
+def start_run(
+    spec_id: str,
+    execution_profile: str = "cpu-small",
+    force_start: bool = False,
+) -> None:
+    with api_client() as client:
+        response = client.post(
+            f"/api/v1/experiment-specs/{spec_id}/runs",
+            json={"execution_profile": execution_profile, "force_start": force_start},
+        )
+        response.raise_for_status()
+        echo_json(response.json())
+
+
+@run_app.command("pause")
+def pause_run(run_id: str) -> None:
+    with api_client() as client:
+        response = client.post(f"/api/v1/runs/{run_id}/commands", json={"command": "pause"})
+        response.raise_for_status()
+        echo_json(response.json())
+
+
+@run_app.command("cancel")
+def cancel_run(run_id: str) -> None:
+    with api_client() as client:
+        response = client.post(f"/api/v1/runs/{run_id}/commands", json={"command": "cancel"})
+        response.raise_for_status()
+        echo_json(response.json())
+
+
+@run_app.command("retry")
+def retry_run(run_id: str) -> None:
+    with api_client() as client:
+        response = client.post(f"/api/v1/runs/{run_id}/commands", json={"command": "retry"})
         response.raise_for_status()
         echo_json(response.json())
 

@@ -67,6 +67,7 @@ class SkillExecutionOutcome(BaseModel):
     skill_binding_public_id: str
     operator_name: str
     status: str
+    run_public_id: str | None = None
     payload: dict[str, Any] = Field(default_factory=dict)
 
 

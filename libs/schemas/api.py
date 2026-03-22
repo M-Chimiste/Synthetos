@@ -15,6 +15,9 @@ from libs.schemas.domain import (
     ResearchCharter,
     ResearchCycle,
     ResearchStateSnapshot,
+    RunArtifactManifest,
+    RunRecord,
+    RunTelemetryEvent,
     ScreeningDecision,
     SkillBinding,
     SkillDefinition,
@@ -224,6 +227,40 @@ class ExperimentSpecDetail(ExperimentSpec):
 
 class ExperimentSpecListResponse(BaseModel):
     items: list[ExperimentSpecSummary]
+    total: int
+
+
+class RunCreateRequest(BaseModel):
+    execution_profile: str = "cpu-small"
+    force_start: bool = False
+    env_overrides: dict[str, str] = Field(default_factory=dict)
+
+
+class RunCommandRequest(BaseModel):
+    command: Literal["pause", "cancel", "retry"]
+
+
+class RunSummary(BaseModel):
+    public_id: str
+    experiment_spec_public_id: str
+    status: str
+    execution_profile: str
+    failure_classification: str | None = None
+    started_at: datetime | None = None
+    completed_at: datetime | None = None
+    created_at: datetime
+
+
+class RunDetailResponse(BaseModel):
+    run: RunRecord
+    artifact_manifest: RunArtifactManifest | None = None
+    telemetry_events: list[RunTelemetryEvent] = Field(default_factory=list)
+    skill_execution_records: list[SkillExecutionRecord] = Field(default_factory=list)
+    reports: list[ReportSummary] = Field(default_factory=list)
+
+
+class RunListResponse(BaseModel):
+    items: list[RunSummary]
     total: int
 
 

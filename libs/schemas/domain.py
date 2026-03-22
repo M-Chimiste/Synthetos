@@ -119,6 +119,7 @@ class SkillExecutionRecord(BaseModel):
     public_id: str
     operator_name: str
     status: str
+    run_public_id: str | None = None
     payload: dict[str, Any]
     created_at: datetime
     updated_at: datetime
@@ -254,6 +255,86 @@ class ExperimentSpec(BaseModel):
     updated_at: datetime
 
 
+# ---------------------------------------------------------------------------
+# Phase 3 — Run Execution Lab
+# ---------------------------------------------------------------------------
+
+
+class RunSpec(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+
+    workspace_path: str
+    image: str
+    build_recipe: dict[str, Any] = Field(default_factory=dict)
+    command: list[str] = Field(default_factory=list)
+    env_vars: dict[str, str] = Field(default_factory=dict)
+    mounts: list[dict[str, Any]] = Field(default_factory=list)
+    hardware_profile: str
+    timeout_seconds: int
+    memory_limit_mb: int
+    cpu_limit: str | None = None
+    gpu_enabled: bool = False
+    network_mode: str = "disabled"
+    artifact_output_path: str
+    patch_archive_path: str | None = None
+
+
+class RunTelemetryEvent(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+
+    sequence_id: int
+    public_id: str
+    run_public_id: str
+    event_type: str
+    stream: str | None = None
+    message: str | None = None
+    payload: dict[str, Any] = Field(default_factory=dict)
+    created_at: datetime
+
+
+class RunArtifactManifest(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+
+    run_public_id: str
+    manifest_path: str
+    metrics_path: str | None = None
+    checkpoint_path: str | None = None
+    predictions_path: str | None = None
+    artifacts: list[dict[str, Any]] = Field(default_factory=list)
+
+
+class RunRecord(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+
+    public_id: str
+    cycle_public_id: str
+    experiment_spec_public_id: str
+    status: str
+    execution_profile: str
+    run_spec: RunSpec
+    workspace_path: str
+    artifact_root: str
+    stdout_path: str | None = None
+    stderr_path: str | None = None
+    patch_archive_path: str | None = None
+    base_commit: str | None = None
+    base_branch: str | None = None
+    bound_skill_keys: list[str] = Field(default_factory=list)
+    prompt_lineage: list[dict[str, Any]] = Field(default_factory=list)
+    model_lineage: list[dict[str, Any]] = Field(default_factory=list)
+    latest_resource_snapshot: dict[str, Any] = Field(default_factory=dict)
+    metrics_summary: dict[str, Any] = Field(default_factory=dict)
+    artifact_manifest: dict[str, Any] = Field(default_factory=dict)
+    failure_classification: str | None = None
+    last_error: str | None = None
+    exit_code: int | None = None
+    attempt_count: int
+    started_at: datetime | None = None
+    completed_at: datetime | None = None
+    created_at: datetime
+    updated_at: datetime
+
+
 class OrchestratorClient(BaseModel):
     model_config = ConfigDict(from_attributes=True)
 
@@ -287,4 +368,3 @@ class ModelInvocationRecord(BaseModel):
 
 class TokenScopeList(BaseModel):
     scopes: list[TokenScope]
-

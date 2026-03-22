@@ -15,6 +15,9 @@ class AppConfig(BaseModel):
     data_root: Path = Path(".lab_data")
     model_config_path: Path = Path("configs/models/routes.yaml")
     policy_config_path: Path = Path("configs/policies/default.yaml")
+    execution_images_path: Path = Path("configs/execution/images.yaml")
+    execution_profiles_path: Path = Path("configs/execution/profiles.yaml")
+    execution_settings_path: Path = Path("configs/execution/settings.yaml")
     skill_paths: list[Path] = Field(default_factory=lambda: [Path("skills")])
     dev_admin_token: str = "lab-local-admin"
     api_host: str = "127.0.0.1"
@@ -37,12 +40,27 @@ class AppConfig(BaseModel):
     def workspaces_dir(self) -> Path:
         return self.data_root / "workspaces"
 
+    @property
+    def run_artifacts_dir(self) -> Path:
+        return self.data_root / "artifacts" / "runs"
+
+    @property
+    def patches_dir(self) -> Path:
+        return self.data_root / "artifacts" / "patches"
+
+    @property
+    def datasets_dir(self) -> Path:
+        return self.data_root / "cache" / "datasets"
+
     def ensure_data_dirs(self) -> None:
         for directory in [
             self.data_root / "artifacts",
             self.data_root / "cache",
             self.reports_dir,
+            self.run_artifacts_dir,
+            self.patches_dir,
             self.workspaces_dir,
+            self.datasets_dir,
             self.data_root / "exports",
         ]:
             directory.mkdir(parents=True, exist_ok=True)
@@ -57,6 +75,15 @@ def get_config() -> AppConfig:
         data_root=Path(os.getenv("LAB_DATA_ROOT", ".lab_data")),
         model_config_path=Path(os.getenv("LAB_MODEL_CONFIG", "configs/models/routes.yaml")),
         policy_config_path=Path(os.getenv("LAB_POLICY_CONFIG", "configs/policies/default.yaml")),
+        execution_images_path=Path(
+            os.getenv("LAB_EXECUTION_IMAGES_CONFIG", "configs/execution/images.yaml")
+        ),
+        execution_profiles_path=Path(
+            os.getenv("LAB_EXECUTION_PROFILES_CONFIG", "configs/execution/profiles.yaml")
+        ),
+        execution_settings_path=Path(
+            os.getenv("LAB_EXECUTION_SETTINGS_CONFIG", "configs/execution/settings.yaml")
+        ),
         skill_paths=[Path(item) for item in raw_skill_paths.split(":") if item],
         dev_admin_token=os.getenv("LAB_DEV_ADMIN_TOKEN", "lab-local-admin"),
         api_host=os.getenv("LAB_API_HOST", "127.0.0.1"),
@@ -65,4 +92,3 @@ def get_config() -> AppConfig:
     )
     config.ensure_data_dirs()
     return config
-

@@ -1,0 +1,18 @@
+profiles:
+  cpu-small:
+    hardware_profile: cpu-small
+    cpu_limit: "2"
+    memory_limit_mb: 2048
+    timeout_seconds: 600
+    gpu_enabled: false
+    network_mode: disabled
+    image_key: offline-baseline
+
+  gpu-small:
+    hardware_profile: gpu-small
+    cpu_limit: "4"
+    memory_limit_mb: 4096
+    timeout_seconds: 900
+    gpu_enabled: true
+    network_mode: disabled
+    image_key: offline-baseline

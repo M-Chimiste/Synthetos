@@ -15,6 +15,8 @@ from libs.core.ids import generate_public_id
 from libs.core.operators import OperatorResult
 from libs.core.policy import Actor, TokenScope
 from libs.core.state_machine import CycleStatus, ensure_transition
+from libs.execution.policy import evaluate_run_policy
+from libs.execution.runner import build_run_spec, determine_run_paths, load_execution_profile
 from libs.schemas.api import (
     CreateCycleRequest,
     CycleDetailResponse,
@@ -36,6 +38,12 @@ from libs.schemas.api import (
     PortfolioRankingResponse,
     ReportDetailResponse,
     ReportSummary,
+    RunArtifactManifest,
+    RunCreateRequest,
+    RunDetailResponse,
+    RunListResponse,
+    RunSummary,
+    RunTelemetryEvent,
     SkillDetailResponse,
     SkillSummaryResponse,
 )
@@ -45,6 +53,8 @@ from libs.schemas.domain import (
     ResearchCharter,
     ResearchCycle,
     ResearchStateSnapshot,
+    RunRecord,
+    RunSpec,
     SkillBinding,
     SkillDefinition,
     SkillExecutionRecord,
@@ -53,6 +63,7 @@ from libs.schemas.domain import (
 from libs.skills.loader import load_all_skills
 from libs.storage.models import (
     DomainEventModel,
+    ExperimentSpecModel,
     JobModel,
     ModelInvocationRecordModel,
     OrchestratorClientModel,
@@ -62,6 +73,8 @@ from libs.storage.models import (
     ResearchCharterModel,
     ResearchCycleModel,
     ResearchStateSnapshotModel,
+    RunRecordModel,
+    RunTelemetryEventModel,
     SkillBindingModel,
     SkillDefinitionModel,
     SkillExecutionRecordModel,
@@ -448,6 +461,7 @@ def record_model_invocation(
     *,
     cycle_id: int | None,
     job_id: int | None,
+    run_record_id: int | None = None,
     route_id: str,
     model_id: str,
     prompt_id: str,
@@ -458,6 +472,7 @@ def record_model_invocation(
         public_id=generate_public_id("modelinv"),
         cycle_id=cycle_id,
         job_id=job_id,
+        run_record_id=run_record_id,
         route_id=route_id,
         model_id=model_id,
         prompt_id=prompt_id,
@@ -504,6 +519,12 @@ def apply_operator_result(
         report_type=result.operator_report.report_type,
         body_markdown=result.operator_report.body_markdown,
     )
+    run_public_id = result.state_patch.context.get("run_public_id")
+    if run_public_id:
+        report.report_metadata = {
+            **(report.report_metadata or {}),
+            "run_public_id": run_public_id,
+        }
     append_event(
         session,
         actor=actor,
@@ -518,6 +539,9 @@ def apply_operator_result(
                 public_id=generate_public_id("skillexec"),
                 cycle_id=cycle.id,
                 job_id=job.id,
+                run_record_id=_run_id_from_public_id(session, outcome.run_public_id)
+                if outcome.run_public_id
+                else None,
                 skill_binding_id=_binding_id_from_public_id(
                     session, outcome.skill_binding_public_id,
                 ),
@@ -552,6 +576,15 @@ def _binding_id_from_public_id(session: Session, binding_public_id: str) -> int:
     if binding is None:
         raise ValueError(f"Missing skill binding {binding_public_id}")
     return binding.id
+
+
+def _run_id_from_public_id(session: Session, run_public_id: str) -> int:
+    run = session.scalar(
+        select(RunRecordModel).where(RunRecordModel.public_id == run_public_id)
+    )
+    if run is None:
+        raise ValueError(f"Missing run record {run_public_id}")
+    return run.id
 
 
 def build_cycle_detail(session: Session, cycle_public_id: str) -> CycleDetailResponse:
@@ -615,6 +648,12 @@ def build_cycle_detail(session: Session, cycle_public_id: str) -> CycleDetailRes
         )
         for event in events
     ]
+    run_ids = {item.run_record_id for item in execs if item.run_record_id}
+    runs = {}
+    if run_ids:
+        run_query = select(RunRecordModel).where(RunRecordModel.id.in_(run_ids))
+        for run in session.scalars(run_query).all():
+            runs[run.id] = run.public_id
 
     return CycleDetailResponse(
         cycle=ResearchCycle.model_validate(cycle),
@@ -623,7 +662,18 @@ def build_cycle_detail(session: Session, cycle_public_id: str) -> CycleDetailRes
         recent_jobs=[JobRecord.model_validate(job) for job in jobs],
         recent_events=event_models,
         bound_skills=[SkillBinding.model_validate(binding) for binding in bindings],
-        skill_execution_records=[SkillExecutionRecord.model_validate(item) for item in execs],
+        skill_execution_records=[
+            SkillExecutionRecord(
+                public_id=item.public_id,
+                operator_name=item.operator_name,
+                status=item.status,
+                run_public_id=runs.get(item.run_record_id),
+                payload=item.payload,
+                created_at=item.created_at,
+                updated_at=item.updated_at,
+            )
+            for item in execs
+        ],
         reports=[
             ReportSummary(
                 public_id=report.public_id,
@@ -861,7 +911,7 @@ def apply_cycle_command(
         target = (
             CycleStatus.CANCEL_REQUESTED
             if current in {
-                CycleStatus.QUEUED, CycleStatus.INITIALIZING,
+                CycleStatus.QUEUED, CycleStatus.INITIALIZING, CycleStatus.RUNNING,
                 CycleStatus.READY, CycleStatus.PAUSED,
             }
             else CycleStatus.CANCELLED
@@ -935,6 +985,390 @@ def apply_cycle_command(
         cycle_id=cycle.id,
         scope_used=TokenScope.RUNS_CONTROL.value,
     )
+
+
+def get_run_by_public_id(session: Session, run_public_id: str) -> RunRecordModel:
+    run = session.scalar(select(RunRecordModel).where(RunRecordModel.public_id == run_public_id))
+    if run is None:
+        raise HTTPException(status_code=404, detail="Run not found")
+    return run
+
+
+def _build_run_record_response(
+    session: Session,
+    run: RunRecordModel,
+) -> RunRecord:
+    cycle = session.get(ResearchCycleModel, run.cycle_id)
+    spec = session.get(ExperimentSpecModel, run.experiment_spec_id)
+    cycle_public_id = cycle.public_id if cycle else ""
+    spec_public_id = spec.public_id if spec else ""
+    return RunRecord(
+        public_id=run.public_id,
+        cycle_public_id=cycle_public_id,
+        experiment_spec_public_id=spec_public_id,
+        status=run.status,
+        execution_profile=run.execution_profile,
+        run_spec=RunSpec(
+            workspace_path=run.workspace_path,
+            image=run.image,
+            build_recipe=run.build_recipe or {},
+            command=run.command or [],
+            env_vars=run.env_vars or {},
+            mounts=run.mounts or [],
+            hardware_profile=run.hardware_profile,
+            timeout_seconds=run.timeout_seconds,
+            memory_limit_mb=run.memory_limit_mb,
+            cpu_limit=run.cpu_limit,
+            gpu_enabled=run.gpu_enabled,
+            network_mode=run.network_mode,
+            artifact_output_path=run.artifact_root,
+            patch_archive_path=run.patch_archive_path,
+        ),
+        workspace_path=run.workspace_path,
+        artifact_root=run.artifact_root,
+        stdout_path=run.stdout_path,
+        stderr_path=run.stderr_path,
+        patch_archive_path=run.patch_archive_path,
+        base_commit=run.base_commit,
+        base_branch=run.base_branch,
+        bound_skill_keys=run.bound_skill_keys or [],
+        prompt_lineage=run.prompt_lineage or [],
+        model_lineage=run.model_lineage or [],
+        latest_resource_snapshot=run.latest_resource_snapshot or {},
+        metrics_summary=run.metrics_summary or {},
+        artifact_manifest=run.artifact_manifest or {},
+        failure_classification=run.failure_classification,
+        last_error=run.last_error,
+        exit_code=run.exit_code,
+        attempt_count=run.attempt_count,
+        started_at=run.started_at,
+        completed_at=run.completed_at,
+        created_at=run.created_at,
+        updated_at=run.updated_at,
+    )
+
+
+def create_run_from_experiment_spec(
+    session: Session,
+    actor: Actor,
+    config: AppConfig,
+    experiment_spec_public_id: str,
+    payload: RunCreateRequest,
+) -> RunRecordModel:
+    spec_query = select(ExperimentSpecModel).where(
+        ExperimentSpecModel.public_id == experiment_spec_public_id
+    )
+    spec = session.scalar(spec_query)
+    if spec is None:
+        raise HTTPException(status_code=404, detail="Experiment spec not found")
+    if spec.status not in {"valid", "approved"}:
+        raise HTTPException(status_code=400, detail="Experiment spec must be valid or approved")
+
+    cycle = session.get(ResearchCycleModel, spec.cycle_id)
+    if cycle is None:
+        raise HTTPException(status_code=400, detail="Experiment spec is missing its cycle")
+
+    run_public_id = generate_public_id("run")
+    profile = load_execution_profile(config, payload.execution_profile)
+    image_key = profile["image_key"]
+    network_mode = profile.get("network_mode", "disabled")
+    decision = evaluate_run_policy(
+        config,
+        execution_profile=payload.execution_profile,
+        network_mode=str(network_mode),
+        image_key=str(image_key),
+        force_start=payload.force_start,
+    )
+    paths = determine_run_paths(config, run_public_id)
+    spec_schema = get_experiment_spec_detail_api(session, cycle.public_id, spec.public_id)
+    run_spec = build_run_spec(
+        config=config,
+        run_public_id=run_public_id,
+        workspace_path=config.workspaces_dir / run_public_id,
+        experiment_spec=spec_schema,
+        execution_profile=payload.execution_profile,
+        patch_archive_path=paths.patch_archive_path,
+        artifact_root=paths.artifact_root,
+        env_overrides=payload.env_overrides,
+    )
+    status = "queued" if decision.allowed else "policy_blocked"
+    run = RunRecordModel(
+        public_id=run_public_id,
+        cycle_id=cycle.id,
+        experiment_spec_id=spec.id,
+        status=status,
+        execution_profile=payload.execution_profile,
+        workspace_path=run_spec.workspace_path,
+        artifact_root=run_spec.artifact_output_path,
+        stdout_path=str(paths.stdout_path),
+        stderr_path=str(paths.stderr_path),
+        patch_archive_path=run_spec.patch_archive_path,
+        base_commit=None,
+        base_branch=None,
+        image=run_spec.image,
+        build_recipe=run_spec.build_recipe,
+        command=run_spec.command,
+        env_vars=run_spec.env_vars,
+        mounts=run_spec.mounts,
+        hardware_profile=run_spec.hardware_profile,
+        timeout_seconds=run_spec.timeout_seconds,
+        memory_limit_mb=run_spec.memory_limit_mb,
+        cpu_limit=run_spec.cpu_limit,
+        gpu_enabled=run_spec.gpu_enabled,
+        network_mode=run_spec.network_mode,
+        bound_skill_keys=[],
+        prompt_lineage=[],
+        model_lineage=[],
+        latest_resource_snapshot={},
+        metrics_summary={},
+        artifact_manifest={},
+        failure_classification="policy_rejection" if not decision.allowed else None,
+        last_error=decision.reason if not decision.allowed else None,
+        attempt_count=0,
+    )
+    session.add(run)
+    session.flush()
+
+    event_type = "run_created" if decision.allowed else "run_policy_blocked"
+    append_event(
+        session,
+        actor=actor,
+        event_type=event_type,
+        payload={
+            "cycle_public_id": cycle.public_id,
+            "run_public_id": run.public_id,
+            "experiment_spec_public_id": spec.public_id,
+            "status": run.status,
+            "reason": decision.reason,
+        },
+        cycle_id=cycle.id,
+        scope_used=TokenScope.RUNS_CONTROL.value,
+    )
+
+    if decision.allowed:
+        from libs.orchestration.job_queue import enqueue_job as _enqueue_job
+
+        _enqueue_job(
+            session,
+            actor,
+            cycle.id,
+            "run_prepare",
+            {"cycle_public_id": cycle.public_id, "run_public_id": run.public_id},
+        )
+        create_state_snapshot(
+            session,
+            cycle=cycle,
+            target_state=CycleStatus.QUEUED,
+            actor=actor,
+            reason="Execution run queued",
+            context={"run_public_id": run.public_id},
+            scope_used=TokenScope.RUNS_CONTROL.value,
+        )
+    return run
+
+
+def list_runs_for_cycle_api(session: Session, cycle_public_id: str) -> RunListResponse:
+    cycle = get_cycle_by_public_id(session, cycle_public_id)
+    runs = session.scalars(
+        select(RunRecordModel)
+        .where(RunRecordModel.cycle_id == cycle.id)
+        .order_by(RunRecordModel.created_at.desc())
+    ).all()
+    spec_ids = {run.experiment_spec_id for run in runs}
+    specs = {}
+    if spec_ids:
+        spec_query = select(ExperimentSpecModel).where(ExperimentSpecModel.id.in_(spec_ids))
+        for spec in session.scalars(spec_query).all():
+            specs[spec.id] = spec.public_id
+    items = [
+        RunSummary(
+            public_id=run.public_id,
+            experiment_spec_public_id=specs.get(run.experiment_spec_id, ""),
+            status=run.status,
+            execution_profile=run.execution_profile,
+            failure_classification=run.failure_classification,
+            started_at=run.started_at,
+            completed_at=run.completed_at,
+            created_at=run.created_at,
+        )
+        for run in runs
+    ]
+    return RunListResponse(items=items, total=len(items))
+
+
+def list_run_telemetry_after(
+    session: Session,
+    run_public_id: str,
+    last_event_id: int,
+) -> list[RunTelemetryEvent]:
+    run = get_run_by_public_id(session, run_public_id)
+    events = session.scalars(
+        select(RunTelemetryEventModel)
+        .where(
+            RunTelemetryEventModel.run_record_id == run.id,
+            RunTelemetryEventModel.sequence_id > last_event_id,
+        )
+        .order_by(RunTelemetryEventModel.sequence_id.asc())
+        .limit(200)
+    ).all()
+    return [
+        RunTelemetryEvent(
+            sequence_id=event.sequence_id,
+            public_id=event.public_id,
+            run_public_id=run.public_id,
+            event_type=event.event_type,
+            stream=event.stream,
+            message=event.message,
+            payload=event.payload or {},
+            created_at=event.created_at,
+        )
+        for event in events
+    ]
+
+
+def append_run_telemetry_event(
+    session: Session,
+    *,
+    run: RunRecordModel,
+    event_type: str,
+    payload: dict[str, Any] | None = None,
+    stream: str | None = None,
+    message: str | None = None,
+) -> RunTelemetryEventModel:
+    event = RunTelemetryEventModel(
+        public_id=generate_public_id("rtevt"),
+        run_record_id=run.id,
+        event_type=event_type,
+        stream=stream,
+        message=message,
+        payload=payload or {},
+    )
+    session.add(event)
+    session.flush()
+    return event
+
+
+def get_run_detail_api(session: Session, run_public_id: str) -> RunDetailResponse:
+    run = get_run_by_public_id(session, run_public_id)
+    telemetry = list_run_telemetry_after(session, run_public_id, 0)
+    cycle = session.get(ResearchCycleModel, run.cycle_id)
+    skill_records = session.scalars(
+        select(SkillExecutionRecordModel)
+        .where(SkillExecutionRecordModel.run_record_id == run.id)
+        .order_by(SkillExecutionRecordModel.created_at.desc())
+    ).all()
+    reports = session.scalars(
+        select(ReportBundleModel)
+        .where(ReportBundleModel.cycle_id == run.cycle_id)
+        .order_by(ReportBundleModel.created_at.desc())
+    ).all()
+    run_reports = [
+        ReportSummary(
+            public_id=report.public_id,
+            cycle_public_id=cycle.public_id if cycle else None,
+            report_type=report.report_type,
+            title=report.title,
+            artifact_path=report.artifact_path,
+            created_at=report.created_at,
+        )
+        for report in reports
+        if (report.report_metadata or {}).get("run_public_id") == run.public_id
+    ]
+    artifact_manifest = None
+    if run.artifact_manifest:
+        artifact_manifest = RunArtifactManifest(
+            run_public_id=run.public_id,
+            manifest_path=str(run.artifact_manifest.get("manifest_path", "")),
+            metrics_path=run.artifact_manifest.get("metrics_path"),
+            checkpoint_path=run.artifact_manifest.get("checkpoint_path"),
+            predictions_path=run.artifact_manifest.get("predictions_path"),
+            artifacts=run.artifact_manifest.get("artifacts", []),
+        )
+    return RunDetailResponse(
+        run=_build_run_record_response(session, run),
+        artifact_manifest=artifact_manifest,
+        telemetry_events=telemetry,
+        skill_execution_records=[
+            SkillExecutionRecord(
+                public_id=item.public_id,
+                operator_name=item.operator_name,
+                status=item.status,
+                run_public_id=run.public_id,
+                payload=item.payload,
+                created_at=item.created_at,
+                updated_at=item.updated_at,
+            )
+            for item in skill_records
+        ],
+        reports=run_reports,
+    )
+
+
+def apply_run_command(
+    session: Session,
+    actor: Actor,
+    run_public_id: str,
+    command: str,
+) -> RunRecordModel:
+    run = get_run_by_public_id(session, run_public_id)
+    cycle = session.get(ResearchCycleModel, run.cycle_id)
+    if cycle is None:
+        raise HTTPException(status_code=400, detail="Run is missing its cycle")
+
+    if command == "pause":
+        if run.status not in {"running", "ready_to_execute"}:
+            raise HTTPException(status_code=400, detail="Run is not pausable")
+        run.status = "pause_requested" if run.status == "running" else "paused"
+    elif command == "cancel":
+        if run.status not in {"queued", "preparing", "ready_to_execute", "running", "paused"}:
+            raise HTTPException(status_code=400, detail="Run is not cancellable")
+        run.status = "cancel_requested" if run.status == "running" else "cancelled"
+    elif command == "retry":
+        if run.status not in {"failed", "paused"}:
+            raise HTTPException(status_code=400, detail="Run is not retryable")
+        from libs.orchestration.job_queue import enqueue_job as _enqueue_job
+
+        repairable = {
+            "build_failure",
+            "dependency_failure",
+            "runtime_exception",
+            "harness_mismatch",
+            "skill_contract_violation",
+        }
+        next_operator = (
+            "run_retry_repair"
+            if run.failure_classification in repairable
+            else "run_execute"
+        )
+        _enqueue_job(
+            session,
+            actor,
+            cycle.id,
+            next_operator,
+            {"cycle_public_id": cycle.public_id, "run_public_id": run.public_id},
+        )
+        run.status = "queued"
+        create_state_snapshot(
+            session,
+            cycle=cycle,
+            target_state=CycleStatus.QUEUED,
+            actor=actor,
+            reason=f"Run command applied: {command}",
+            context={"run_public_id": run.public_id},
+            scope_used=TokenScope.RUNS_CONTROL.value,
+        )
+    else:
+        raise HTTPException(status_code=400, detail="Unsupported run command")
+
+    append_event(
+        session,
+        actor=actor,
+        event_type="run_command_received",
+        payload={"run_public_id": run.public_id, "command": command, "status": run.status},
+        cycle_id=cycle.id,
+        scope_used=TokenScope.RUNS_CONTROL.value,
+    )
+    return run
 
 
 def _has_pending_jobs(session: Session, cycle_id: int) -> bool:

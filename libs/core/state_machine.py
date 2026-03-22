@@ -8,6 +8,7 @@ class CycleStatus(StrEnum):
     QUEUED = "queued"
     INITIALIZING = "initializing"
     READY = "ready"
+    RUNNING = "running"
     PAUSED = "paused"
     CANCEL_REQUESTED = "cancel_requested"
     CANCELLED = "cancelled"
@@ -25,15 +26,23 @@ ALLOWED_TRANSITIONS: dict[CycleStatus, set[CycleStatus]] = {
     },
     CycleStatus.INITIALIZING: {
         CycleStatus.READY,
+        CycleStatus.RUNNING,
         CycleStatus.PAUSED,
         CycleStatus.CANCEL_REQUESTED,
         CycleStatus.FAILED,
     },
     CycleStatus.READY: {
         CycleStatus.QUEUED,
+        CycleStatus.RUNNING,
         CycleStatus.PAUSED,
         CycleStatus.CANCEL_REQUESTED,
         CycleStatus.CANCELLED,
+    },
+    CycleStatus.RUNNING: {
+        CycleStatus.READY,
+        CycleStatus.PAUSED,
+        CycleStatus.CANCEL_REQUESTED,
+        CycleStatus.FAILED,
     },
     CycleStatus.PAUSED: {CycleStatus.QUEUED, CycleStatus.READY, CycleStatus.CANCEL_REQUESTED},
     CycleStatus.CANCEL_REQUESTED: {CycleStatus.CANCELLED, CycleStatus.FAILED},
@@ -48,4 +57,3 @@ def ensure_transition(current: CycleStatus, target: CycleStatus) -> None:
     allowed = ALLOWED_TRANSITIONS.get(current, set())
     if target not in allowed:
         raise ValueError(f"Invalid cycle transition: {current} -> {target}")
-

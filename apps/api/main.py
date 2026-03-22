@@ -39,6 +39,10 @@ from libs.schemas.api import (
     ReportDetailResponse,
     ReportListResponse,
     RetrievalSessionListResponse,
+    RunCommandRequest,
+    RunCreateRequest,
+    RunDetailResponse,
+    RunListResponse,
     SkillDetailResponse,
     SkillListResponse,
 )
@@ -364,6 +368,103 @@ def get_experiment_spec(
     session: Session = Depends(get_db),
 ) -> ExperimentSpecDetail:
     return services.get_experiment_spec_detail_api(session, cycle_id, spec_id)
+
+
+@app.get("/api/v1/cycles/{cycle_id}/runs", response_model=RunListResponse)
+def list_runs(
+    cycle_id: str,
+    actor: Actor = Depends(require_scopes(TokenScope.CYCLES_READ)),
+    session: Session = Depends(get_db),
+) -> RunListResponse:
+    return services.list_runs_for_cycle_api(session, cycle_id)
+
+
+@app.get("/api/v1/runs/{run_id}", response_model=RunDetailResponse)
+def get_run(
+    run_id: str,
+    actor: Actor = Depends(require_scopes(TokenScope.CYCLES_READ)),
+    session: Session = Depends(get_db),
+) -> RunDetailResponse:
+    return services.get_run_detail_api(session, run_id)
+
+
+@app.post("/api/v1/experiment-specs/{spec_id}/runs", response_model=RunDetailResponse)
+def create_run(
+    spec_id: str,
+    payload: RunCreateRequest,
+    actor: Actor = Depends(require_scopes(TokenScope.RUNS_CONTROL)),
+    session: Session = Depends(get_db),
+) -> RunDetailResponse:
+    run = services.create_run_from_experiment_spec(session, actor, get_config(), spec_id, payload)
+    services.record_command(
+        session,
+        actor=actor,
+        command_name="create_run",
+        target_resource=run.public_id,
+        payload=payload.model_dump(mode="json"),
+        result={"run_id": run.public_id, "status": run.status},
+        cycle_id=run.cycle_id,
+    )
+    session.commit()
+    return services.get_run_detail_api(session, run.public_id)
+
+
+@app.post("/api/v1/runs/{run_id}/commands", response_model=RunDetailResponse)
+def run_command(
+    run_id: str,
+    payload: RunCommandRequest,
+    actor: Actor = Depends(require_scopes(TokenScope.RUNS_CONTROL)),
+    session: Session = Depends(get_db),
+) -> RunDetailResponse:
+    run = services.apply_run_command(session, actor, run_id, payload.command)
+    services.record_command(
+        session,
+        actor=actor,
+        command_name=f"{payload.command}_run",
+        target_resource=run_id,
+        payload=payload.model_dump(mode="json"),
+        result={"status": run.status},
+        cycle_id=run.cycle_id,
+    )
+    session.commit()
+    return services.get_run_detail_api(session, run_id)
+
+
+@app.get("/api/v1/runs/{run_id}/telemetry/stream")
+async def stream_run_telemetry(
+    run_id: str,
+    actor: Actor = Depends(require_scopes(TokenScope.EVENTS_READ)),
+    last_event_id: int | None = Query(default=None),
+    header_last_event_id: Annotated[
+        str | None, Header(alias="Last-Event-ID")
+    ] = None,
+):
+    del actor
+    checkpoint = last_event_id
+    if checkpoint is None and header_last_event_id:
+        try:
+            checkpoint = int(header_last_event_id)
+        except ValueError:
+            checkpoint = None
+
+    config = get_config()
+    factory = get_session_factory(config)
+
+    async def event_iterator():
+        current = checkpoint or 0
+        while True:
+            with factory() as session:
+                fresh = services.list_run_telemetry_after(session, run_id, current)
+            if fresh:
+                for event in fresh:
+                    current = event.sequence_id
+                    data = json.dumps(event.model_dump(mode="json"))
+                    yield f"id: {event.sequence_id}\ndata: {data}\n\n"
+                continue
+            yield ": heartbeat\n\n"
+            await asyncio.sleep(5)
+
+    return StreamingResponse(event_iterator(), media_type="text/event-stream")
 
 
 @app.get("/api/v1/events/stream")

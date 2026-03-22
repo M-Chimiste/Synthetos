@@ -13,3 +13,12 @@ approval_rules:
 literature:
   fulltext_budget:
     max_fetches: 3
+execution:
+  auto_run_profiles:
+    - cpu-small
+    - gpu-small
+  deny_without_force_start:
+    network_mode:
+      - enabled
+    image_keys:
+      - custom

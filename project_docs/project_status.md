@@ -3,93 +3,116 @@
 **Project:** ML Laboratory Co-Scientist  
 **Repository:** `Synthetos`  
 **Status Date:** 2026-03-22  
-**Overall Status:** Phase 2 implemented, hardened, and re-verified — ready for Phase 3
+**Overall Status:** Phase 3 MVP implemented and verified in mocked end-to-end form
 
 ## Current Summary
 
-Phase 2 now meets the architectural intent of the phased plan, not just the mocked happy path. The system can:
+The repository now includes a real Phase 3 execution slice on top of the completed Phase 2 ideation pipeline. A valid `ExperimentSpec` can become a durable `RunRecord`, pass policy evaluation, receive a generated execution patch inside an isolated git worktree, execute through a Docker-backed adapter, emit durable telemetry, and produce run reports plus artifact lineage.
 
-- extract evidence cards from shortlisted sources
-- preserve provenance and read depth on evidence
-- detect both redundancy and conservative conflict signals between evidence claims
-- generate and rank multiple hypotheses from evidence only
-- stop cleanly when evidence or hypotheses are missing instead of auto-advancing
-- compile approved hypotheses into validated `ExperimentSpec`s
-- record Phase 2 skill execution lineage
-- record durable Phase 2 model invocation lineage
-- resolve required model routes from committed repo config
+The implemented execution pipeline is:
 
-The Phase 2 pipeline remains:
+`create_run -> run_prepare -> run_execute -> run_finalize`
 
-`evidence_extraction -> hypothesis_generation -> hypothesis_critique -> protocol_compilation`
-
-but now only advances when prerequisites are actually satisfied.
+with `run_retry_repair` available for bounded retry flows after repairable failures.
 
 ## What Was Completed In This Session
 
-### Orchestration hardening
+### Phase 3 domain, storage, and config
 
-- Enforced evidence-first progression in `libs/orchestration/operators.py`
-- `evidence_extraction` no longer queues `hypothesis_generation` when no papers or no evidence cards are produced
-- `hypothesis_generation` now no-ops with a clear report when evidence is absent
-- `hypothesis_critique` now no-ops with a clear report when generated hypotheses are absent
-- `protocol_compilation` continues to require approved hypotheses and now records Phase 2 skill lineage in its no-op path too
+- Added Phase 3 domain and API schemas for `RunSpec`, `RunRecord`, `RunTelemetryEvent`, `RunArtifactManifest`, and run control requests/responses
+- Added `run_records` and `run_telemetry_events` storage models plus Alembic migration `20260322_000005_phase3_runs.py`
+- Extended lineage tables so skill execution and model invocation rows can reference runs
+- Added committed execution config under:
+  - `configs/execution/images.yaml`
+  - `configs/execution/profiles.yaml`
+  - `configs/execution/settings.yaml`
+- Extended policy config with execution auto-run and force-start rules
+- Added `RUNNING` to the cycle state machine
 
-### Phase 2 skill runtime + lineage
+### Execution backplane and harness
 
-- Wired all four Phase 2 operators into the existing skill-binding/runtime pattern
-- Added Phase 2 `skill_execution_records` so evidence, hypothesis, critique, and protocol steps are recorded like Phase 1
-- Expanded skill payloads to capture operator-specific influence metadata:
-  - evidence context shaping
-  - benchmark context injection
-  - novelty critique activity
-  - protocol drafting / protocol context shaping
+- Added `libs/adapters/git/` for per-run git worktrees and patch archive capture
+- Added `libs/adapters/container/` for Docker command construction and container execution
+- Added `libs/execution/` for:
+  - execution policy evaluation
+  - harness staging
+  - run-spec construction
+  - artifact collection and failure classification
+- Added the first offline benchmark harness under `libs/execution/templates/offline_baseline/`
+- Added a checked-in fixture dataset and a compact local training/evaluation script that emits:
+  - `metrics.json`
+  - `artifact_manifest.json`
+  - checkpoint output
+  - predictions output
 
-### Model routing + invocation lineage
+### Run orchestration and control plane
 
-- Added committed default route config at `configs/models/routes.yaml`
-- Added durable model invocation persistence for all Phase 2 LLM-backed steps
-- Recorded route id, model id, prompt id, job/cycle linkage, and invocation parameters including bound skills
+- Added Phase 3 operators:
+  - `run_prepare`
+  - `run_execute`
+  - `run_finalize`
+  - `run_retry_repair`
+- Added API endpoints for:
+  - cycle run listing
+  - run detail
+  - run creation from experiment specs
+  - run commands (`pause`, `cancel`, `retry`)
+  - run telemetry SSE
+- Added CLI commands for run list/show/start/pause/cancel/retry
+- Extended the web UI with:
+  - run queue panel
+  - current run summary
+  - live run telemetry panel
+  - run control buttons
+  - run launch actions from `ExperimentSpec` cards
 
-### Evidence conflict detection
+### Phase 3 skills and reporting
 
-- Replaced the placeholder conflict detector with a deterministic, conservative pass
-- Kept redundancy detection as a separate heuristic
-- Added symmetric `conflict_with` linking and explanatory `conflict_notes`
+- Added Phase 3 skills:
+  - `coding.experiment_patch_author`
+  - `coding.experiment_repair`
+  - `verification.run_evaluator`
+- Added Phase 3 prompt assets under `prompts/coding/v1/`
+- Run preparation/finalization now records run-bound skill lineage
+- Run reports are now associated back to the originating run for inspection through the API/UI
 
 ### Testing and verification coverage
 
-- Added unit tests for Phase 2 operator gating behavior
-- Added unit tests for conflict detection behavior
-- Extended Phase 2 integration tests to verify:
-  - committed model-route resolution
-  - Phase 2 skill execution records
-  - Phase 2 model invocation persistence
-  - zero-evidence runs do not auto-advance
+- Added unit coverage for execution policy, Docker command construction, and git worktree patch capture
+- Added integration coverage for:
+  - policy-blocked runs
+  - full mocked run pipeline execution
+  - telemetry persistence
+  - run skill lineage
+  - run queue visibility through API
 
 ## Verification Status
 
 ### Confirmed this session
 
-- `uv run pytest tests` — **112/112 tests passed**
+- `uv run pytest tests` — **118/118 tests passed**
 - `uv run ruff check /Users/c/software_projects/Synthetos` — **passed**
 
 ### Not yet live-verified
 
-- No live end-to-end run against a real local or hosted model backend was performed in this session
-- No Phase 2 smoke test against a real LM Studio / vLLM / other configured inference service was performed yet
+- No real Docker-backed Phase 3 smoke run was executed in this session
+- No live GPU run was executed in this session
+- No live end-to-end coding-model patch generation path was exercised; the shipped Phase 3 patch authoring path is deterministic/template-driven for the MVP slice
 
-## Phase 2 Exit Criteria
+## Phase 3 MVP Status
 
-1. ✅ Evidence cards are produced from shortlisted sources
-2. ✅ At least three candidate hypotheses can be generated and ranked
-3. ✅ The chosen hypothesis compiles into a valid `ExperimentSpec`
-4. ✅ Skills influence context assembly and outputs in a recorded way
-5. ✅ An orchestrator can inspect the portfolio and request the next operator step through the API
+1. ✅ A valid `ExperimentSpec` can be turned into a durable `RunRecord`
+2. ✅ Per-run isolated workspaces and patch archives are created
+3. ✅ Container execution is adapterized and policy-gated
+4. ✅ Runs emit durable telemetry and surface through API/UI
+5. ✅ Run skill lineage is visible on the completed run
+6. ⚠️ Real Docker/GPU smoke validation still needs to be performed outside mocked tests
+7. ⚠️ Approval UX remains minimal (`force_start`) rather than a richer review flow
 
 ## Recommended Next Steps
 
-1. Begin Phase 3 implementation: execution lab, isolated workspaces, and containerized runs
-2. Run a live smoke test against a real model backend using the committed route config
-3. Verify Alembic migrations against the target Postgres setup, not just SQLite-backed tests
-4. Add Phase 3 telemetry/control views to the web UI once execution starts landing
+1. Run a real local Docker smoke test for the offline benchmark on `cpu-small`
+2. Validate optional `gpu-small` behavior on a machine with GPU runtime support
+3. Decide whether Phase 3 should keep deterministic patch authoring or graduate to an LLM-backed coder route in Phase 4
+4. Add richer pause/resume/approval ergonomics if the execution loop becomes a daily workflow
+5. Start Phase 4 verification work on top of the new `RunRecord` / artifact / telemetry lineage

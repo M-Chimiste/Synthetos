@@ -180,6 +180,9 @@ class SkillExecutionRecordModel(TimestampMixin, Base):
     public_id: Mapped[str] = mapped_column(String(64), unique=True, index=True)
     cycle_id: Mapped[int] = mapped_column(ForeignKey("research_cycles.id"), index=True)
     job_id: Mapped[int | None] = mapped_column(ForeignKey("jobs.id"), nullable=True, index=True)
+    run_record_id: Mapped[int | None] = mapped_column(
+        ForeignKey("run_records.id"), nullable=True, index=True
+    )
     skill_binding_id: Mapped[int] = mapped_column(ForeignKey("skill_bindings.id"), index=True)
     operator_name: Mapped[str] = mapped_column(String(128))
     status: Mapped[str] = mapped_column(String(64))
@@ -442,8 +445,74 @@ class ModelInvocationRecordModel(TimestampMixin, Base):
     job_id: Mapped[int | None] = mapped_column(
         ForeignKey("jobs.id"), nullable=True, index=True,
     )
+    run_record_id: Mapped[int | None] = mapped_column(
+        ForeignKey("run_records.id"), nullable=True, index=True,
+    )
     route_id: Mapped[str] = mapped_column(String(128))
     model_id: Mapped[str] = mapped_column(String(128))
     prompt_id: Mapped[str] = mapped_column(String(255))
     parameters: Mapped[dict[str, Any]] = mapped_column(JSON, default=dict)
     usage: Mapped[dict[str, Any]] = mapped_column(JSON, default=dict)
+
+
+# ---------------------------------------------------------------------------
+# Phase 3 — Run execution
+# ---------------------------------------------------------------------------
+
+
+class RunRecordModel(TimestampMixin, Base):
+    __tablename__ = "run_records"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    public_id: Mapped[str] = mapped_column(String(64), unique=True, index=True)
+    cycle_id: Mapped[int] = mapped_column(ForeignKey("research_cycles.id"), index=True)
+    experiment_spec_id: Mapped[int] = mapped_column(
+        ForeignKey("experiment_specs.id"), index=True
+    )
+    status: Mapped[str] = mapped_column(String(64), index=True)
+    execution_profile: Mapped[str] = mapped_column(String(64), index=True)
+    workspace_path: Mapped[str] = mapped_column(String(512))
+    artifact_root: Mapped[str] = mapped_column(String(512))
+    stdout_path: Mapped[str | None] = mapped_column(String(512), nullable=True)
+    stderr_path: Mapped[str | None] = mapped_column(String(512), nullable=True)
+    patch_archive_path: Mapped[str | None] = mapped_column(String(512), nullable=True)
+    base_commit: Mapped[str | None] = mapped_column(String(128), nullable=True)
+    base_branch: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    image: Mapped[str] = mapped_column(String(255))
+    build_recipe: Mapped[dict[str, Any]] = mapped_column(JSON, default=dict)
+    command: Mapped[list[str]] = mapped_column(JSON, default=list)
+    env_vars: Mapped[dict[str, str]] = mapped_column(JSON, default=dict)
+    mounts: Mapped[list[dict[str, Any]]] = mapped_column(JSON, default=list)
+    hardware_profile: Mapped[str] = mapped_column(String(64))
+    timeout_seconds: Mapped[int] = mapped_column(Integer)
+    memory_limit_mb: Mapped[int] = mapped_column(Integer)
+    cpu_limit: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    gpu_enabled: Mapped[bool] = mapped_column(Boolean, default=False)
+    network_mode: Mapped[str] = mapped_column(String(32), default="disabled")
+    bound_skill_keys: Mapped[list[str]] = mapped_column(JSON, default=list)
+    prompt_lineage: Mapped[list[dict[str, Any]]] = mapped_column(JSON, default=list)
+    model_lineage: Mapped[list[dict[str, Any]]] = mapped_column(JSON, default=list)
+    latest_resource_snapshot: Mapped[dict[str, Any]] = mapped_column(JSON, default=dict)
+    metrics_summary: Mapped[dict[str, Any]] = mapped_column(JSON, default=dict)
+    artifact_manifest: Mapped[dict[str, Any]] = mapped_column(JSON, default=dict)
+    failure_classification: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    last_error: Mapped[str | None] = mapped_column(Text, nullable=True)
+    exit_code: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    attempt_count: Mapped[int] = mapped_column(Integer, default=0)
+    started_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    completed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+
+
+class RunTelemetryEventModel(Base):
+    __tablename__ = "run_telemetry_events"
+
+    sequence_id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    public_id: Mapped[str] = mapped_column(String(64), unique=True, index=True)
+    run_record_id: Mapped[int] = mapped_column(ForeignKey("run_records.id"), index=True)
+    event_type: Mapped[str] = mapped_column(String(64), index=True)
+    stream: Mapped[str | None] = mapped_column(String(32), nullable=True)
+    message: Mapped[str | None] = mapped_column(Text, nullable=True)
+    payload: Mapped[dict[str, Any]] = mapped_column(JSON, default=dict)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=lambda: datetime.now(UTC)
+    )
