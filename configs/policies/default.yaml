@@ -1,0 +1,13 @@
+allowed_command_scopes:
+  create_cycle:
+    - cycles.write
+  pause_cycle:
+    - runs.control
+  cancel_cycle:
+    - runs.control
+  resume_cycle:
+    - runs.control
+approval_rules:
+  network_enabled_run: human_only
+  sensitive_orchestrator_action: human_only
+

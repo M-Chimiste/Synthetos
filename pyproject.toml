@@ -1,0 +1,42 @@
+[project]
+name = "synthetos-phase0"
+version = "0.1.0"
+description = "Phase 0 foundation for the ML Laboratory Co-Scientist"
+requires-python = ">=3.12"
+dependencies = [
+  "alembic>=1.14.0",
+  "fastapi>=0.116.0",
+  "httpx>=0.28.0",
+  "orjson>=3.11.0",
+  "psycopg[binary]>=3.2.0",
+  "pydantic>=2.11.0",
+  "pyyaml>=6.0.2",
+  "sqlalchemy>=2.0.38",
+  "structlog>=25.4.0",
+  "typer>=0.16.0",
+  "uvicorn>=0.35.0",
+]
+
+[project.optional-dependencies]
+dev = [
+  "pytest>=8.4.0",
+]
+
+[dependency-groups]
+dev = [
+  "pytest>=8.4.0",
+]
+
+[tool.pytest.ini_options]
+pythonpath = ["."]
+testpaths = ["tests"]
+
+[tool.ruff]
+line-length = 100
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "UP", "B"]
+
+[tool.ruff.lint.per-file-ignores]
+"apps/api/*.py" = ["B008"]
+"libs/storage/alembic/**/*.py" = ["E501"]
