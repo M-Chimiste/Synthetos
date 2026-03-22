@@ -9,13 +9,32 @@ import {
   cycleCommand,
   eventSource,
   getCycle,
+  getEvidenceSummary,
   getLiteratureTriage,
+  getPortfolio,
   getReport,
   listCycles,
+  listEvidence,
+  listExperimentSpecs,
   listSkills,
+  startEvidence,
   startIntake,
 } from "./lib/api";
-import type { CycleDetailResponse, CycleSummaryResponse, LiteratureTriageResponse, PaperCardSummary, ReportDetail, SkillSummaryResponse } from "./lib/types";
+import type {
+  CycleDetailResponse,
+  CycleSummaryResponse,
+  EvidenceCardSummary,
+  EvidenceListResponse,
+  EvidenceSummaryResponse,
+  ExperimentSpecListResponse,
+  ExperimentSpecSummary,
+  HypothesisCardSummary,
+  LiteratureTriageResponse,
+  PaperCardSummary,
+  PortfolioRankingResponse,
+  ReportDetail,
+  SkillSummaryResponse,
+} from "./lib/types";
 
 const defaultForm = {
   title: "Phase 1 literature triage cycle",
@@ -149,6 +168,44 @@ export default function App() {
     refetchInterval: 5000,
   });
 
+  const evidenceQuery = useQuery({
+    queryKey: ["evidence", selectedCycleId],
+    queryFn: () => listEvidence(selectedCycleId!),
+    enabled: Boolean(selectedCycleId),
+    refetchInterval: 10000,
+  });
+
+  const evidenceSummaryQuery = useQuery({
+    queryKey: ["evidenceSummary", selectedCycleId],
+    queryFn: () => getEvidenceSummary(selectedCycleId!),
+    enabled: Boolean(selectedCycleId),
+    refetchInterval: 10000,
+  });
+
+  const portfolioQuery = useQuery({
+    queryKey: ["portfolio", selectedCycleId],
+    queryFn: () => getPortfolio(selectedCycleId!),
+    enabled: Boolean(selectedCycleId),
+    refetchInterval: 10000,
+  });
+
+  const experimentSpecsQuery = useQuery({
+    queryKey: ["experimentSpecs", selectedCycleId],
+    queryFn: () => listExperimentSpecs(selectedCycleId!),
+    enabled: Boolean(selectedCycleId),
+    refetchInterval: 10000,
+  });
+
+  const evidenceMutation = useMutation({
+    mutationFn: async () => startEvidence(selectedCycleId!),
+    onSuccess: () => {
+      client.invalidateQueries({ queryKey: ["cycle", selectedCycleId] });
+      client.invalidateQueries({ queryKey: ["cycles"] });
+      client.invalidateQueries({ queryKey: ["evidence", selectedCycleId] });
+      client.invalidateQueries({ queryKey: ["evidenceSummary", selectedCycleId] });
+    },
+  });
+
   return (
     <main className="min-h-screen bg-[radial-gradient(circle_at_top,_rgba(15,118,110,0.14),_transparent_35%),linear-gradient(180deg,_#f8fafc_0%,_#eef2ff_100%)] px-4 py-6 text-ink md:px-8">
       <div className="mx-auto max-w-7xl space-y-6">
@@ -270,10 +327,15 @@ export default function App() {
             onCommand={(command) => commandMutation.mutate(command)}
             onStartIntake={() => intakeMutation.mutate()}
             intakePending={intakeMutation.isPending}
+            onStartEvidence={() => evidenceMutation.mutate()}
+            evidencePending={evidenceMutation.isPending}
             onSelectReport={setSelectedReportId}
           />
           <aside className="space-y-6">
             <LiteraturePanel triage={literatureQuery.data} />
+            <EvidencePanel evidence={evidenceQuery.data} summary={evidenceSummaryQuery.data} />
+            <HypothesisPortfolioPanel portfolio={portfolioQuery.data} />
+            <ExperimentSpecPanel specs={experimentSpecsQuery.data} />
             <SkillsPanel skills={skillsQuery.data?.items ?? []} />
             <ReportPanel report={reportQuery.data} />
           </aside>
@@ -288,12 +350,16 @@ function CycleDetailPanel({
   onCommand,
   onStartIntake,
   intakePending,
+  onStartEvidence,
+  evidencePending,
   onSelectReport,
 }: {
   detail?: CycleDetailResponse;
   onCommand: (command: string) => void;
   onStartIntake: () => void;
   intakePending: boolean;
+  onStartEvidence: () => void;
+  evidencePending: boolean;
   onSelectReport: (reportId: string) => void;
 }) {
   if (!detail) {
@@ -310,13 +376,22 @@ function CycleDetailPanel({
         </div>
         <div className="flex gap-2">
           {detail.cycle.current_status === "ready" && (
-            <button
-              className="button-primary"
-              onClick={onStartIntake}
-              disabled={intakePending}
-            >
-              {intakePending ? "Starting..." : "Start Literature Intake"}
-            </button>
+            <>
+              <button
+                className="button-primary"
+                onClick={onStartIntake}
+                disabled={intakePending}
+              >
+                {intakePending ? "Starting..." : "Start Literature Intake"}
+              </button>
+              <button
+                className="button-primary"
+                onClick={onStartEvidence}
+                disabled={evidencePending}
+              >
+                {evidencePending ? "Starting..." : "Start Evidence Extraction"}
+              </button>
+            </>
           )}
           <button className="button-secondary" onClick={() => onCommand("pause")}>Pause</button>
           <button className="button-secondary" onClick={() => onCommand("resume")}>Resume</button>
@@ -449,6 +524,151 @@ function LiteraturePanel({ triage }: { triage?: LiteratureTriageResponse }) {
                 <strong>Provenance:</strong> {paper.retrieval_provenance_summary.join(", ")}
               </div>
             )}
+          </div>
+        ))}
+      </div>
+    </section>
+  );
+}
+
+function EvidencePanel({ evidence, summary }: { evidence?: EvidenceListResponse; summary?: EvidenceSummaryResponse }) {
+  if (!evidence || evidence.total === 0) {
+    return null;
+  }
+  const strengthColor: Record<string, string> = {
+    strong: "bg-emerald-100 text-emerald-700",
+    moderate: "bg-blue-100 text-blue-700",
+    weak: "bg-amber-100 text-amber-700",
+    conflicting: "bg-red-100 text-red-700",
+  };
+  return (
+    <section className="panel p-5">
+      <div className="mb-4">
+        <p className="text-xs uppercase tracking-[0.25em] text-slate-500">Evidence Extraction</p>
+        <h2 className="text-xl font-semibold">Evidence Cards</h2>
+      </div>
+      {summary && (
+        <div className="mb-4 grid grid-cols-2 gap-2 text-sm">
+          <div>Total: <strong>{summary.total_evidence}</strong></div>
+          <div>Conflicts: <strong>{summary.conflicts_detected}</strong></div>
+          <div>Redundancies: <strong>{summary.redundancies_detected}</strong></div>
+          {Object.entries(summary.by_type).map(([type, count]) => (
+            <div key={type}>{type}: <strong>{count}</strong></div>
+          ))}
+        </div>
+      )}
+      <div className="max-h-80 space-y-2 overflow-y-auto">
+        {evidence.items.map((card: EvidenceCardSummary) => (
+          <div key={card.public_id} className="rounded-xl border border-slate-200 p-3">
+            <div className="flex items-start justify-between gap-2">
+              <div className="min-w-0 flex-1">
+                <div className="text-sm font-medium">{card.claim}</div>
+                <div className="text-xs text-slate-500">
+                  {card.evidence_type} · {card.read_depth} · paper {card.paper_public_id.slice(0, 8)}...
+                </div>
+              </div>
+              <span className={`shrink-0 rounded-full px-2 py-0.5 text-xs font-medium ${strengthColor[card.strength] ?? "bg-slate-100 text-slate-700"}`}>
+                {card.strength}
+              </span>
+            </div>
+            <div className="mt-1 text-xs text-slate-500">
+              Relevance: {card.relevance_score.toFixed(2)}
+            </div>
+          </div>
+        ))}
+      </div>
+    </section>
+  );
+}
+
+function HypothesisPortfolioPanel({ portfolio }: { portfolio?: PortfolioRankingResponse }) {
+  if (!portfolio || portfolio.total === 0) {
+    return null;
+  }
+  const statusColor: Record<string, string> = {
+    proposed: "bg-slate-100 text-slate-700",
+    active: "bg-blue-100 text-blue-700",
+    validated: "bg-emerald-100 text-emerald-700",
+    rejected: "bg-red-100 text-red-700",
+    parked: "bg-amber-100 text-amber-700",
+  };
+  return (
+    <section className="panel p-5">
+      <div className="mb-4">
+        <p className="text-xs uppercase tracking-[0.25em] text-slate-500">Hypothesis Portfolio</p>
+        <h2 className="text-xl font-semibold">Ranked Hypotheses</h2>
+        <div className="mt-1 text-xs text-slate-500">
+          Method: {portfolio.ranking_method} · Total: {portfolio.total}
+        </div>
+      </div>
+      <div className="max-h-80 space-y-2 overflow-y-auto">
+        {portfolio.hypotheses.map((hyp: HypothesisCardSummary) => (
+          <div key={hyp.public_id} className="rounded-xl border border-slate-200 p-3">
+            <div className="flex items-start justify-between gap-2">
+              <div className="min-w-0 flex-1">
+                <div className="text-sm font-medium">
+                  {hyp.portfolio_rank != null && <span className="mr-1 text-slate-400">#{hyp.portfolio_rank}</span>}
+                  {hyp.title}
+                </div>
+                {hyp.portfolio_score != null && (
+                  <div className="text-xs text-slate-500">
+                    Score: {hyp.portfolio_score.toFixed(2)}
+                  </div>
+                )}
+              </div>
+              <span className={`shrink-0 rounded-full px-2 py-0.5 text-xs font-medium ${statusColor[hyp.status] ?? "bg-slate-100 text-slate-700"}`}>
+                {hyp.status}
+              </span>
+            </div>
+            <div className="mt-1 flex gap-3 text-xs text-slate-500">
+              {hyp.novelty_score != null && <span>Novelty: {hyp.novelty_score.toFixed(2)}</span>}
+              {hyp.feasibility_score != null && <span>Feasibility: {hyp.feasibility_score.toFixed(2)}</span>}
+              {hyp.impact_score != null && <span>Impact: {hyp.impact_score.toFixed(2)}</span>}
+            </div>
+          </div>
+        ))}
+      </div>
+    </section>
+  );
+}
+
+function ExperimentSpecPanel({ specs }: { specs?: ExperimentSpecListResponse }) {
+  if (!specs || specs.total === 0) {
+    return null;
+  }
+  const statusColor: Record<string, string> = {
+    draft: "bg-slate-100 text-slate-700",
+    approved: "bg-blue-100 text-blue-700",
+    running: "bg-amber-100 text-amber-700",
+    completed: "bg-emerald-100 text-emerald-700",
+    failed: "bg-red-100 text-red-700",
+  };
+  return (
+    <section className="panel p-5">
+      <div className="mb-4">
+        <p className="text-xs uppercase tracking-[0.25em] text-slate-500">Experiment Specs</p>
+        <h2 className="text-xl font-semibold">Planned Experiments</h2>
+      </div>
+      <div className="max-h-80 space-y-2 overflow-y-auto">
+        {specs.items.map((spec: ExperimentSpecSummary) => (
+          <div key={spec.public_id} className="rounded-xl border border-slate-200 p-3">
+            <div className="flex items-start justify-between gap-2">
+              <div className="min-w-0 flex-1">
+                <div className="text-sm font-medium">{spec.title}</div>
+                <div className="text-xs text-slate-500">
+                  Hypothesis: {spec.hypothesis_public_id.slice(0, 8)}...
+                  {spec.estimated_runtime_minutes != null && ` · ~${spec.estimated_runtime_minutes}min`}
+                </div>
+              </div>
+              <div className="flex shrink-0 flex-col items-end gap-1">
+                <span className={`rounded-full px-2 py-0.5 text-xs font-medium ${statusColor[spec.status] ?? "bg-slate-100 text-slate-700"}`}>
+                  {spec.status}
+                </span>
+                {spec.gpu_required && (
+                  <span className="rounded-full bg-purple-100 px-2 py-0.5 text-xs font-medium text-purple-700">GPU</span>
+                )}
+              </div>
+            </div>
           </div>
         ))}
       </div>

@@ -18,3 +18,10 @@ class CyclePhase(StrEnum):
     INTAKE_ESCALATION = "intake_escalation"
     INTAKE_REPORTING = "intake_reporting"
     INTAKE_COMPLETE = "intake_complete"
+
+    # Phase 2 — Evidence, Hypotheses, Protocols
+    EVIDENCE_EXTRACTION = "evidence_extraction"
+    HYPOTHESIS_GENERATION = "hypothesis_generation"
+    HYPOTHESIS_CRITIQUE = "hypothesis_critique"
+    PROTOCOL_COMPILATION = "protocol_compilation"
+    PHASE2_COMPLETE = "phase2_complete"

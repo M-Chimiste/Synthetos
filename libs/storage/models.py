@@ -317,6 +317,120 @@ class ScreeningDecisionModel(TimestampMixin, Base):
     batch_index: Mapped[int] = mapped_column(Integer, default=0)
 
 
+# ---------------------------------------------------------------------------
+# Phase 2 — Evidence, Hypotheses, Protocols
+# ---------------------------------------------------------------------------
+
+
+class EvidenceCardModel(TimestampMixin, Base):
+    __tablename__ = "evidence_cards"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    public_id: Mapped[str] = mapped_column(String(64), unique=True, index=True)
+    cycle_id: Mapped[int] = mapped_column(ForeignKey("research_cycles.id"), index=True)
+    paper_card_id: Mapped[int] = mapped_column(ForeignKey("paper_cards.id"), index=True)
+
+    # Core evidence fields
+    claim: Mapped[str] = mapped_column(Text)
+    evidence_type: Mapped[str] = mapped_column(String(64))
+    # finding, method, metric, baseline, limitation, dataset
+    strength: Mapped[str] = mapped_column(String(32))
+    # strong, moderate, weak, anecdotal
+    relevance_score: Mapped[float] = mapped_column()
+    relevance_rationale: Mapped[str] = mapped_column(Text)
+
+    # Provenance
+    source_section: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    source_quote: Mapped[str | None] = mapped_column(Text, nullable=True)
+    read_depth: Mapped[str] = mapped_column(String(32), default="abstract")
+    # abstract, fulltext_html, fulltext_pdf
+
+    # Conflict and redundancy
+    conflict_with: Mapped[list[str]] = mapped_column(JSON, default=list)
+    redundant_with: Mapped[list[str]] = mapped_column(JSON, default=list)
+    conflict_notes: Mapped[str | None] = mapped_column(Text, nullable=True)
+
+    # LLM lineage
+    model_route_id: Mapped[str] = mapped_column(String(128))
+    prompt_id: Mapped[str] = mapped_column(String(255))
+
+
+class HypothesisCardModel(TimestampMixin, Base):
+    __tablename__ = "hypothesis_cards"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    public_id: Mapped[str] = mapped_column(String(64), unique=True, index=True)
+    cycle_id: Mapped[int] = mapped_column(ForeignKey("research_cycles.id"), index=True)
+
+    # Content
+    title: Mapped[str] = mapped_column(String(512))
+    statement: Mapped[str] = mapped_column(Text)
+    rationale: Mapped[str] = mapped_column(Text)
+    approach_summary: Mapped[str] = mapped_column(Text)
+
+    # Evidence linkage
+    supporting_evidence: Mapped[list[str]] = mapped_column(JSON, default=list)
+    counter_evidence: Mapped[list[str]] = mapped_column(JSON, default=list)
+
+    # Portfolio ranking
+    portfolio_rank: Mapped[int | None] = mapped_column(Integer, nullable=True, index=True)
+    portfolio_score: Mapped[float | None] = mapped_column(nullable=True)
+    ranking_rationale: Mapped[str | None] = mapped_column(Text, nullable=True)
+
+    # Status lifecycle: generated, critiqued, approved, rejected, compiled
+    status: Mapped[str] = mapped_column(String(64), index=True, default="generated")
+
+    # Critique
+    critique_summary: Mapped[str | None] = mapped_column(Text, nullable=True)
+    novelty_score: Mapped[float | None] = mapped_column(nullable=True)
+    feasibility_score: Mapped[float | None] = mapped_column(nullable=True)
+    impact_score: Mapped[float | None] = mapped_column(nullable=True)
+    critique_issues: Mapped[list[dict[str, Any]]] = mapped_column(JSON, default=list)
+
+    # LLM lineage
+    model_route_id: Mapped[str] = mapped_column(String(128))
+    prompt_id: Mapped[str] = mapped_column(String(255))
+
+
+class ExperimentSpecModel(TimestampMixin, Base):
+    __tablename__ = "experiment_specs"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    public_id: Mapped[str] = mapped_column(String(64), unique=True, index=True)
+    cycle_id: Mapped[int] = mapped_column(ForeignKey("research_cycles.id"), index=True)
+    hypothesis_card_id: Mapped[int] = mapped_column(
+        ForeignKey("hypothesis_cards.id"), index=True,
+    )
+
+    # Protocol definition
+    title: Mapped[str] = mapped_column(String(512))
+    objective: Mapped[str] = mapped_column(Text)
+    baseline_description: Mapped[str] = mapped_column(Text)
+    method_description: Mapped[str] = mapped_column(Text)
+
+    # Structured protocol fields
+    controls: Mapped[list[dict[str, Any]]] = mapped_column(JSON, default=list)
+    metrics: Mapped[list[dict[str, Any]]] = mapped_column(JSON, default=list)
+    datasets: Mapped[list[dict[str, Any]]] = mapped_column(JSON, default=list)
+    artifacts: Mapped[list[dict[str, Any]]] = mapped_column(JSON, default=list)
+    stop_conditions: Mapped[list[dict[str, Any]]] = mapped_column(JSON, default=list)
+    expected_outputs: Mapped[list[dict[str, Any]]] = mapped_column(JSON, default=list)
+
+    # Validation: draft, valid, rejected, approved
+    status: Mapped[str] = mapped_column(String(64), index=True, default="draft")
+    validation_issues: Mapped[list[dict[str, Any]]] = mapped_column(JSON, default=list)
+    rejection_reason: Mapped[str | None] = mapped_column(Text, nullable=True)
+
+    # Resource estimates
+    estimated_runtime_minutes: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    gpu_required: Mapped[bool] = mapped_column(Boolean, default=False)
+    resource_requirements: Mapped[dict[str, Any]] = mapped_column(JSON, default=dict)
+
+    # LLM lineage
+    model_route_id: Mapped[str] = mapped_column(String(128))
+    prompt_id: Mapped[str] = mapped_column(String(255))
+
+
 class ModelInvocationRecordModel(TimestampMixin, Base):
     __tablename__ = "model_invocations"
 

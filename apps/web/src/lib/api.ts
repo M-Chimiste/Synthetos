@@ -1,8 +1,13 @@
 import type {
   CycleDetailResponse,
   CycleSummaryResponse,
+  EvidenceListResponse,
+  EvidenceSummaryResponse,
+  ExperimentSpecListResponse,
+  HypothesisListResponse,
   LiteratureTriageResponse,
   PaperCardSummary,
+  PortfolioRankingResponse,
   ReportDetail,
   SkillDetailResponse,
   SkillSummaryResponse,
@@ -84,6 +89,30 @@ export function getLiteratureTriage(cycleId: string): Promise<LiteratureTriageRe
 
 export function startIntake(cycleId: string): Promise<CycleDetailResponse> {
   return cycleCommand(cycleId, "start_intake");
+}
+
+export function listEvidence(cycleId: string) {
+  return request<EvidenceListResponse>(`/api/v1/cycles/${cycleId}/evidence`);
+}
+
+export function getEvidenceSummary(cycleId: string) {
+  return request<EvidenceSummaryResponse>(`/api/v1/cycles/${cycleId}/evidence/summary`);
+}
+
+export function listHypotheses(cycleId: string) {
+  return request<HypothesisListResponse>(`/api/v1/cycles/${cycleId}/hypotheses`);
+}
+
+export function getPortfolio(cycleId: string) {
+  return request<PortfolioRankingResponse>(`/api/v1/cycles/${cycleId}/hypotheses/portfolio`);
+}
+
+export function listExperimentSpecs(cycleId: string) {
+  return request<ExperimentSpecListResponse>(`/api/v1/cycles/${cycleId}/experiment-specs`);
+}
+
+export function startEvidence(cycleId: string) {
+  return cycleCommand(cycleId, "start_evidence");
 }
 
 export { API_BASE, API_TOKEN };

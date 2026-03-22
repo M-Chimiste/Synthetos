@@ -197,18 +197,12 @@ def test_full_literature_pipeline_with_mock_adapters(client, tmp_config):
     papers = resp.json()
     assert papers["total"] == 3
 
-    # Mock the LLM gateway for screening
-    mock_llm_response = {
-        "choices": [{
-            "message": {
-                "content": json.dumps({
-                    "decision": "advance",
-                    "score": 0.8,
-                    "rationale": "Relevant to ML research."
-                })
-            }
-        }]
-    }
+    # Mock the LLM gateway for screening (gateway now returns content string)
+    mock_llm_response = json.dumps({
+        "decision": "advance",
+        "score": 0.8,
+        "rationale": "Relevant to ML research.",
+    })
 
     with patch(
         "libs.adapters.llm.gateway.ModelGateway.call_chat_completion",
@@ -287,17 +281,11 @@ async def test_events_stream_includes_shortlist_and_escalation_events(client):
         MockAdapter.return_value = mock_instance
         assert _run_worker(client) == "job_succeeded"
 
-    mock_llm_response = {
-        "choices": [{
-            "message": {
-                "content": json.dumps({
-                    "decision": "advance",
-                    "score": 0.8,
-                    "rationale": "Relevant to ML research."
-                })
-            }
-        }]
-    }
+    mock_llm_response = json.dumps({
+        "decision": "advance",
+        "score": 0.8,
+        "rationale": "Relevant to ML research.",
+    })
     with patch(
         "libs.adapters.llm.gateway.ModelGateway.call_chat_completion",
         return_value=mock_llm_response,

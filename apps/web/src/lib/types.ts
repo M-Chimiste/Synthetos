@@ -173,3 +173,66 @@ export interface LiteratureTriageResponse {
   escalated_count: number;
   papers: PaperCardSummary[];
 }
+
+export interface EvidenceCardSummary {
+  public_id: string;
+  paper_public_id: string;
+  claim: string;
+  evidence_type: string;
+  strength: string;
+  relevance_score: number;
+  read_depth: string;
+  created_at: string;
+}
+
+export interface EvidenceSummaryResponse {
+  total_evidence: number;
+  by_type: Record<string, number>;
+  by_strength: Record<string, number>;
+  conflicts_detected: number;
+  redundancies_detected: number;
+}
+
+export interface EvidenceListResponse {
+  items: EvidenceCardSummary[];
+  total: number;
+}
+
+export interface HypothesisCardSummary {
+  public_id: string;
+  title: string;
+  portfolio_rank: number | null;
+  portfolio_score: number | null;
+  status: string;
+  novelty_score: number | null;
+  feasibility_score: number | null;
+  impact_score: number | null;
+  created_at: string;
+}
+
+export interface HypothesisListResponse {
+  items: HypothesisCardSummary[];
+  total: number;
+}
+
+export interface PortfolioRankingResponse {
+  cycle_public_id: string;
+  hypotheses: HypothesisCardSummary[];
+  ranking_method: string;
+  total: number;
+}
+
+export interface ExperimentSpecSummary {
+  public_id: string;
+  hypothesis_public_id: string;
+  title: string;
+  status: string;
+  gpu_required: boolean;
+  estimated_runtime_minutes: number | null;
+  created_at: string;
+}
+
+export interface ExperimentSpecListResponse {
+  items: ExperimentSpecSummary[];
+  total: number;
+}

@@ -6,7 +6,6 @@ structured JSON responses for each paper.
 
 from __future__ import annotations
 
-import json
 from pathlib import Path
 from typing import Any
 
@@ -15,6 +14,7 @@ import structlog
 from pydantic import BaseModel
 
 from libs.adapters.llm.gateway import ModelGateway
+from libs.adapters.llm.json_utils import parse_json_lenient
 
 log = structlog.get_logger(__name__)
 
@@ -66,22 +66,17 @@ def _render_prompt(template_text: str, request: TriageRequest) -> str:
 
 def _parse_triage_json(text: str, paper_id: str) -> TriageResponse:
     """Best-effort extraction of triage JSON from LLM response text."""
-    # Try to find JSON in the response
-    for start_char, end_char in [("{", "}"), ("[", "]")]:
-        start = text.find(start_char)
-        end = text.rfind(end_char)
-        if start >= 0 and end > start:
-            try:
-                data = json.loads(text[start : end + 1])
-                if isinstance(data, dict):
-                    return TriageResponse(
-                        paper_id=paper_id,
-                        decision=data.get("decision", "uncertain"),
-                        score=float(data.get("score", 0.5)),
-                        rationale=data.get("rationale", "Parsed from LLM response"),
-                    )
-            except (json.JSONDecodeError, ValueError):
-                continue
+    try:
+        data = parse_json_lenient(text)
+        if isinstance(data, dict):
+            return TriageResponse(
+                paper_id=paper_id,
+                decision=data.get("decision", "uncertain"),
+                score=float(data.get("score", 0.5)),
+                rationale=data.get("rationale", "Parsed from LLM response"),
+            )
+    except (ValueError, TypeError):
+        pass
 
     log.warning("triage_json_parse_failed", paper_id=paper_id)
     return TriageResponse(
@@ -111,7 +106,7 @@ def triage_batch(
     for request in papers:
         rendered = _render_prompt(template_text, request)
         try:
-            result = gateway.call_chat_completion(
+            content = gateway.call_chat_completion(
                 role=model_role,
                 preferred_route_id=route.id,
                 messages=[
@@ -126,8 +121,8 @@ def triage_batch(
                 ],
                 temperature=0.2,
                 max_tokens=512,
+                json_mode=True,
             )
-            content = result.get("choices", [{}])[0].get("message", {}).get("content", "")
             responses.append(_parse_triage_json(content, request.paper_id))
         except Exception as exc:
             log.warning(

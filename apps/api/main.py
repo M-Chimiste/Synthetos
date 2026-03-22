@@ -22,12 +22,20 @@ from libs.schemas.api import (
     CycleCommandRequest,
     CycleDetailResponse,
     CycleListResponse,
+    EvidenceCardDetail,
+    EvidenceListResponse,
+    EvidenceSummaryResponse,
+    ExperimentSpecDetail,
+    ExperimentSpecListResponse,
     HealthResponse,
+    HypothesisCardDetail,
+    HypothesisListResponse,
     JobDetailResponse,
     JobListResponse,
     LiteratureTriageResponse,
     PaperCardDetail,
     PaperListResponse,
+    PortfolioRankingResponse,
     ReportDetailResponse,
     ReportListResponse,
     RetrievalSessionListResponse,
@@ -254,6 +262,108 @@ def list_retrieval_sessions(
 ) -> RetrievalSessionListResponse:
     items = services.list_retrieval_sessions_for_cycle(session, cycle_id)
     return RetrievalSessionListResponse(items=items)
+
+
+# ---------------------------------------------------------------------------
+# Phase 2 — Evidence, Hypotheses, Experiment Specs
+# ---------------------------------------------------------------------------
+
+
+@app.get("/api/v1/cycles/{cycle_id}/evidence", response_model=EvidenceListResponse)
+def list_evidence(
+    cycle_id: str,
+    type: str | None = Query(default=None),
+    actor: Actor = Depends(require_scopes(TokenScope.CYCLES_READ)),
+    session: Session = Depends(get_db),
+) -> EvidenceListResponse:
+    return services.list_evidence_for_cycle_api(session, cycle_id, type_filter=type)
+
+
+@app.get(
+    "/api/v1/cycles/{cycle_id}/evidence/summary",
+    response_model=EvidenceSummaryResponse,
+)
+def get_evidence_summary(
+    cycle_id: str,
+    actor: Actor = Depends(require_scopes(TokenScope.CYCLES_READ)),
+    session: Session = Depends(get_db),
+) -> EvidenceSummaryResponse:
+    return services.get_evidence_summary_api(session, cycle_id)
+
+
+@app.get(
+    "/api/v1/cycles/{cycle_id}/evidence/{evidence_id}",
+    response_model=EvidenceCardDetail,
+)
+def get_evidence(
+    cycle_id: str,
+    evidence_id: str,
+    actor: Actor = Depends(require_scopes(TokenScope.CYCLES_READ)),
+    session: Session = Depends(get_db),
+) -> EvidenceCardDetail:
+    return services.get_evidence_detail_api(session, cycle_id, evidence_id)
+
+
+@app.get(
+    "/api/v1/cycles/{cycle_id}/hypotheses",
+    response_model=HypothesisListResponse,
+)
+def list_hypotheses(
+    cycle_id: str,
+    actor: Actor = Depends(require_scopes(TokenScope.CYCLES_READ)),
+    session: Session = Depends(get_db),
+) -> HypothesisListResponse:
+    return services.list_hypotheses_for_cycle_api(session, cycle_id)
+
+
+@app.get(
+    "/api/v1/cycles/{cycle_id}/hypotheses/portfolio",
+    response_model=PortfolioRankingResponse,
+)
+def get_portfolio(
+    cycle_id: str,
+    actor: Actor = Depends(require_scopes(TokenScope.CYCLES_READ)),
+    session: Session = Depends(get_db),
+) -> PortfolioRankingResponse:
+    return services.get_portfolio_ranking_api(session, cycle_id)
+
+
+@app.get(
+    "/api/v1/cycles/{cycle_id}/hypotheses/{hypothesis_id}",
+    response_model=HypothesisCardDetail,
+)
+def get_hypothesis(
+    cycle_id: str,
+    hypothesis_id: str,
+    actor: Actor = Depends(require_scopes(TokenScope.CYCLES_READ)),
+    session: Session = Depends(get_db),
+) -> HypothesisCardDetail:
+    return services.get_hypothesis_detail_api(session, cycle_id, hypothesis_id)
+
+
+@app.get(
+    "/api/v1/cycles/{cycle_id}/experiment-specs",
+    response_model=ExperimentSpecListResponse,
+)
+def list_experiment_specs(
+    cycle_id: str,
+    actor: Actor = Depends(require_scopes(TokenScope.CYCLES_READ)),
+    session: Session = Depends(get_db),
+) -> ExperimentSpecListResponse:
+    return services.list_experiment_specs_for_cycle_api(session, cycle_id)
+
+
+@app.get(
+    "/api/v1/cycles/{cycle_id}/experiment-specs/{spec_id}",
+    response_model=ExperimentSpecDetail,
+)
+def get_experiment_spec(
+    cycle_id: str,
+    spec_id: str,
+    actor: Actor = Depends(require_scopes(TokenScope.CYCLES_READ)),
+    session: Session = Depends(get_db),
+) -> ExperimentSpecDetail:
+    return services.get_experiment_spec_detail_api(session, cycle_id, spec_id)
 
 
 @app.get("/api/v1/events/stream")

@@ -1,0 +1,40 @@
+{
+  "title": "Adaptive Weight Sharing NAS Experiment",
+  "objective": "Compare adaptive weight sharing against uniform weight sharing in neural architecture search, measuring both search efficiency and final architecture quality.",
+  "baseline_description": "Uniform weight sharing supernet trained with standard one-shot NAS on CIFAR-10. Uses the same supernet architecture and training schedule as the proposed method.",
+  "method_description": "1. Build a supernet with weight-sharing cells. 2. Implement adaptive weight allocation based on architecture similarity scores. 3. Train for 200 epochs on CIFAR-10. 4. Search for top architectures using evolutionary search. 5. Retrain top-3 architectures standalone. 6. Compare against uniform weight sharing baseline.",
+  "controls": [
+    {"name": "uniform_sharing", "description": "Standard uniform weight sharing baseline", "type": "positive"},
+    {"name": "no_sharing", "description": "Independent training of each architecture (upper bound)", "type": "negative"}
+  ],
+  "metrics": [
+    {"name": "top1_accuracy", "description": "Top-1 accuracy on CIFAR-10 test set", "direction": "higher_is_better", "threshold": 0.95},
+    {"name": "search_gpu_hours", "description": "Total GPU hours for architecture search", "direction": "lower_is_better", "threshold": null},
+    {"name": "rank_correlation", "description": "Spearman correlation between supernet and standalone rankings", "direction": "higher_is_better", "threshold": 0.7}
+  ],
+  "datasets": [
+    {"name": "CIFAR-10", "source": "torchvision", "split": "train/test (50k/10k)"}
+  ],
+  "artifacts": [
+    {"name": "supernet_checkpoint", "type": "checkpoint", "required": true},
+    {"name": "search_results", "type": "table", "required": true},
+    {"name": "accuracy_plot", "type": "plot", "required": true},
+    {"name": "training_log", "type": "log", "required": true}
+  ],
+  "stop_conditions": [
+    {"condition": "Training loss diverges (NaN or >10x initial)", "action": "stop"},
+    {"condition": "GPU memory exceeds 90% utilization", "action": "warn"}
+  ],
+  "expected_outputs": [
+    {"description": "Accuracy comparison table (adaptive vs uniform vs no sharing)", "format": "csv"},
+    {"description": "Search efficiency comparison (GPU hours, architectures evaluated)", "format": "json"}
+  ],
+  "estimated_runtime_minutes": 480,
+  "gpu_required": true,
+  "resource_requirements": {
+    "gpu_memory_gb": 16,
+    "cpu_cores": 8,
+    "ram_gb": 32,
+    "disk_gb": 50
+  }
+}

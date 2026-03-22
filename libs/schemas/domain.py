@@ -175,6 +175,85 @@ class ScreeningDecision(BaseModel):
     created_at: datetime
 
 
+# ---------------------------------------------------------------------------
+# Phase 2 — Evidence, Hypotheses, Protocols
+# ---------------------------------------------------------------------------
+
+
+class EvidenceCard(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+
+    public_id: str
+    paper_public_id: str
+    claim: str
+    evidence_type: str
+    strength: str
+    relevance_score: float
+    relevance_rationale: str
+    source_section: str | None = None
+    source_quote: str | None = None
+    read_depth: str
+    conflict_with: list[str] = Field(default_factory=list)
+    redundant_with: list[str] = Field(default_factory=list)
+    conflict_notes: str | None = None
+    model_route_id: str
+    prompt_id: str
+    created_at: datetime
+    updated_at: datetime
+
+
+class HypothesisCard(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+
+    public_id: str
+    title: str
+    statement: str
+    rationale: str
+    approach_summary: str
+    supporting_evidence: list[str] = Field(default_factory=list)
+    counter_evidence: list[str] = Field(default_factory=list)
+    portfolio_rank: int | None = None
+    portfolio_score: float | None = None
+    ranking_rationale: str | None = None
+    status: str
+    critique_summary: str | None = None
+    novelty_score: float | None = None
+    feasibility_score: float | None = None
+    impact_score: float | None = None
+    critique_issues: list[dict[str, Any]] = Field(default_factory=list)
+    model_route_id: str
+    prompt_id: str
+    created_at: datetime
+    updated_at: datetime
+
+
+class ExperimentSpec(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+
+    public_id: str
+    hypothesis_public_id: str
+    title: str
+    objective: str
+    baseline_description: str
+    method_description: str
+    controls: list[dict[str, Any]] = Field(default_factory=list)
+    metrics: list[dict[str, Any]] = Field(default_factory=list)
+    datasets: list[dict[str, Any]] = Field(default_factory=list)
+    artifacts: list[dict[str, Any]] = Field(default_factory=list)
+    stop_conditions: list[dict[str, Any]] = Field(default_factory=list)
+    expected_outputs: list[dict[str, Any]] = Field(default_factory=list)
+    status: str
+    validation_issues: list[dict[str, Any]] = Field(default_factory=list)
+    rejection_reason: str | None = None
+    estimated_runtime_minutes: int | None = None
+    gpu_required: bool = False
+    resource_requirements: dict[str, Any] = Field(default_factory=dict)
+    model_route_id: str
+    prompt_id: str
+    created_at: datetime
+    updated_at: datetime
+
+
 class OrchestratorClient(BaseModel):
     model_config = ConfigDict(from_attributes=True)
 
@@ -189,11 +268,13 @@ class OrchestratorClient(BaseModel):
 class ModelRouteConfig(BaseModel):
     id: str
     role: str
-    provider: str
+    provider: str = "openai_compatible"  # openai_compatible | anthropic | google
     base_url: str
     model: str
     api_key_env: str | None = None
-    timeout_seconds: int = 10
+    timeout_seconds: int = 60
+    supports_json_mode: bool = True
+    priority: int = 0  # lower = preferred; enables fallback chains
 
 
 class ModelInvocationRecord(BaseModel):

@@ -1,0 +1,29 @@
+[
+  {
+    "claim": "Neural architecture search with weight sharing reduces search cost by 1000x compared to standalone training",
+    "evidence_type": "finding",
+    "strength": "strong",
+    "relevance_score": 0.92,
+    "relevance_rationale": "Directly addresses the efficiency goal of the research problem",
+    "source_section": "results",
+    "source_quote": "Our weight-sharing approach achieves comparable accuracy while reducing the total GPU hours by three orders of magnitude."
+  },
+  {
+    "claim": "Sparse attention mechanisms can approximate full attention with O(n sqrt(n)) complexity",
+    "evidence_type": "method",
+    "strength": "moderate",
+    "relevance_score": 0.78,
+    "relevance_rationale": "Provides a candidate approach for reducing computational cost in transformer models",
+    "source_section": "methods",
+    "source_quote": null
+  },
+  {
+    "claim": "Top-1 accuracy on ImageNet reaches 84.3% with the proposed method",
+    "evidence_type": "metric",
+    "strength": "strong",
+    "relevance_score": 0.85,
+    "relevance_rationale": "Establishes a strong baseline metric for comparison",
+    "source_section": "abstract",
+    "source_quote": "We report a top-1 accuracy of 84.3% on ImageNet"
+  }
+]

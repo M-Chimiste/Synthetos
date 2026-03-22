@@ -19,10 +19,21 @@ from libs.schemas.api import (
     CreateCycleRequest,
     CycleDetailResponse,
     CycleSummaryResponse,
+    EvidenceCardDetail,
+    EvidenceCardSummary,
+    EvidenceListResponse,
+    EvidenceSummaryResponse,
+    ExperimentSpecDetail,
+    ExperimentSpecListResponse,
+    ExperimentSpecSummary,
+    HypothesisCardDetail,
+    HypothesisCardSummary,
+    HypothesisListResponse,
     JobDetailResponse,
     LiteratureTriageResponse,
     PaperCardDetail,
     PaperCardSummary,
+    PortfolioRankingResponse,
     ReportDetailResponse,
     ReportSummary,
     SkillDetailResponse,
@@ -847,6 +858,36 @@ def apply_cycle_command(
         from libs.orchestration.job_queue import enqueue_job as _enqueue_job
         _enqueue_job(session, actor, cycle.id, "source_retrieval", job_payload)
         target = CycleStatus.QUEUED
+    elif command == "start_evidence":
+        if current != CycleStatus.READY:
+            raise HTTPException(
+                status_code=400,
+                detail=f"Cannot start evidence from state {current.value}; cycle must be READY",
+            )
+        job_payload: dict = {"cycle_public_id": cycle.public_id}
+        if payload:
+            job_payload.update(payload)
+        from libs.orchestration.job_queue import enqueue_job as _enqueue_job
+        _enqueue_job(session, actor, cycle.id, "evidence_extraction", job_payload)
+        target = CycleStatus.QUEUED
+    elif command == "request_hypothesis_review":
+        if current != CycleStatus.READY:
+            raise HTTPException(status_code=400, detail="Cycle must be READY")
+        from libs.orchestration.job_queue import enqueue_job as _enqueue_job
+        _enqueue_job(
+            session, actor, cycle.id, "hypothesis_critique",
+            {"cycle_public_id": cycle.public_id},
+        )
+        target = CycleStatus.QUEUED
+    elif command == "request_protocol_compilation":
+        if current != CycleStatus.READY:
+            raise HTTPException(status_code=400, detail="Cycle must be READY")
+        from libs.orchestration.job_queue import enqueue_job as _enqueue_job
+        _enqueue_job(
+            session, actor, cycle.id, "protocol_compilation",
+            {"cycle_public_id": cycle.public_id},
+        )
+        target = CycleStatus.QUEUED
     else:
         raise HTTPException(status_code=400, detail="Unsupported command")
     ensure_transition(current, target)
@@ -976,3 +1017,310 @@ def list_retrieval_sessions_for_cycle(
         .order_by(SourceRetrievalSessionModel.created_at.asc())
     ).all()
     return [SRSDomain.model_validate(s) for s in sessions]
+
+
+# ---------------------------------------------------------------------------
+# Phase 2 — Evidence, Hypotheses, Experiment Specs query helpers
+# ---------------------------------------------------------------------------
+
+
+def list_evidence_for_cycle_api(
+    session: Session, cycle_public_id: str, type_filter: str | None = None,
+) -> EvidenceListResponse:
+    from libs.storage.models import EvidenceCardModel, PaperCardModel
+
+    cycle = get_cycle_by_public_id(session, cycle_public_id)
+    stmt = (
+        select(EvidenceCardModel)
+        .where(EvidenceCardModel.cycle_id == cycle.id)
+    )
+    if type_filter:
+        stmt = stmt.where(EvidenceCardModel.evidence_type == type_filter)
+    stmt = stmt.order_by(EvidenceCardModel.relevance_score.desc()).limit(200)
+    cards = session.scalars(stmt).all()
+
+    paper_ids = {c.paper_card_id for c in cards}
+    papers = {
+        p.id: p.public_id
+        for p in session.scalars(
+            select(PaperCardModel).where(PaperCardModel.id.in_(paper_ids))
+        ).all()
+    } if paper_ids else {}
+
+    items = [
+        EvidenceCardSummary(
+            public_id=c.public_id,
+            paper_public_id=papers.get(c.paper_card_id, ""),
+            claim=c.claim,
+            evidence_type=c.evidence_type,
+            strength=c.strength,
+            relevance_score=c.relevance_score,
+            read_depth=c.read_depth,
+            created_at=c.created_at,
+        )
+        for c in cards
+    ]
+    return EvidenceListResponse(items=items, total=len(items))
+
+
+def get_evidence_detail_api(
+    session: Session, cycle_public_id: str, evidence_public_id: str,
+) -> EvidenceCardDetail:
+    from libs.schemas.domain import EvidenceCard as EvidenceCardSchema
+    from libs.storage.models import EvidenceCardModel, PaperCardModel
+
+    cycle = get_cycle_by_public_id(session, cycle_public_id)
+    card = session.scalar(
+        select(EvidenceCardModel).where(
+            EvidenceCardModel.public_id == evidence_public_id,
+            EvidenceCardModel.cycle_id == cycle.id,
+        )
+    )
+    if card is None:
+        raise HTTPException(status_code=404, detail="Evidence card not found")
+
+    paper = session.get(PaperCardModel, card.paper_card_id)
+    paper_pub_id = paper.public_id if paper else ""
+
+    schema = EvidenceCardSchema(
+        public_id=card.public_id,
+        paper_public_id=paper_pub_id,
+        claim=card.claim,
+        evidence_type=card.evidence_type,
+        strength=card.strength,
+        relevance_score=card.relevance_score,
+        relevance_rationale=card.relevance_rationale,
+        source_section=card.source_section,
+        source_quote=card.source_quote,
+        read_depth=card.read_depth,
+        conflict_with=card.conflict_with or [],
+        redundant_with=card.redundant_with or [],
+        conflict_notes=card.conflict_notes,
+        model_route_id=card.model_route_id,
+        prompt_id=card.prompt_id,
+        created_at=card.created_at,
+        updated_at=card.updated_at,
+    )
+    return EvidenceCardDetail(**schema.model_dump())
+
+
+def get_evidence_summary_api(
+    session: Session, cycle_public_id: str,
+) -> EvidenceSummaryResponse:
+    from libs.ideation.services import build_evidence_summary
+
+    cycle = get_cycle_by_public_id(session, cycle_public_id)
+    summary = build_evidence_summary(session, cycle.id)
+    return EvidenceSummaryResponse(**summary)
+
+
+def list_hypotheses_for_cycle_api(
+    session: Session, cycle_public_id: str,
+) -> HypothesisListResponse:
+    from libs.storage.models import HypothesisCardModel
+
+    cycle = get_cycle_by_public_id(session, cycle_public_id)
+    cards = session.scalars(
+        select(HypothesisCardModel)
+        .where(HypothesisCardModel.cycle_id == cycle.id)
+        .order_by(
+            HypothesisCardModel.portfolio_rank.asc().nullslast(),
+            HypothesisCardModel.created_at.asc(),
+        )
+        .limit(100)
+    ).all()
+
+    items = [
+        HypothesisCardSummary(
+            public_id=c.public_id,
+            title=c.title,
+            portfolio_rank=c.portfolio_rank,
+            portfolio_score=c.portfolio_score,
+            status=c.status,
+            novelty_score=c.novelty_score,
+            feasibility_score=c.feasibility_score,
+            impact_score=c.impact_score,
+            created_at=c.created_at,
+        )
+        for c in cards
+    ]
+    return HypothesisListResponse(items=items, total=len(items))
+
+
+def get_hypothesis_detail_api(
+    session: Session, cycle_public_id: str, hypothesis_public_id: str,
+) -> HypothesisCardDetail:
+    from libs.schemas.domain import HypothesisCard as HypothesisCardSchema
+    from libs.storage.models import EvidenceCardModel, HypothesisCardModel, PaperCardModel
+
+    cycle = get_cycle_by_public_id(session, cycle_public_id)
+    hyp = session.scalar(
+        select(HypothesisCardModel).where(
+            HypothesisCardModel.public_id == hypothesis_public_id,
+            HypothesisCardModel.cycle_id == cycle.id,
+        )
+    )
+    if hyp is None:
+        raise HTTPException(status_code=404, detail="Hypothesis not found")
+
+    all_evidence_ids = list(set((hyp.supporting_evidence or []) + (hyp.counter_evidence or [])))
+    evidence_cards_list: list[EvidenceCardSummary] = []
+    if all_evidence_ids:
+        ev_models = session.scalars(
+            select(EvidenceCardModel).where(
+                EvidenceCardModel.public_id.in_(all_evidence_ids),
+            )
+        ).all()
+        paper_ids = {e.paper_card_id for e in ev_models}
+        papers = {
+            p.id: p.public_id
+            for p in session.scalars(
+                select(PaperCardModel).where(PaperCardModel.id.in_(paper_ids))
+            ).all()
+        } if paper_ids else {}
+        evidence_cards_list = [
+            EvidenceCardSummary(
+                public_id=e.public_id,
+                paper_public_id=papers.get(e.paper_card_id, ""),
+                claim=e.claim,
+                evidence_type=e.evidence_type,
+                strength=e.strength,
+                relevance_score=e.relevance_score,
+                read_depth=e.read_depth,
+                created_at=e.created_at,
+            )
+            for e in ev_models
+        ]
+
+    schema = HypothesisCardSchema.model_validate(hyp)
+    return HypothesisCardDetail(**schema.model_dump(), evidence_cards=evidence_cards_list)
+
+
+def get_portfolio_ranking_api(
+    session: Session, cycle_public_id: str,
+) -> PortfolioRankingResponse:
+    from libs.storage.models import HypothesisCardModel
+
+    cycle = get_cycle_by_public_id(session, cycle_public_id)
+    ranked = session.scalars(
+        select(HypothesisCardModel).where(
+            HypothesisCardModel.cycle_id == cycle.id,
+            HypothesisCardModel.portfolio_rank.isnot(None),
+        ).order_by(HypothesisCardModel.portfolio_rank.asc())
+    ).all()
+
+    items = [
+        HypothesisCardSummary(
+            public_id=c.public_id,
+            title=c.title,
+            portfolio_rank=c.portfolio_rank,
+            portfolio_score=c.portfolio_score,
+            status=c.status,
+            novelty_score=c.novelty_score,
+            feasibility_score=c.feasibility_score,
+            impact_score=c.impact_score,
+            created_at=c.created_at,
+        )
+        for c in ranked
+    ]
+    return PortfolioRankingResponse(
+        cycle_public_id=cycle.public_id,
+        hypotheses=items,
+        ranking_method="composite_score",
+        total=len(items),
+    )
+
+
+def list_experiment_specs_for_cycle_api(
+    session: Session, cycle_public_id: str,
+) -> ExperimentSpecListResponse:
+    from libs.storage.models import ExperimentSpecModel, HypothesisCardModel
+
+    cycle = get_cycle_by_public_id(session, cycle_public_id)
+    specs = session.scalars(
+        select(ExperimentSpecModel)
+        .where(ExperimentSpecModel.cycle_id == cycle.id)
+        .order_by(ExperimentSpecModel.created_at.asc())
+    ).all()
+
+    hyp_ids = {s.hypothesis_card_id for s in specs}
+    hyps = {
+        h.id: h.public_id
+        for h in session.scalars(
+            select(HypothesisCardModel).where(HypothesisCardModel.id.in_(hyp_ids))
+        ).all()
+    } if hyp_ids else {}
+
+    items = [
+        ExperimentSpecSummary(
+            public_id=s.public_id,
+            hypothesis_public_id=hyps.get(s.hypothesis_card_id, ""),
+            title=s.title,
+            status=s.status,
+            gpu_required=s.gpu_required,
+            estimated_runtime_minutes=s.estimated_runtime_minutes,
+            created_at=s.created_at,
+        )
+        for s in specs
+    ]
+    return ExperimentSpecListResponse(items=items, total=len(items))
+
+
+def get_experiment_spec_detail_api(
+    session: Session, cycle_public_id: str, spec_public_id: str,
+) -> ExperimentSpecDetail:
+    from libs.schemas.domain import ExperimentSpec as ExperimentSpecSchema
+    from libs.storage.models import ExperimentSpecModel, HypothesisCardModel
+
+    cycle = get_cycle_by_public_id(session, cycle_public_id)
+    spec = session.scalar(
+        select(ExperimentSpecModel).where(
+            ExperimentSpecModel.public_id == spec_public_id,
+            ExperimentSpecModel.cycle_id == cycle.id,
+        )
+    )
+    if spec is None:
+        raise HTTPException(status_code=404, detail="Experiment spec not found")
+
+    hyp = session.get(HypothesisCardModel, spec.hypothesis_card_id)
+    hyp_pub_id = hyp.public_id if hyp else ""
+
+    hyp_summary = None
+    if hyp:
+        hyp_summary = HypothesisCardSummary(
+            public_id=hyp.public_id,
+            title=hyp.title,
+            portfolio_rank=hyp.portfolio_rank,
+            portfolio_score=hyp.portfolio_score,
+            status=hyp.status,
+            novelty_score=hyp.novelty_score,
+            feasibility_score=hyp.feasibility_score,
+            impact_score=hyp.impact_score,
+            created_at=hyp.created_at,
+        )
+
+    schema = ExperimentSpecSchema(
+        public_id=spec.public_id,
+        hypothesis_public_id=hyp_pub_id,
+        title=spec.title,
+        objective=spec.objective,
+        baseline_description=spec.baseline_description,
+        method_description=spec.method_description,
+        controls=spec.controls or [],
+        metrics=spec.metrics or [],
+        datasets=spec.datasets or [],
+        artifacts=spec.artifacts or [],
+        stop_conditions=spec.stop_conditions or [],
+        expected_outputs=spec.expected_outputs or [],
+        status=spec.status,
+        validation_issues=spec.validation_issues or [],
+        rejection_reason=spec.rejection_reason,
+        estimated_runtime_minutes=spec.estimated_runtime_minutes,
+        gpu_required=spec.gpu_required,
+        resource_requirements=spec.resource_requirements or {},
+        model_route_id=spec.model_route_id,
+        prompt_id=spec.prompt_id,
+        created_at=spec.created_at,
+        updated_at=spec.updated_at,
+    )
+    return ExperimentSpecDetail(**schema.model_dump(), hypothesis=hyp_summary)

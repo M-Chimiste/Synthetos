@@ -7,6 +7,9 @@ from pydantic import BaseModel, Field
 
 from libs.schemas.domain import (
     DomainEventEnvelope,
+    EvidenceCard,
+    ExperimentSpec,
+    HypothesisCard,
     JobRecord,
     PaperCard,
     ResearchCharter,
@@ -33,7 +36,10 @@ class CreateCycleRequest(BaseModel):
 
 
 class CycleCommandRequest(BaseModel):
-    command: Literal["pause", "cancel", "resume", "start_intake"]
+    command: Literal[
+        "pause", "cancel", "resume", "start_intake",
+        "start_evidence", "request_hypothesis_review", "request_protocol_compilation",
+    ]
     payload: dict[str, Any] | None = None
 
 
@@ -139,6 +145,86 @@ class LiteratureTriageResponse(BaseModel):
 
 class RetrievalSessionListResponse(BaseModel):
     items: list[SourceRetrievalSession]
+
+
+# ---------------------------------------------------------------------------
+# Phase 2 — Evidence, Hypotheses, Experiment Specs
+# ---------------------------------------------------------------------------
+
+
+class EvidenceCardSummary(BaseModel):
+    public_id: str
+    paper_public_id: str
+    claim: str
+    evidence_type: str
+    strength: str
+    relevance_score: float
+    read_depth: str
+    created_at: datetime
+
+
+class EvidenceCardDetail(EvidenceCard):
+    pass
+
+
+class EvidenceListResponse(BaseModel):
+    items: list[EvidenceCardSummary]
+    total: int
+
+
+class EvidenceSummaryResponse(BaseModel):
+    total_evidence: int
+    by_type: dict[str, int]
+    by_strength: dict[str, int]
+    conflicts_detected: int
+    redundancies_detected: int
+
+
+class HypothesisCardSummary(BaseModel):
+    public_id: str
+    title: str
+    portfolio_rank: int | None = None
+    portfolio_score: float | None = None
+    status: str
+    novelty_score: float | None = None
+    feasibility_score: float | None = None
+    impact_score: float | None = None
+    created_at: datetime
+
+
+class HypothesisCardDetail(HypothesisCard):
+    evidence_cards: list[EvidenceCardSummary] = Field(default_factory=list)
+
+
+class HypothesisListResponse(BaseModel):
+    items: list[HypothesisCardSummary]
+    total: int
+
+
+class PortfolioRankingResponse(BaseModel):
+    cycle_public_id: str
+    hypotheses: list[HypothesisCardSummary]
+    ranking_method: str
+    total: int
+
+
+class ExperimentSpecSummary(BaseModel):
+    public_id: str
+    hypothesis_public_id: str
+    title: str
+    status: str
+    gpu_required: bool
+    estimated_runtime_minutes: int | None = None
+    created_at: datetime
+
+
+class ExperimentSpecDetail(ExperimentSpec):
+    hypothesis: HypothesisCardSummary | None = None
+
+
+class ExperimentSpecListResponse(BaseModel):
+    items: list[ExperimentSpecSummary]
+    total: int
 
 
 class HealthResponse(BaseModel):

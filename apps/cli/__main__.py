@@ -120,6 +120,15 @@ app.add_typer(papers_app, name="papers")
 literature_app = typer.Typer()
 app.add_typer(literature_app, name="literature")
 
+evidence_app = typer.Typer()
+app.add_typer(evidence_app, name="evidence")
+
+hypothesis_app = typer.Typer()
+app.add_typer(hypothesis_app, name="hypothesis")
+
+experiment_app = typer.Typer()
+app.add_typer(experiment_app, name="experiment")
+
 
 @papers_app.command("list")
 def list_papers(cycle_id: str, status: str | None = None) -> None:
@@ -145,6 +154,90 @@ def literature_summary(cycle_id: str) -> None:
     """Show literature triage summary for a cycle."""
     with api_client() as client:
         response = client.get(f"/api/v1/cycles/{cycle_id}/literature")
+        response.raise_for_status()
+        echo_json(response.json())
+
+
+@evidence_app.command("list")
+def list_evidence(cycle_id: str) -> None:
+    """List evidence cards for a research cycle."""
+    with api_client() as client:
+        response = client.get(f"/api/v1/cycles/{cycle_id}/evidence")
+        response.raise_for_status()
+        echo_json(response.json())
+
+
+@evidence_app.command("show")
+def show_evidence(cycle_id: str, evidence_id: str) -> None:
+    """Show evidence card detail."""
+    with api_client() as client:
+        response = client.get(f"/api/v1/cycles/{cycle_id}/evidence/{evidence_id}")
+        response.raise_for_status()
+        echo_json(response.json())
+
+
+@evidence_app.command("summary")
+def evidence_summary(cycle_id: str) -> None:
+    """Show evidence summary for a cycle."""
+    with api_client() as client:
+        response = client.get(f"/api/v1/cycles/{cycle_id}/evidence/summary")
+        response.raise_for_status()
+        echo_json(response.json())
+
+
+@hypothesis_app.command("list")
+def list_hypotheses(cycle_id: str) -> None:
+    """List hypotheses for a research cycle."""
+    with api_client() as client:
+        response = client.get(f"/api/v1/cycles/{cycle_id}/hypotheses")
+        response.raise_for_status()
+        echo_json(response.json())
+
+
+@hypothesis_app.command("show")
+def show_hypothesis(cycle_id: str, hypothesis_id: str) -> None:
+    """Show hypothesis detail."""
+    with api_client() as client:
+        response = client.get(f"/api/v1/cycles/{cycle_id}/hypotheses/{hypothesis_id}")
+        response.raise_for_status()
+        echo_json(response.json())
+
+
+@hypothesis_app.command("portfolio")
+def hypothesis_portfolio(cycle_id: str) -> None:
+    """Show hypothesis portfolio for a cycle."""
+    with api_client() as client:
+        response = client.get(f"/api/v1/cycles/{cycle_id}/hypotheses/portfolio")
+        response.raise_for_status()
+        echo_json(response.json())
+
+
+@experiment_app.command("list")
+def list_experiments(cycle_id: str) -> None:
+    """List experiment specs for a research cycle."""
+    with api_client() as client:
+        response = client.get(f"/api/v1/cycles/{cycle_id}/experiment-specs")
+        response.raise_for_status()
+        echo_json(response.json())
+
+
+@experiment_app.command("show")
+def show_experiment(cycle_id: str, spec_id: str) -> None:
+    """Show experiment spec detail."""
+    with api_client() as client:
+        response = client.get(f"/api/v1/cycles/{cycle_id}/experiment-specs/{spec_id}")
+        response.raise_for_status()
+        echo_json(response.json())
+
+
+@cycle_app.command("start-evidence")
+def start_evidence(cycle_id: str) -> None:
+    """Start evidence synthesis for a research cycle."""
+    with api_client() as client:
+        response = client.post(
+            f"/api/v1/cycles/{cycle_id}/commands",
+            json={"command": "start_evidence"},
+        )
         response.raise_for_status()
         echo_json(response.json())
 

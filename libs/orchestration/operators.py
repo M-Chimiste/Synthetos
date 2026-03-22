@@ -3,6 +3,7 @@ from __future__ import annotations
 from pathlib import Path
 
 import structlog
+from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from libs.adapters.arxiv.adapter import ArxivAdapterConfig, ArxivMetadataAdapter
@@ -703,11 +704,563 @@ def literature_report_operator(
     )
 
 
+# ---------------------------------------------------------------------------
+# Phase 2 — Evidence, Hypotheses, Protocol Operators
+# ---------------------------------------------------------------------------
+
+
+def evidence_extraction_operator(
+    session: Session,
+    config: AppConfig,
+    actor: Actor,
+    cycle: ResearchCycleModel,
+    job: JobModel,
+) -> OperatorResult:
+    """Extract evidence cards from shortlisted papers."""
+    from libs.ideation import services as ideation_svc
+    from libs.ideation.extraction import EvidenceExtractionRequest, extract_evidence_batch
+
+    charter = session.get(ResearchCharterModel, cycle.charter_id)
+    if charter is None:
+        raise ValueError("Cycle is missing a charter")
+
+    papers = ideation_svc.get_papers_for_evidence_extraction(session, cycle.id)
+    if not papers:
+        return OperatorResult(
+            state_patch=StatePatch(
+                target_state=CycleStatus.READY,
+                reason="No papers eligible for evidence extraction",
+                context={"phase": "evidence_extraction", "total_evidence": 0},
+            ),
+            emitted_events=[{
+                "event_type": "evidence_extraction_complete",
+                "payload": {"cycle_public_id": cycle.public_id, "total_evidence": 0},
+            }],
+            operator_report=OperatorReport(
+                title="Evidence Extraction (no papers)",
+                prompt_id="prompts/ideation/v1/evidence_extraction.md",
+                body_markdown="No shortlisted papers available for evidence extraction.",
+            ),
+            next_actions=[
+                NextAction(
+                    action="hypothesis_generation",
+                    payload={"cycle_public_id": cycle.public_id},
+                ),
+            ],
+        )
+
+    requests = []
+    for paper in papers:
+        fulltext_excerpt = None
+        read_depth = "abstract"
+        if paper.fulltext_artifact_path:
+            try:
+                text = Path(paper.fulltext_artifact_path).read_text(encoding="utf-8")
+                fulltext_excerpt = text[:4000]
+                read_depth = (
+                    "fulltext_html" if paper.lifecycle_status == "html_fetched"
+                    else "fulltext_pdf"
+                )
+            except Exception:
+                pass
+
+        requests.append(EvidenceExtractionRequest(
+            paper_id=paper.public_id,
+            title=paper.title,
+            abstract=paper.abstract,
+            fulltext_excerpt=fulltext_excerpt,
+            charter_problem=charter.problem_statement,
+            charter_criteria=charter.success_criteria or {},
+        ))
+
+    gateway = ModelGateway.from_config(config)
+    responses = extract_evidence_batch(gateway, requests)
+
+    events: list[dict] = [{
+        "event_type": "evidence_extraction_started",
+        "payload": {"cycle_public_id": cycle.public_id},
+    }]
+
+    total_evidence = 0
+    paper_map = {p.public_id: p for p in papers}
+    for resp in responses:
+        paper = paper_map.get(resp.paper_id)
+        if not paper:
+            continue
+        read_depth = "abstract"
+        if paper.fulltext_artifact_path:
+            read_depth = (
+                "fulltext_html" if paper.lifecycle_status == "html_fetched"
+                else "fulltext_pdf"
+            )
+        for item in resp.evidence_items:
+            card = ideation_svc.create_evidence_card(
+                session, cycle.id, paper.id,
+                claim=item.claim,
+                evidence_type=item.evidence_type,
+                strength=item.strength,
+                relevance_score=item.relevance_score,
+                relevance_rationale=item.relevance_rationale,
+                source_section=item.source_section,
+                source_quote=item.source_quote,
+                read_depth=read_depth,
+                model_route_id="evidence_extractor",
+                prompt_id="prompts/ideation/v1/evidence_extraction.md",
+            )
+            events.append({
+                "event_type": "evidence_card_created",
+                "payload": {
+                    "evidence_public_id": card.public_id,
+                    "paper_public_id": paper.public_id,
+                    "evidence_type": item.evidence_type,
+                },
+            })
+            total_evidence += 1
+
+    conflict_count, redundancy_count = ideation_svc.detect_conflicts_and_redundancy(
+        session, cycle.id,
+    )
+    events.append({
+        "event_type": "evidence_conflicts_detected",
+        "payload": {
+            "cycle_public_id": cycle.public_id,
+            "conflict_count": conflict_count,
+            "redundancy_count": redundancy_count,
+        },
+    })
+    events.append({
+        "event_type": "evidence_extraction_complete",
+        "payload": {"cycle_public_id": cycle.public_id, "total_evidence": total_evidence},
+    })
+
+    return OperatorResult(
+        state_patch=StatePatch(
+            target_state=CycleStatus.READY,
+            reason=f"Extracted {total_evidence} evidence cards from {len(papers)} papers",
+            context={"phase": "evidence_extraction", "total_evidence": total_evidence},
+        ),
+        emitted_events=events,
+        operator_report=OperatorReport(
+            title=f"Evidence Extraction ({total_evidence} cards)",
+            prompt_id="prompts/ideation/v1/evidence_extraction.md",
+            body_markdown="\n".join([
+                "# Evidence Extraction Report",
+                "",
+                f"- Papers processed: **{len(papers)}**",
+                f"- Evidence cards created: **{total_evidence}**",
+                f"- Conflicts detected: **{conflict_count}**",
+                f"- Redundancies detected: **{redundancy_count}**",
+            ]),
+        ),
+        next_actions=[
+            NextAction(
+                action="hypothesis_generation",
+                payload={"cycle_public_id": cycle.public_id},
+            ),
+        ],
+    )
+
+
+def hypothesis_generation_operator(
+    session: Session,
+    config: AppConfig,
+    actor: Actor,
+    cycle: ResearchCycleModel,
+    job: JobModel,
+) -> OperatorResult:
+    """Generate candidate hypotheses from evidence cards."""
+    from libs.ideation import services as ideation_svc
+    from libs.ideation.hypothesis_gen import HypothesisGenRequest, generate_hypotheses
+
+    charter = session.get(ResearchCharterModel, cycle.charter_id)
+    if charter is None:
+        raise ValueError("Cycle is missing a charter")
+
+    evidence_cards = ideation_svc.list_evidence_for_cycle(session, cycle.id)
+    evidence_summary = [
+        {
+            "public_id": e.public_id,
+            "claim": e.claim,
+            "evidence_type": e.evidence_type,
+            "strength": e.strength,
+            "relevance_score": e.relevance_score,
+        }
+        for e in evidence_cards
+    ]
+
+    gateway = ModelGateway.from_config(config)
+    request = HypothesisGenRequest(
+        charter_problem=charter.problem_statement,
+        charter_criteria=charter.success_criteria or {},
+        evidence_summary=evidence_summary,
+        num_hypotheses=5,
+    )
+    response = generate_hypotheses(gateway, request)
+
+    events: list[dict] = [{
+        "event_type": "hypothesis_generation_started",
+        "payload": {"cycle_public_id": cycle.public_id},
+    }]
+
+    created = []
+    for h in response.hypotheses:
+        card = ideation_svc.create_hypothesis_card(
+            session, cycle.id,
+            title=h.title,
+            statement=h.statement,
+            rationale=h.rationale,
+            approach_summary=h.approach_summary,
+            supporting_evidence=h.supporting_evidence_ids,
+            counter_evidence=h.counter_evidence_ids,
+            model_route_id="ideation",
+            prompt_id="prompts/ideation/v1/hypothesis_generation.md",
+        )
+        created.append(card)
+        events.append({
+            "event_type": "hypothesis_card_created",
+            "payload": {"hypothesis_public_id": card.public_id, "title": h.title},
+        })
+
+    events.append({
+        "event_type": "hypothesis_generation_complete",
+        "payload": {"cycle_public_id": cycle.public_id, "count": len(created)},
+    })
+
+    return OperatorResult(
+        state_patch=StatePatch(
+            target_state=CycleStatus.READY,
+            reason=f"Generated {len(created)} hypotheses",
+            context={"phase": "hypothesis_generation", "hypothesis_count": len(created)},
+        ),
+        emitted_events=events,
+        operator_report=OperatorReport(
+            title=f"Hypothesis Generation ({len(created)} candidates)",
+            prompt_id="prompts/ideation/v1/hypothesis_generation.md",
+            body_markdown="\n".join([
+                "# Hypothesis Generation Report",
+                "",
+                f"- Evidence cards used: **{len(evidence_cards)}**",
+                f"- Hypotheses generated: **{len(created)}**",
+                "",
+            ] + [
+                f"### {i+1}. {c.title}\n{c.statement}\n"
+                for i, c in enumerate(created)
+            ]),
+        ),
+        next_actions=[
+            NextAction(
+                action="hypothesis_critique",
+                payload={"cycle_public_id": cycle.public_id},
+            ),
+        ],
+    )
+
+
+def hypothesis_critique_operator(
+    session: Session,
+    config: AppConfig,
+    actor: Actor,
+    cycle: ResearchCycleModel,
+    job: JobModel,
+) -> OperatorResult:
+    """Critique and rank hypotheses."""
+    from libs.ideation import services as ideation_svc
+    from libs.ideation.critique import CritiqueRequest, critique_hypothesis
+    from libs.storage.models import EvidenceCardModel, HypothesisCardModel
+
+    charter = session.get(ResearchCharterModel, cycle.charter_id)
+    if charter is None:
+        raise ValueError("Cycle is missing a charter")
+
+    hypotheses = list(
+        session.scalars(
+            select(HypothesisCardModel).where(
+                HypothesisCardModel.cycle_id == cycle.id,
+                HypothesisCardModel.status == "generated",
+            )
+        ).all()
+    )
+
+    gateway = ModelGateway.from_config(config)
+    events: list[dict] = [{
+        "event_type": "hypothesis_critique_started",
+        "payload": {"cycle_public_id": cycle.public_id},
+    }]
+
+    for hyp in hypotheses:
+        sup_evidence: list[dict] = []
+        ctr_evidence: list[dict] = []
+        all_ids = list(set((hyp.supporting_evidence or []) + (hyp.counter_evidence or [])))
+        if all_ids:
+            ev_models = list(session.scalars(
+                select(EvidenceCardModel).where(EvidenceCardModel.public_id.in_(all_ids))
+            ).all())
+            ev_map = {
+                e.public_id: {
+                    "claim": e.claim,
+                    "evidence_type": e.evidence_type,
+                    "strength": e.strength,
+                }
+                for e in ev_models
+            }
+            sup_evidence = [
+                ev_map[eid] for eid in (hyp.supporting_evidence or []) if eid in ev_map
+            ]
+            ctr_evidence = [
+                ev_map[eid] for eid in (hyp.counter_evidence or []) if eid in ev_map
+            ]
+
+        critique_req = CritiqueRequest(
+            hypothesis_title=hyp.title,
+            statement=hyp.statement,
+            rationale=hyp.rationale,
+            approach_summary=hyp.approach_summary,
+            supporting_evidence=sup_evidence,
+            counter_evidence=ctr_evidence,
+            charter_problem=charter.problem_statement,
+        )
+        response = critique_hypothesis(gateway, critique_req)
+        ideation_svc.record_hypothesis_critique(session, hyp, response.model_dump())
+
+        events.append({
+            "event_type": "hypothesis_critiqued",
+            "payload": {
+                "hypothesis_public_id": hyp.public_id,
+                "novelty_score": response.novelty_score,
+                "feasibility_score": response.feasibility_score,
+                "impact_score": response.impact_score,
+            },
+        })
+
+    ranked = ideation_svc.compute_portfolio_ranking(session, cycle.id, auto_approve_top_n=3)
+    top_hyp = ranked[0] if ranked else None
+
+    events.append({
+        "event_type": "portfolio_ranked",
+        "payload": {
+            "cycle_public_id": cycle.public_id,
+            "top_hypothesis_public_id": top_hyp.public_id if top_hyp else None,
+            "total_ranked": len(ranked),
+        },
+    })
+    for h in ranked:
+        if h.status == "approved":
+            events.append({
+                "event_type": "hypothesis_approved",
+                "payload": {
+                    "hypothesis_public_id": h.public_id,
+                    "portfolio_rank": h.portfolio_rank,
+                },
+            })
+    events.append({
+        "event_type": "hypothesis_critique_complete",
+        "payload": {"cycle_public_id": cycle.public_id},
+    })
+
+    return OperatorResult(
+        state_patch=StatePatch(
+            target_state=CycleStatus.READY,
+            reason=f"Critiqued and ranked {len(ranked)} hypotheses",
+            context={"phase": "hypothesis_critique", "ranked_count": len(ranked)},
+        ),
+        emitted_events=events,
+        operator_report=OperatorReport(
+            title=f"Hypothesis Critique ({len(ranked)} ranked)",
+            prompt_id="prompts/ideation/v1/hypothesis_critique.md",
+            body_markdown="\n".join([
+                "# Hypothesis Critique & Ranking Report",
+                "",
+                f"- Hypotheses critiqued: **{len(hypotheses)}**",
+                f"- Portfolio ranked: **{len(ranked)}**",
+                "",
+            ] + [
+                f"### #{h.portfolio_rank}. {h.title}\n"
+                f"- Score: {h.portfolio_score:.4f}\n"
+                f"- Status: {h.status}\n"
+                f"- Novelty: {h.novelty_score}, "
+                f"Feasibility: {h.feasibility_score}, "
+                f"Impact: {h.impact_score}\n"
+                for h in ranked
+            ]),
+        ),
+        next_actions=[
+            NextAction(
+                action="protocol_compilation",
+                payload={"cycle_public_id": cycle.public_id},
+            ),
+        ],
+    )
+
+
+def protocol_compilation_operator(
+    session: Session,
+    config: AppConfig,
+    actor: Actor,
+    cycle: ResearchCycleModel,
+    job: JobModel,
+) -> OperatorResult:
+    """Compile an experiment spec from the top-ranked approved hypothesis."""
+    from libs.ideation import services as ideation_svc
+    from libs.ideation.protocol_compiler import ProtocolCompileRequest, compile_protocol
+    from libs.storage.models import EvidenceCardModel
+
+    charter = session.get(ResearchCharterModel, cycle.charter_id)
+    if charter is None:
+        raise ValueError("Cycle is missing a charter")
+
+    approved = ideation_svc.get_approved_hypotheses(session, cycle.id)
+    if not approved:
+        return OperatorResult(
+            state_patch=StatePatch(
+                target_state=CycleStatus.READY,
+                reason="No approved hypotheses for protocol compilation",
+                context={"phase": "protocol_compilation"},
+            ),
+            emitted_events=[{
+                "event_type": "protocol_compilation_started",
+                "payload": {
+                    "cycle_public_id": cycle.public_id,
+                    "hypothesis_public_id": None,
+                },
+            }],
+            operator_report=OperatorReport(
+                title="Protocol Compilation (no approved hypotheses)",
+                prompt_id="prompts/ideation/v1/protocol_compilation.md",
+                body_markdown="No approved hypotheses available for protocol compilation.",
+            ),
+        )
+
+    hyp = approved[0]
+    sup_ids = hyp.supporting_evidence or []
+    evidence_data: list[dict] = []
+    if sup_ids:
+        ev_models = list(session.scalars(
+            select(EvidenceCardModel).where(EvidenceCardModel.public_id.in_(sup_ids))
+        ).all())
+        evidence_data = [
+            {"claim": e.claim, "evidence_type": e.evidence_type, "strength": e.strength}
+            for e in ev_models
+        ]
+
+    events: list[dict] = [{
+        "event_type": "protocol_compilation_started",
+        "payload": {
+            "cycle_public_id": cycle.public_id,
+            "hypothesis_public_id": hyp.public_id,
+        },
+    }]
+
+    gateway = ModelGateway.from_config(config)
+    compile_req = ProtocolCompileRequest(
+        hypothesis={
+            "title": hyp.title,
+            "statement": hyp.statement,
+            "rationale": hyp.rationale,
+            "approach_summary": hyp.approach_summary,
+        },
+        evidence=evidence_data,
+        charter_problem=charter.problem_statement,
+        charter_criteria=charter.success_criteria or {},
+        constraints=charter.constraints or {},
+    )
+    response = compile_protocol(gateway, compile_req)
+
+    spec = ideation_svc.create_experiment_spec(
+        session, cycle.id, hyp.id,
+        spec_data=response.model_dump(),
+        model_route_id="protocol_drafter",
+        prompt_id="prompts/ideation/v1/protocol_compilation.md",
+    )
+
+    events.append({
+        "event_type": "experiment_spec_created",
+        "payload": {
+            "spec_public_id": spec.public_id,
+            "hypothesis_public_id": hyp.public_id,
+            "status": spec.status,
+        },
+    })
+
+    issues = ideation_svc.validate_experiment_spec(spec)
+    spec.validation_issues = issues
+    blocking = [i for i in issues if i.get("severity") == "blocking"]
+
+    if blocking:
+        ideation_svc.reject_experiment_spec(
+            session, spec,
+            reason="; ".join(i["issue"] for i in blocking),
+        )
+        events.append({
+            "event_type": "experiment_spec_rejected",
+            "payload": {
+                "spec_public_id": spec.public_id,
+                "reason": spec.rejection_reason,
+            },
+        })
+    else:
+        spec.status = "valid"
+        session.flush()
+        events.append({
+            "event_type": "experiment_spec_validated",
+            "payload": {
+                "spec_public_id": spec.public_id,
+                "status": "valid",
+                "issue_count": len(issues),
+            },
+        })
+
+    hyp.status = "compiled"
+    session.flush()
+
+    events.append({
+        "event_type": "phase2_report_generated",
+        "payload": {"cycle_public_id": cycle.public_id},
+    })
+
+    return OperatorResult(
+        state_patch=StatePatch(
+            target_state=CycleStatus.READY,
+            reason=f"Protocol compiled — spec {spec.status}",
+            context={"phase": "phase2_complete", "spec_status": spec.status},
+        ),
+        emitted_events=events,
+        operator_report=OperatorReport(
+            title=f"Protocol Compilation: {spec.title}",
+            prompt_id="prompts/ideation/v1/protocol_compilation.md",
+            body_markdown="\n".join([
+                "# Protocol Compilation Report",
+                "",
+                f"- Hypothesis: **{hyp.title}**",
+                f"- Spec: **{spec.title}**",
+                f"- Status: **{spec.status}**",
+                f"- Validation issues: **{len(issues)}**",
+                f"- GPU required: **{spec.gpu_required}**",
+                "",
+                "## Objective",
+                spec.objective or "(empty)",
+                "",
+                "## Baseline",
+                spec.baseline_description or "(empty)",
+                "",
+                "## Method",
+                spec.method_description or "(empty)",
+            ]),
+        ),
+    )
+
+
 OPERATOR_REGISTRY = {
+    # Phase 0
     "initialize_cycle": initialize_cycle_operator,
+    # Phase 1
     "source_retrieval": source_retrieval_operator,
     "literature_screen": literature_screen_operator,
     "shortlist_rank": shortlist_rank_operator,
     "fulltext_escalation": fulltext_escalation_operator,
     "literature_report": literature_report_operator,
+    # Phase 2
+    "evidence_extraction": evidence_extraction_operator,
+    "hypothesis_generation": hypothesis_generation_operator,
+    "hypothesis_critique": hypothesis_critique_operator,
+    "protocol_compilation": protocol_compilation_operator,
 }

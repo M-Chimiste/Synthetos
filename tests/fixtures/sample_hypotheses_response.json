@@ -1,0 +1,26 @@
+[
+  {
+    "title": "Adaptive Weight Sharing for Efficient NAS",
+    "statement": "Weight sharing with adaptive allocation based on architecture similarity will improve NAS efficiency while maintaining accuracy compared to uniform weight sharing.",
+    "rationale": "Evidence shows weight sharing reduces cost by 1000x but may sacrifice accuracy. Adaptive allocation could bridge this gap.",
+    "approach_summary": "Implement a similarity-based weight allocation strategy in the supernet, measure accuracy vs uniform sharing on CIFAR-10 and ImageNet.",
+    "supporting_evidence_ids": ["evidence_001", "evidence_003"],
+    "counter_evidence_ids": []
+  },
+  {
+    "title": "Sparse Attention with Learned Patterns",
+    "statement": "Learning sparse attention patterns end-to-end rather than using fixed patterns will achieve better accuracy-efficiency tradeoff in transformer architectures.",
+    "rationale": "Current sparse attention uses fixed patterns. Learning them jointly with model parameters should improve results.",
+    "approach_summary": "Train sparse attention pattern predictor alongside the main model, compare against fixed patterns on language modeling benchmarks.",
+    "supporting_evidence_ids": ["evidence_002"],
+    "counter_evidence_ids": ["evidence_001"]
+  },
+  {
+    "title": "Progressive Architecture Growing",
+    "statement": "Starting with a small architecture and progressively growing it during training will find better architectures than searching in a fixed-size space.",
+    "rationale": "Inspired by progressive training in GANs, growing architectures may explore the space more efficiently.",
+    "approach_summary": "Implement progressive architecture growth with automated decision points for when to expand. Compare against fixed-size NAS.",
+    "supporting_evidence_ids": ["evidence_001", "evidence_002"],
+    "counter_evidence_ids": ["evidence_003"]
+  }
+]
