@@ -33,9 +33,11 @@ def classify_failure(
     stderr_path: Path,
 ) -> str | None:
     if interrupted_status == "cancelled":
-        return "runtime_exception"
+        return None
     if interrupted_status == "paused":
         return None
+    if interrupted_status == "timed_out":
+        return "timeout"
     if exit_code in (137, 143):
         return "oom_or_resource_limit"
     if exit_code not in (0, None):

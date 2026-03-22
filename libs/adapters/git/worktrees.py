@@ -34,6 +34,10 @@ class GitWorktreeAdapter:
         destination.write_text(diff, encoding="utf-8")
         return destination
 
+    def remove_worktree(self, workspace_path: Path) -> None:
+        if workspace_path.exists():
+            self._git("worktree", "remove", "--force", str(workspace_path))
+
     def _git(self, *args: str) -> str:
         completed = subprocess.run(
             ["git", *args],

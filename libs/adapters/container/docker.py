@@ -77,6 +77,7 @@ class DockerContainerAdapter:
 
         latest_resource_snapshot: dict[str, object] = {}
         interrupted_status: str | None = None
+        start_time = time.monotonic()
 
         def _stream_reader(stream_name: str, handle, path: Path) -> None:
             with path.open("a", encoding="utf-8") as sink:
@@ -102,6 +103,10 @@ class DockerContainerAdapter:
         stderr_thread.start()
 
         while process.poll() is None:
+            if spec.timeout_seconds and time.monotonic() - start_time > spec.timeout_seconds:
+                subprocess.run(["docker", "stop", container_name], check=False, capture_output=True)
+                interrupted_status = "timed_out"
+                break
             requested_status = status_checker() if status_checker else None
             if requested_status == "cancel_requested":
                 subprocess.run(["docker", "stop", container_name], check=False, capture_output=True)

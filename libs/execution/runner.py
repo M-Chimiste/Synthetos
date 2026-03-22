@@ -135,7 +135,7 @@ def build_run_spec(
         build_recipe={},
         command=command,
         env_vars={
-            "SYTHETOS_EXPERIMENT_TITLE": experiment_spec.title,
+            "SYNTHETOS_EXPERIMENT_TITLE": experiment_spec.title,
             **(env_overrides or {}),
         },
         mounts=mounts,

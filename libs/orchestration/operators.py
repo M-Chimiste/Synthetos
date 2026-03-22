@@ -26,7 +26,7 @@ from libs.core.operators import (
     SkillExecutionOutcome,
     StatePatch,
 )
-from libs.core.policy import Actor
+from libs.core.policy import Actor, TokenScope
 from libs.core.state_machine import CycleStatus
 from libs.execution import (
     build_run_spec,
@@ -48,6 +48,7 @@ from libs.storage.models import (
 from libs.storage.services import (
     append_run_telemetry_event,
     bind_skills_for_cycle,
+    create_state_snapshot,
     get_run_by_public_id,
     normalize_source_scope,
 )
@@ -1750,6 +1751,16 @@ def run_execute_operator(
         event_type="run_started",
         payload={"run_public_id": run.public_id},
     )
+    create_state_snapshot(
+        session,
+        cycle=cycle,
+        target_state=CycleStatus.RUNNING,
+        actor=actor,
+        reason="Container execution starting",
+        context={"run_public_id": run.public_id},
+        scope_used=TokenScope.RUNS_CONTROL.value,
+    )
+    session.commit()
 
     def _status_checker() -> str | None:
         session.refresh(run)
@@ -1768,7 +1779,7 @@ def run_execute_operator(
             stream=stream,
             message=message,
         )
-        session.flush()
+        session.commit()
 
     from libs.schemas.domain import RunSpec
 
@@ -1818,6 +1829,8 @@ def run_execute_operator(
         run.status = "paused"
     elif execution_result.interrupted_status == "cancelled":
         run.status = "cancelled"
+    elif execution_result.interrupted_status == "timed_out":
+        run.status = "failed"
     elif run.failure_classification is None:
         run.status = "succeeded"
     else:
@@ -1875,6 +1888,12 @@ def run_finalize_operator(
         payload={"artifact_manifest_present": bool(run.artifact_manifest)},
     )
     _assign_run_public_id(skill_outcomes, run.public_id)
+
+    if run.status in {"succeeded", "cancelled"} and run.workspace_path:
+        try:
+            GitWorktreeAdapter(Path.cwd()).remove_worktree(Path(run.workspace_path))
+        except Exception:
+            log.warning("worktree_cleanup_failed", workspace_path=run.workspace_path)
 
     events = [
         {

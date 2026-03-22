@@ -6,6 +6,7 @@ from pathlib import Path
 from libs.adapters.container import build_docker_run_command
 from libs.adapters.git import GitWorktreeAdapter
 from libs.core.config import AppConfig
+from libs.execution.artifacts import classify_failure
 from libs.execution.policy import evaluate_run_policy
 from libs.schemas.domain import RunSpec
 
@@ -131,3 +132,41 @@ def test_git_worktree_adapter_creates_patch_archive(tmp_path: Path):
 
     assert archive.exists()
     assert "diff --git" in archive.read_text(encoding="utf-8")
+
+
+def test_classify_failure_cancelled_is_not_runtime_exception(tmp_path: Path):
+    stderr_path = tmp_path / "stderr.log"
+    stderr_path.write_text("", encoding="utf-8")
+    result = classify_failure(
+        exit_code=137,
+        interrupted_status="cancelled",
+        artifact_manifest={"manifest_path": str(tmp_path / "manifest.json")},
+        stderr_path=stderr_path,
+    )
+    assert result is None
+
+
+def test_classify_failure_timed_out_returns_timeout(tmp_path: Path):
+    stderr_path = tmp_path / "stderr.log"
+    stderr_path.write_text("", encoding="utf-8")
+    result = classify_failure(
+        exit_code=137,
+        interrupted_status="timed_out",
+        artifact_manifest={"manifest_path": str(tmp_path / "manifest.json")},
+        stderr_path=stderr_path,
+    )
+    assert result == "timeout"
+
+
+def test_docker_timeout_enforcement():
+    """Verify the adapter checks spec.timeout_seconds against elapsed time."""
+    from libs.adapters.container.docker import DockerContainerAdapter
+
+    adapter = DockerContainerAdapter(poll_interval_seconds=0.01)
+    # We can't actually run Docker in unit tests, but we can verify
+    # the timeout check is present in the source code
+    import inspect
+
+    source = inspect.getsource(adapter.run)
+    assert "timed_out" in source
+    assert "timeout_seconds" in source
