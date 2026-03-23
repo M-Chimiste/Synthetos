@@ -18,7 +18,7 @@ from libs.orchestration.job_queue import (
     reclaim_expired_leases,
 )
 from libs.orchestration.operators import OPERATOR_REGISTRY
-from libs.storage.models import JobModel
+from libs.storage.models import JobModel, RunRecordModel
 from libs.storage.services import (
     append_event,
     apply_operator_result,
@@ -83,6 +83,15 @@ def _has_pending_jobs(session: Session, cycle_id: int) -> bool:
     return job is not None
 
 
+def _run_for_job(session: Session, job: JobModel) -> RunRecordModel | None:
+    run_public_id = (job.payload or {}).get("run_public_id")
+    if not run_public_id:
+        return None
+    return session.scalar(
+        select(RunRecordModel).where(RunRecordModel.public_id == run_public_id)
+    )
+
+
 def run_worker_once(
     session: Session, config: AppConfig, actor: Actor,
 ) -> str:
@@ -112,6 +121,11 @@ def run_worker_once(
 
     # Handle RESUMING state: transition to appropriate active state
     if cycle.current_status == CycleStatus.RESUMING.value:
+        run = _run_for_job(session, job)
+        resumed_from = (
+            run.last_completed_operator if run and run.last_completed_operator
+            else cycle.last_completed_operator
+        )
         target = CycleStatus.INITIALIZING
         if job.operator_name == "run_execute":
             target = CycleStatus.RUNNING
@@ -123,12 +137,13 @@ def run_worker_once(
             target_state=target,
             actor=actor,
             reason=(
-                f"Resuming from {cycle.last_completed_operator or 'start'}"
+                f"Resuming from {resumed_from or 'start'}"
                 f" via job {job.public_id}"
             ),
             context={
                 "job_public_id": job.public_id,
-                "resumed_from": cycle.last_completed_operator,
+                "resumed_from": resumed_from,
+                "run_public_id": run.public_id if run else None,
             },
         )
     else:
@@ -174,9 +189,14 @@ def run_worker_once(
             actor=actor, result=result, config=config,
         )
         mark_job_succeeded(session, job)
-        # Record checkpoint for recovery
+        # Record cycle-level progress for auditability.
         cycle.last_completed_operator = job.operator_name
         cycle.last_completed_job_id = job.id
+        # Record run-level progress for accurate run resume targeting.
+        run = _run_for_job(session, job)
+        if run is not None:
+            run.last_completed_operator = job.operator_name
+            run.last_completed_job_id = job.id
         session.flush()
         # If next_actions enqueued new jobs, ensure cycle is QUEUED so they run
         if result.next_actions and _has_pending_jobs(session, cycle.id):

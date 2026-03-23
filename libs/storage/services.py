@@ -895,6 +895,7 @@ def get_report_detail(session: Session, report_public_id: str) -> ReportDetailRe
         artifact_path=report.artifact_path,
         created_at=report.created_at,
         markdown=markdown,
+        quality_metadata=report.quality_metadata or {},
     )
 
 
@@ -1206,6 +1207,9 @@ def create_run_from_experiment_spec(
         artifact_manifest={},
         failure_classification="policy_rejection" if not decision.allowed else None,
         last_error=decision.reason if not decision.allowed else None,
+        last_completed_operator=None,
+        last_completed_job_id=None,
+        resume_payload={},
         attempt_count=0,
     )
     session.add(run)
@@ -1496,11 +1500,16 @@ def apply_run_command(
                 status_code=400,
                 detail=f"Run has reached maximum retry attempts ({policy.max_retry_attempts})",
             )
-        # Determine where to resume from: use cycle checkpoint if available
-        last_op = cycle.last_completed_operator
+        # Determine where to resume from: use the run-specific checkpoint.
+        last_op = run.last_completed_operator
         next_op = next_operator_after(last_op) if last_op else "run_prepare"
         if next_op is None:
             next_op = "run_prepare"
+        run.resume_payload = {
+            "resume_from": last_op,
+            "next_operator": next_op,
+            "requested_at": datetime.now(UTC).isoformat(),
+        }
         _enqueue_job(
             session,
             actor,

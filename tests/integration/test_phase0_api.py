@@ -66,6 +66,7 @@ def test_cycle_creation_worker_and_reports(tmp_path: Path) -> None:
         report_response = client.get(f"/api/v1/reports/{report_id}", headers=auth_headers())
         assert report_response.status_code == 200
         assert "Initialization Report" in report_response.json()["markdown"]
+        assert isinstance(report_response.json()["quality_metadata"], dict)
 
 
 def test_skill_catalog_available(tmp_path: Path) -> None:

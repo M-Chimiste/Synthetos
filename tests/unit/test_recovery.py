@@ -8,6 +8,8 @@ import pytest
 from sqlalchemy import create_engine
 from sqlalchemy.orm import Session, sessionmaker
 
+from libs.core.ids import generate_public_id
+from libs.core.policy import SYSTEM_ACTOR
 from libs.core.state_machine import ALLOWED_TRANSITIONS, CycleStatus, ensure_transition
 from libs.execution import TRANSIENT_FAILURES
 from libs.orchestration.worker import OPERATOR_PIPELINES, next_operator_after
@@ -226,3 +228,257 @@ class TestCrashRecovery:
         assert job.status == "pending"
         # Paused cycle should NOT be changed to failed
         assert cycle.current_status == CycleStatus.PAUSED.value
+
+
+class TestRunScopedResume:
+    @pytest.fixture()
+    def db_session(self) -> Session:
+        from libs.storage.base import Base
+
+        engine = create_engine("sqlite:///:memory:")
+        Base.metadata.create_all(engine)
+        factory = sessionmaker(bind=engine)
+        session = factory()
+        yield session
+        session.close()
+        engine.dispose()
+
+    def test_resume_uses_run_checkpoint_not_cycle_checkpoint(self, db_session: Session) -> None:
+        from libs.storage.models import (
+            ExperimentSpecModel,
+            HypothesisCardModel,
+            JobModel,
+            ResearchCharterModel,
+            ResearchCycleModel,
+            RunRecordModel,
+        )
+        from libs.storage.services import apply_run_command
+
+        charter = ResearchCharterModel(
+            public_id=generate_public_id("charter"),
+            title="Resume test",
+            problem_statement="Check run-scoped resume.",
+        )
+        db_session.add(charter)
+        db_session.flush()
+
+        cycle = ResearchCycleModel(
+            public_id=generate_public_id("cycle"),
+            charter_id=charter.id,
+            current_status=CycleStatus.PAUSED.value,
+            last_completed_operator="verification_report",
+            last_completed_job_id=99,
+        )
+        db_session.add(cycle)
+        db_session.flush()
+
+        hypothesis = HypothesisCardModel(
+            public_id=generate_public_id("hyp"),
+            cycle_id=cycle.id,
+            title="Hypothesis",
+            statement="Statement",
+            rationale="Rationale",
+            approach_summary="Approach",
+            status="approved",
+            model_route_id="route",
+            prompt_id="prompt",
+        )
+        db_session.add(hypothesis)
+        db_session.flush()
+
+        spec = ExperimentSpecModel(
+            public_id=generate_public_id("spec"),
+            cycle_id=cycle.id,
+            hypothesis_card_id=hypothesis.id,
+            title="Spec",
+            objective="Objective",
+            baseline_description="Baseline",
+            method_description="Method",
+            controls=[],
+            metrics=[{"name": "accuracy"}],
+            datasets=[{"name": "dummy"}],
+            artifacts=[],
+            stop_conditions=[{"summary": "pass"}],
+            expected_outputs=[],
+            gpu_required=False,
+            status="valid",
+            prompt_id="prompt",
+            model_route_id="route",
+        )
+        db_session.add(spec)
+        db_session.flush()
+
+        run_one = RunRecordModel(
+            public_id=generate_public_id("run"),
+            cycle_id=cycle.id,
+            experiment_spec_id=spec.id,
+            status="paused",
+            execution_profile="cpu-small",
+            workspace_path="/tmp/run-one",
+            artifact_root="/tmp/run-one-artifacts",
+            image="python:3.12",
+            build_recipe={},
+            command=["python", "train.py"],
+            env_vars={},
+            mounts=[],
+            hardware_profile="cpu-small",
+            timeout_seconds=60,
+            memory_limit_mb=512,
+            network_mode="disabled",
+            bound_skill_keys=[],
+            prompt_lineage=[],
+            model_lineage=[],
+            latest_resource_snapshot={},
+            metrics_summary={},
+            artifact_manifest={},
+            last_completed_operator="run_prepare",
+            last_completed_job_id=11,
+            resume_payload={},
+            attempt_count=0,
+        )
+        run_two = RunRecordModel(
+            public_id=generate_public_id("run"),
+            cycle_id=cycle.id,
+            experiment_spec_id=spec.id,
+            status="failed",
+            execution_profile="cpu-small",
+            workspace_path="/tmp/run-two",
+            artifact_root="/tmp/run-two-artifacts",
+            image="python:3.12",
+            build_recipe={},
+            command=["python", "train.py"],
+            env_vars={},
+            mounts=[],
+            hardware_profile="cpu-small",
+            timeout_seconds=60,
+            memory_limit_mb=512,
+            network_mode="disabled",
+            bound_skill_keys=[],
+            prompt_lineage=[],
+            model_lineage=[],
+            latest_resource_snapshot={},
+            metrics_summary={},
+            artifact_manifest={},
+            last_completed_operator="run_verify",
+            last_completed_job_id=22,
+            resume_payload={},
+            attempt_count=0,
+        )
+        db_session.add_all([run_one, run_two])
+        db_session.flush()
+
+        apply_run_command(db_session, SYSTEM_ACTOR, run_one.public_id, "resume")
+
+        queued_job = db_session.query(JobModel).filter_by(
+            cycle_id=cycle.id,
+            operator_name="run_execute",
+        ).one()
+        assert queued_job.payload["run_public_id"] == run_one.public_id
+        assert run_one.status == "queued"
+        assert run_one.resume_payload["resume_from"] == "run_prepare"
+        assert run_one.resume_payload["next_operator"] == "run_execute"
+
+    def test_resume_without_checkpoint_falls_back_to_run_prepare(self, db_session: Session) -> None:
+        from libs.storage.models import (
+            ExperimentSpecModel,
+            HypothesisCardModel,
+            JobModel,
+            ResearchCharterModel,
+            ResearchCycleModel,
+            RunRecordModel,
+        )
+        from libs.storage.services import apply_run_command
+
+        charter = ResearchCharterModel(
+            public_id=generate_public_id("charter"),
+            title="Resume fallback",
+            problem_statement="Check fallback.",
+        )
+        db_session.add(charter)
+        db_session.flush()
+
+        cycle = ResearchCycleModel(
+            public_id=generate_public_id("cycle"),
+            charter_id=charter.id,
+            current_status=CycleStatus.FAILED.value,
+            last_completed_operator="run_finalize",
+        )
+        db_session.add(cycle)
+        db_session.flush()
+
+        hypothesis = HypothesisCardModel(
+            public_id=generate_public_id("hyp"),
+            cycle_id=cycle.id,
+            title="Hypothesis",
+            statement="Statement",
+            rationale="Rationale",
+            approach_summary="Approach",
+            status="approved",
+            model_route_id="route",
+            prompt_id="prompt",
+        )
+        db_session.add(hypothesis)
+        db_session.flush()
+
+        spec = ExperimentSpecModel(
+            public_id=generate_public_id("spec"),
+            cycle_id=cycle.id,
+            hypothesis_card_id=hypothesis.id,
+            title="Spec",
+            objective="Objective",
+            baseline_description="Baseline",
+            method_description="Method",
+            controls=[],
+            metrics=[{"name": "accuracy"}],
+            datasets=[{"name": "dummy"}],
+            artifacts=[],
+            stop_conditions=[{"summary": "pass"}],
+            expected_outputs=[],
+            gpu_required=False,
+            status="valid",
+            prompt_id="prompt",
+            model_route_id="route",
+        )
+        db_session.add(spec)
+        db_session.flush()
+
+        run = RunRecordModel(
+            public_id=generate_public_id("run"),
+            cycle_id=cycle.id,
+            experiment_spec_id=spec.id,
+            status="failed",
+            execution_profile="cpu-small",
+            workspace_path="/tmp/run-fallback",
+            artifact_root="/tmp/run-fallback-artifacts",
+            image="python:3.12",
+            build_recipe={},
+            command=["python", "train.py"],
+            env_vars={},
+            mounts=[],
+            hardware_profile="cpu-small",
+            timeout_seconds=60,
+            memory_limit_mb=512,
+            network_mode="disabled",
+            bound_skill_keys=[],
+            prompt_lineage=[],
+            model_lineage=[],
+            latest_resource_snapshot={},
+            metrics_summary={},
+            artifact_manifest={},
+            last_completed_operator=None,
+            last_completed_job_id=None,
+            resume_payload={},
+            attempt_count=0,
+        )
+        db_session.add(run)
+        db_session.flush()
+
+        apply_run_command(db_session, SYSTEM_ACTOR, run.public_id, "resume")
+
+        queued_job = db_session.query(JobModel).filter_by(
+            cycle_id=cycle.id,
+            operator_name="run_prepare",
+        ).one()
+        assert queued_job.payload["run_public_id"] == run.public_id
+        assert run.resume_payload["resume_from"] is None
+        assert run.resume_payload["next_operator"] == "run_prepare"

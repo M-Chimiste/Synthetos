@@ -402,6 +402,8 @@ def test_successful_run_verification(
         headers=AUTH_HEADERS,
     ).json()
     assert "Cycle Verification Summary" in cycle_summary_report["title"]
+    assert "quality_metadata" in cycle_summary_report
+    assert isinstance(cycle_summary_report["quality_metadata"], dict)
 
 
 def test_failed_run_generates_postmortem(

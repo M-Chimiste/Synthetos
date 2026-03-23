@@ -87,7 +87,8 @@
 
 ### WI-7: Orchestrator client SDK
 - `libs/sdk/` package with sync `SynthetoClient` and async `AsyncSynthetoClient`
-- Full API coverage: cycles, runs, reports, skills, verification, timeline, literature, evidence, hypotheses, health
+- Core non-streaming API coverage: cycles, runs, reports, skills, verification, timeline, literature, evidence, hypotheses, health
+- Admin endpoints and SSE streaming endpoints are not wrapped by the SDK in Phase 5.1
 - Error mapping: `SynthetoAPIError`, `SynthetoAuthError`, `SynthetoNotFoundError`, `SynthetoValidationError`
 - `docs/sdk/quickstart.md` and `docs/sdk/examples/run_full_cycle.py`
 - SDK e2e integration test: create cycle, list, get timeline, health — all via SDK against TestClient
@@ -132,6 +133,14 @@
 4. **Embedding warmup**: Added `warmup()` and `is_available()` to `EmbeddingAdapter` ABC. `SentenceTransformerEmbeddingAdapter` logs warnings when downloading model. Added `synthetos embeddings warmup` CLI command.
 5. **Background sync**: New `arxiv_warehouse_sync` cycle-independent operator + `CYCLE_INDEPENDENT_OPERATORS` set in worker. CLI `papers sync-arxiv --background` enqueues a job instead of blocking.
 6. **Postgres integration tests**: 5 tests in `test_arxiv_warehouse_pg.py` covering FTS, vector cosine, hybrid search, category jsonb filter, and date range filter. Auto-skip when testcontainers/Docker unavailable.
+
+### Phase 5.1 gap closure
+- Fixed run resume to use run-scoped checkpoints instead of cycle-scoped checkpoints
+- Added run checkpoint columns on `run_records` via migration `20260323_000011`
+- Updated worker resume snapshots and checkpoint writes to preserve cycle auditability while using run checkpoints for run recovery
+- Fixed `GET /api/v1/reports/{report_id}` to return the stored `quality_metadata` field already declared by the API schema and frontend types
+- Corrected SDK/status docs to describe the current SDK surface as core non-streaming coverage, excluding admin and SSE endpoints
+- Added regression coverage for run-scoped resume behavior and report detail quality metadata
 
 ### Test summary
 - Backend: 269 tests passing (up from 264)

@@ -10,6 +10,8 @@ uv sync
 
 ## Basic Usage
 
+The current SDK covers the core non-streaming orchestrator API used by the web app and test flows: cycles, runs, reports, skills, verification summaries/details, timeline, literature lists, evidence lists, hypothesis lists, portfolio, and health checks. Admin endpoints and SSE streaming endpoints are intentionally not wrapped in the SDK yet.
+
 ### Sync Client
 
 ```python
