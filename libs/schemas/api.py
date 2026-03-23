@@ -59,6 +59,20 @@ class ReportSummary(BaseModel):
 
 class ReportDetailResponse(ReportSummary):
     markdown: str
+    quality_metadata: dict[str, Any] = Field(default_factory=dict)
+
+
+class TimelineEntry(BaseModel):
+    timestamp: datetime
+    event_type: str
+    category: Literal["state_change", "operator", "run", "report", "user_action", "system"]
+    summary: str
+    details: dict[str, Any] = Field(default_factory=dict)
+
+
+class TimelineResponse(BaseModel):
+    cycle_public_id: str
+    items: list[TimelineEntry]
 
 
 class CycleSummaryResponse(BaseModel):
@@ -239,7 +253,7 @@ class RunCreateRequest(BaseModel):
 
 
 class RunCommandRequest(BaseModel):
-    command: Literal["pause", "cancel", "retry"]
+    command: Literal["pause", "cancel", "retry", "resume"]
 
 
 class RunSummary(BaseModel):

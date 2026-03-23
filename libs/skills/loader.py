@@ -7,7 +7,12 @@ from pathlib import Path
 
 import yaml
 
-from libs.skills.manifest import LoadedSkill, SkillManifest
+from libs.skills.manifest import (
+    KNOWN_HOOK_NAMES,
+    LoadedSkill,
+    SkillManifest,
+    ValidationIssue,
+)
 
 
 def parse_skill_file(path: Path) -> LoadedSkill:
@@ -38,6 +43,15 @@ def parse_skill_file(path: Path) -> LoadedSkill:
     manifest = SkillManifest.model_validate(data)
     hooks_path = path.parent / "hooks.py"
     hook_exports = discover_hook_exports(hooks_path) if hooks_path.exists() else []
+
+    # Run manifest validation
+    registry_issues = manifest.validate_against_registry()
+    hook_issues = _validate_hook_exports(hook_exports)
+    all_issues = registry_issues + hook_issues
+
+    has_errors = any(issue.severity == "error" for issue in all_issues)
+    serialized_issues = [issue.model_dump() for issue in all_issues]
+
     return LoadedSkill(
         path=path.parent,
         skill_key=manifest.id,
@@ -48,7 +62,25 @@ def parse_skill_file(path: Path) -> LoadedSkill:
         content_hash=hashlib.sha256(text.encode("utf-8")).hexdigest(),
         hooks_path=hooks_path if hooks_path.exists() else None,
         hook_exports=hook_exports,
+        is_valid=not has_errors,
+        validation_issues=serialized_issues,
     )
+
+
+def _validate_hook_exports(hook_exports: list[str]) -> list[ValidationIssue]:
+    issues: list[ValidationIssue] = []
+    unknown = set(hook_exports) - KNOWN_HOOK_NAMES
+    if unknown:
+        issues.append(
+            ValidationIssue(
+                severity="warning",
+                code="unknown_hooks",
+                message=f"Hook exports not in known set: {sorted(unknown)}. "
+                f"Known hooks: {sorted(KNOWN_HOOK_NAMES)}",
+                field="hook_exports",
+            )
+        )
+    return issues
 
 
 def discover_hook_exports(path: Path) -> list[str]:
@@ -60,14 +92,27 @@ def discover_hook_exports(path: Path) -> list[str]:
     return exports
 
 
-def load_all_skills(paths: Iterable[Path]) -> list[LoadedSkill]:
+def load_all_skills(paths: Iterable[Path], *, strict: bool = False) -> list[LoadedSkill]:
     loaded: list[LoadedSkill] = []
     for root in paths:
         if not root.exists():
             continue
         for skill_file in sorted(root.rglob("skill.md")):
             try:
-                loaded.append(parse_skill_file(skill_file))
+                skill = parse_skill_file(skill_file)
+                if strict and not skill.is_valid:
+                    error_messages = [
+                        issue.get("message", "unknown")
+                        for issue in skill.validation_issues
+                        if issue.get("severity") == "error"
+                    ]
+                    raise SkillValidationError(
+                        f"Skill '{skill.skill_key}' failed strict validation: "
+                        + "; ".join(error_messages)
+                    )
+                loaded.append(skill)
+            except SkillValidationError:
+                raise
             except Exception as exc:
                 loaded.append(
                     LoadedSkill(
@@ -92,3 +137,6 @@ def load_all_skills(paths: Iterable[Path]) -> list[LoadedSkill]:
                 )
     return loaded
 
+
+class SkillValidationError(Exception):
+    pass

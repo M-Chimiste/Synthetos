@@ -7,6 +7,7 @@ from sqlalchemy.orm import Session
 
 from libs.core.ids import generate_public_id
 from libs.core.policy import Actor
+from libs.core.state_machine import CycleStatus
 from libs.storage.models import JobModel, ResearchCycleModel
 from libs.storage.services import append_event
 
@@ -41,7 +42,11 @@ def enqueue_job(
     return job
 
 
-def claim_next_job(session: Session, worker_id: str) -> JobModel | None:
+def claim_next_job(
+    session: Session,
+    worker_id: str,
+    lease_minutes: int = 5,
+) -> JobModel | None:
     now = datetime.now(UTC)
     job = session.scalar(
         select(JobModel)
@@ -56,7 +61,7 @@ def claim_next_job(session: Session, worker_id: str) -> JobModel | None:
     job.attempts += 1
     job.claimed_by = worker_id
     job.started_at = now
-    job.lease_expires_at = now + timedelta(minutes=5)
+    job.lease_expires_at = now + timedelta(minutes=lease_minutes)
     session.flush()
     return job
 
@@ -84,7 +89,7 @@ def mark_job_failed(session: Session, job: JobModel, error: str) -> None:
 
 
 def reclaim_expired_leases(session: Session) -> int:
-    """Reset jobs with expired leases back to pending."""
+    """Reset jobs with expired leases back to pending and mark affected cycles as FAILED."""
     now = datetime.now(UTC)
     stale = session.scalars(
         select(JobModel).where(
@@ -92,10 +97,24 @@ def reclaim_expired_leases(session: Session) -> int:
             JobModel.lease_expires_at <= now,
         )
     ).all()
+    affected_cycle_ids: set[int] = set()
     for job in stale:
         job.status = "pending"
         job.claimed_by = None
         job.lease_expires_at = None
+        if job.cycle_id is not None:
+            affected_cycle_ids.add(job.cycle_id)
+    # Mark cycles that were in active states as FAILED due to lease expiry
+    active_statuses = {
+        CycleStatus.RUNNING.value,
+        CycleStatus.INITIALIZING.value,
+        CycleStatus.RESUMING.value,
+    }
+    for cycle_id in affected_cycle_ids:
+        cycle = session.get(ResearchCycleModel, cycle_id)
+        if cycle is not None and cycle.current_status in active_statuses:
+            cycle.current_status = CycleStatus.FAILED.value
+            cycle.last_error = "Worker lease expired — cycle marked failed for recovery"
     session.flush()
     return len(stale)
 
@@ -104,4 +123,3 @@ def cycle_for_job(session: Session, job: JobModel) -> ResearchCycleModel | None:
     if job.cycle_id is None:
         return None
     return session.get(ResearchCycleModel, job.cycle_id)
-

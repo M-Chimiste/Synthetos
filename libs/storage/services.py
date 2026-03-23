@@ -452,9 +452,12 @@ def create_report(
     report_type: str,
     body_markdown: str,
 ) -> ReportBundleModel:
+    from libs.reporting.scoring import score_report_structure
+
     public_id = generate_public_id("report")
     path = config.reports_dir / f"{public_id}.md"
     path.write_text(body_markdown, encoding="utf-8")
+    quality = score_report_structure(body_markdown, report_type)
     report = ReportBundleModel(
         public_id=public_id,
         cycle_id=cycle.id,
@@ -463,10 +466,75 @@ def create_report(
         title=title,
         artifact_path=str(path),
         report_metadata={"format": "markdown"},
+        quality_metadata=quality,
     )
     session.add(report)
     session.flush()
     return report
+
+
+def get_cycle_timeline(
+    session: Session,
+    cycle_public_id: str,
+) -> list[dict]:
+    """Return a chronologically ordered timeline of events for a cycle."""
+    cycle = get_cycle_by_public_id(session, cycle_public_id)
+    events = session.scalars(
+        select(DomainEventModel)
+        .where(DomainEventModel.cycle_id == cycle.id)
+        .order_by(DomainEventModel.created_at.asc())
+    ).all()
+
+    timeline: list[dict] = []
+    for event in events:
+        category, summary = _categorize_event(event.event_type, event.payload)
+        timeline.append({
+            "timestamp": event.created_at.isoformat(),
+            "event_type": event.event_type,
+            "category": category,
+            "summary": summary,
+            "details": event.payload or {},
+        })
+    return timeline
+
+
+_EVENT_CATEGORIES: dict[str, str] = {
+    "cycle_created": "state_change",
+    "state_snapshot_created": "state_change",
+    "job_enqueued": "operator",
+    "job_claimed": "operator",
+    "job_failed": "operator",
+    "operator_result_applied": "operator",
+    "run_command_received": "run",
+    "run_created": "run",
+    "report_created": "report",
+    "skill_execution_recorded": "operator",
+    "model_invocation_recorded": "operator",
+}
+
+
+def _categorize_event(event_type: str, payload: dict) -> tuple[str, str]:
+    category = _EVENT_CATEGORIES.get(event_type, "system")
+    summary = event_type.replace("_", " ").capitalize()
+
+    if event_type == "state_snapshot_created":
+        state = payload.get("state", "")
+        reason = payload.get("reason", "")
+        summary = f"Cycle → {state}" + (f": {reason}" if reason else "")
+    elif event_type == "job_claimed":
+        op = payload.get("operator_name", "")
+        summary = f"Started operator: {op}"
+    elif event_type == "job_failed":
+        error = payload.get("error", "unknown")
+        summary = f"Job failed: {error[:80]}"
+    elif event_type == "run_command_received":
+        cmd = payload.get("command", "")
+        summary = f"Run command: {cmd}"
+    elif event_type == "report_created":
+        title = payload.get("title", "report")
+        summary = f"Report generated: {title}"
+
+    return category, summary
 
 
 def record_model_invocation(
@@ -1376,7 +1444,15 @@ def apply_run_command(
     elif command == "retry":
         if run.status not in {"failed", "paused"}:
             raise HTTPException(status_code=400, detail="Run is not retryable")
+        from libs.core.config import get_config as _get_config
         from libs.orchestration.job_queue import enqueue_job as _enqueue_job
+
+        policy = _get_config().policy
+        if run.attempt_count >= policy.max_retry_attempts:
+            raise HTTPException(
+                status_code=400,
+                detail=f"Run has reached maximum retry attempts ({policy.max_retry_attempts})",
+            )
 
         repairable = {
             "build_failure",
@@ -1405,6 +1481,45 @@ def apply_run_command(
             actor=actor,
             reason=f"Run command applied: {command}",
             context={"run_public_id": run.public_id},
+            scope_used=TokenScope.RUNS_CONTROL.value,
+        )
+    elif command == "resume":
+        if run.status not in {"failed", "paused"}:
+            raise HTTPException(status_code=400, detail="Run is not resumable")
+        from libs.core.config import get_config as _get_config
+        from libs.orchestration.job_queue import enqueue_job as _enqueue_job
+        from libs.orchestration.worker import next_operator_after
+
+        policy = _get_config().policy
+        if run.attempt_count >= policy.max_retry_attempts:
+            raise HTTPException(
+                status_code=400,
+                detail=f"Run has reached maximum retry attempts ({policy.max_retry_attempts})",
+            )
+        # Determine where to resume from: use cycle checkpoint if available
+        last_op = cycle.last_completed_operator
+        next_op = next_operator_after(last_op) if last_op else "run_prepare"
+        if next_op is None:
+            next_op = "run_prepare"
+        _enqueue_job(
+            session,
+            actor,
+            cycle.id,
+            next_op,
+            {"cycle_public_id": cycle.public_id, "run_public_id": run.public_id},
+        )
+        run.status = "queued"
+        create_state_snapshot(
+            session,
+            cycle=cycle,
+            target_state=CycleStatus.RESUMING,
+            actor=actor,
+            reason=f"Resuming from checkpoint: {last_op or 'start'}",
+            context={
+                "run_public_id": run.public_id,
+                "resume_from": last_op,
+                "next_operator": next_op,
+            },
             scope_used=TokenScope.RUNS_CONTROL.value,
         )
     else:

@@ -24,11 +24,13 @@ dependencies = [
 [project.optional-dependencies]
 dev = [
   "pytest>=8.4.0",
+  "pytest-cov>=6.0.0",
 ]
 
 [dependency-groups]
 dev = [
   "pytest>=8.4.0",
+  "pytest-cov>=6.0.0",
 ]
 
 [tool.pytest.ini_options]

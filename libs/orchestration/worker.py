@@ -29,6 +29,46 @@ log = structlog.get_logger(__name__)
 
 _shutdown_event = threading.Event()
 
+# Operator pipelines: ordered sequences for resume logic.
+# Each pipeline maps to a sequence of operators that run in order.
+OPERATOR_PIPELINES: dict[str, list[str]] = {
+    "explore": [
+        "initialize_cycle",
+        "source_retrieval",
+        "literature_screen",
+        "shortlist_rank",
+        "fulltext_escalation",
+        "literature_report",
+    ],
+    "ideation": [
+        "evidence_extraction",
+        "hypothesis_generation",
+        "hypothesis_critique",
+        "protocol_compilation",
+    ],
+    "execution": [
+        "run_prepare",
+        "run_execute",
+        "run_finalize",
+    ],
+    "verification": [
+        "run_verify",
+        "failure_postmortem",
+        "verification_report",
+    ],
+}
+
+
+def next_operator_after(completed: str) -> str | None:
+    """Given the last completed operator, return the next one in its pipeline."""
+    for pipeline in OPERATOR_PIPELINES.values():
+        if completed in pipeline:
+            idx = pipeline.index(completed)
+            if idx + 1 < len(pipeline):
+                return pipeline[idx + 1]
+            return None
+    return None
+
 
 def _has_pending_jobs(session: Session, cycle_id: int) -> bool:
     job = session.scalar(
@@ -62,23 +102,45 @@ def run_worker_once(
         )
         return "cycle_not_runnable"
 
-    create_state_snapshot(
-        session,
-        cycle=cycle,
-        target_state=CycleStatus.INITIALIZING,
-        actor=actor,
-        reason=f"Worker claimed job {job.public_id}",
-        context={"job_public_id": job.public_id},
-    )
-    if job.operator_name == "run_execute":
+    # Handle RESUMING state: transition to appropriate active state
+    if cycle.current_status == CycleStatus.RESUMING.value:
+        target = CycleStatus.INITIALIZING
+        if job.operator_name == "run_execute":
+            target = CycleStatus.RUNNING
+        elif job.operator_name in {"run_verify", "failure_postmortem", "verification_report"}:
+            target = CycleStatus.VERIFYING
         create_state_snapshot(
             session,
             cycle=cycle,
-            target_state=CycleStatus.RUNNING,
+            target_state=target,
             actor=actor,
-            reason=f"Run execution started for job {job.public_id}",
+            reason=(
+                f"Resuming from {cycle.last_completed_operator or 'start'}"
+                f" via job {job.public_id}"
+            ),
+            context={
+                "job_public_id": job.public_id,
+                "resumed_from": cycle.last_completed_operator,
+            },
+        )
+    else:
+        create_state_snapshot(
+            session,
+            cycle=cycle,
+            target_state=CycleStatus.INITIALIZING,
+            actor=actor,
+            reason=f"Worker claimed job {job.public_id}",
             context={"job_public_id": job.public_id},
         )
+        if job.operator_name == "run_execute":
+            create_state_snapshot(
+                session,
+                cycle=cycle,
+                target_state=CycleStatus.RUNNING,
+                actor=actor,
+                reason=f"Run execution started for job {job.public_id}",
+                context={"job_public_id": job.public_id},
+            )
     append_event(
         session,
         actor=actor,
@@ -104,6 +166,10 @@ def run_worker_once(
             actor=actor, result=result, config=config,
         )
         mark_job_succeeded(session, job)
+        # Record checkpoint for recovery
+        cycle.last_completed_operator = job.operator_name
+        cycle.last_completed_job_id = job.id
+        session.flush()
         # If next_actions enqueued new jobs, ensure cycle is QUEUED so they run
         if result.next_actions and _has_pending_jobs(session, cycle.id):
             current = CycleStatus(cycle.current_status)

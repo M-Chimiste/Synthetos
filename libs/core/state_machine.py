@@ -10,6 +10,7 @@ class CycleStatus(StrEnum):
     READY = "ready"
     RUNNING = "running"
     VERIFYING = "verifying"
+    RESUMING = "resuming"
     PAUSED = "paused"
     CANCEL_REQUESTED = "cancel_requested"
     CANCELLED = "cancelled"
@@ -55,10 +56,22 @@ ALLOWED_TRANSITIONS: dict[CycleStatus, set[CycleStatus]] = {
         CycleStatus.CANCEL_REQUESTED,
         CycleStatus.FAILED,
     },
-    CycleStatus.PAUSED: {CycleStatus.QUEUED, CycleStatus.READY, CycleStatus.CANCEL_REQUESTED},
+    CycleStatus.RESUMING: {
+        CycleStatus.QUEUED,
+        CycleStatus.INITIALIZING,
+        CycleStatus.RUNNING,
+        CycleStatus.VERIFYING,
+        CycleStatus.FAILED,
+    },
+    CycleStatus.PAUSED: {
+        CycleStatus.QUEUED,
+        CycleStatus.READY,
+        CycleStatus.RESUMING,
+        CycleStatus.CANCEL_REQUESTED,
+    },
     CycleStatus.CANCEL_REQUESTED: {CycleStatus.CANCELLED, CycleStatus.FAILED},
     CycleStatus.CANCELLED: set(),
-    CycleStatus.FAILED: {CycleStatus.QUEUED, CycleStatus.CANCELLED},
+    CycleStatus.FAILED: {CycleStatus.QUEUED, CycleStatus.RESUMING, CycleStatus.CANCELLED},
 }
 
 

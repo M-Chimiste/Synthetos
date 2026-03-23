@@ -48,6 +48,7 @@ from libs.schemas.api import (
     RunListResponse,
     SkillDetailResponse,
     SkillListResponse,
+    TimelineResponse,
     VerificationReportDetail,
     VerificationReportListResponse,
     VerificationSummaryResponse,
@@ -549,6 +550,19 @@ def get_verification_summary(
     session: Session = Depends(get_db),
 ) -> VerificationSummaryResponse:
     return services.get_verification_summary_for_cycle(session, cycle_id)
+
+
+@app.get(
+    "/api/v1/cycles/{cycle_id}/timeline",
+    response_model=TimelineResponse,
+)
+def get_cycle_timeline(
+    cycle_id: str,
+    actor: Actor = Depends(require_scopes(TokenScope.EVENTS_READ)),
+    session: Session = Depends(get_db),
+) -> TimelineResponse:
+    items = services.get_cycle_timeline(session, cycle_id)
+    return TimelineResponse(cycle_public_id=cycle_id, items=items)
 
 
 @app.get(

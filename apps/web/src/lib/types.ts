@@ -88,6 +88,26 @@ export interface ReportSummary {
 
 export interface ReportDetail extends ReportSummary {
   markdown: string;
+  quality_metadata?: {
+    structural_score?: number;
+    word_count?: number;
+    section_checklist?: Record<string, boolean>;
+    has_tables?: boolean;
+    has_metrics?: boolean;
+  };
+}
+
+export interface TimelineEntry {
+  timestamp: string;
+  event_type: string;
+  category: "state_change" | "operator" | "run" | "report" | "user_action" | "system";
+  summary: string;
+  details: Dictionary;
+}
+
+export interface TimelineResponse {
+  cycle_public_id: string;
+  items: TimelineEntry[];
 }
 
 export interface CycleSummaryResponse {

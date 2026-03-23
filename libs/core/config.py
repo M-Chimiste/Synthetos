@@ -9,6 +9,41 @@ import yaml
 from pydantic import BaseModel, Field
 
 
+class PolicyConfig(BaseModel):
+    """Typed representation of parsed policy defaults."""
+
+    max_retry_attempts: int = 3
+    max_concurrent_runs: int = 2
+    lease_timeout_minutes: int = 5
+    skill_validation_mode: str = "strict"
+
+    @classmethod
+    def from_raw(cls, raw: dict[str, Any]) -> PolicyConfig:
+        execution = raw.get("execution", {})
+        skills = raw.get("skills", {})
+        return cls(
+            max_retry_attempts=execution.get("max_retry_attempts", 3),
+            max_concurrent_runs=execution.get("max_concurrent_runs", 2),
+            lease_timeout_minutes=execution.get("lease_timeout_minutes", 5),
+            skill_validation_mode=skills.get("validation_mode", "strict"),
+        )
+
+    def validate_policy(self) -> list[str]:
+        errors: list[str] = []
+        if self.max_retry_attempts < 0:
+            errors.append("execution.max_retry_attempts must be >= 0")
+        if self.max_concurrent_runs < 1:
+            errors.append("execution.max_concurrent_runs must be >= 1")
+        if self.lease_timeout_minutes < 1:
+            errors.append("execution.lease_timeout_minutes must be >= 1")
+        if self.skill_validation_mode not in {"strict", "lenient"}:
+            errors.append(
+                f"skills.validation_mode must be 'strict' or 'lenient', "
+                f"got '{self.skill_validation_mode}'"
+            )
+        return errors
+
+
 class AppConfig(BaseModel):
     env: str = "dev"
     db_url: str = "sqlite:///./synthetos.db"
@@ -23,6 +58,7 @@ class AppConfig(BaseModel):
     api_host: str = "127.0.0.1"
     api_port: int = 8000
     auto_init_db: bool = True
+    _policy: PolicyConfig | None = None
 
     def load_yaml(self, path: Path) -> dict[str, Any]:
         resolved = Path(path)
@@ -31,6 +67,13 @@ class AppConfig(BaseModel):
         with resolved.open("r", encoding="utf-8") as handle:
             data = yaml.safe_load(handle) or {}
         return data
+
+    @property
+    def policy(self) -> PolicyConfig:
+        if self._policy is None:
+            raw = self.load_yaml(self.policy_config_path)
+            self._policy = PolicyConfig.from_raw(raw)
+        return self._policy
 
     @property
     def reports_dir(self) -> Path:

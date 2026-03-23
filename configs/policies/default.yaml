@@ -22,6 +22,9 @@ execution:
       - enabled
     image_keys:
       - custom
+  max_retry_attempts: 3
+  max_concurrent_runs: 2
+  lease_timeout_minutes: 5
 verification:
   require_baseline_comparison: true
   require_historical_comparison: true
@@ -29,3 +32,5 @@ verification:
   leakage_check_enabled: true
   split_validation_enabled: true
   min_outcome_for_promotion: tentative
+skills:
+  validation_mode: strict

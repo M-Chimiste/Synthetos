@@ -155,7 +155,7 @@ export function createRun(specId: string, executionProfile = "cpu-small", forceS
   });
 }
 
-export function runCommand(runId: string, command: "pause" | "cancel" | "retry") {
+export function runCommand(runId: string, command: "pause" | "cancel" | "retry" | "resume") {
   return request<RunDetailResponse>(`/api/v1/runs/${runId}/commands`, {
     method: "POST",
     body: JSON.stringify({ command }),
@@ -170,6 +170,10 @@ export function runStreamUrl(runId: string): string {
 
 export function runEventSource(runId: string): EventSource {
   return new EventSource(runStreamUrl(runId), { withCredentials: false });
+}
+
+export function getTimeline(cycleId: string) {
+  return request<import("./types").TimelineResponse>(`/api/v1/cycles/${cycleId}/timeline`);
 }
 
 export { API_BASE, API_TOKEN };
