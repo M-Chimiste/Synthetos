@@ -251,23 +251,28 @@ def search_papers(
     query: str,
     limit: int = Query(default=20, ge=1, le=100),
     categories: str | None = Query(default=None),
-    date_from: str | None = Query(default=None),
-    date_until: str | None = Query(default=None),
+    date_from: datetime | None = Query(default=None),
+    date_until: datetime | None = Query(default=None),
     actor: Actor = Depends(require_scopes(TokenScope.CYCLES_READ)),
     session: Session = Depends(get_db),
 ) -> PaperSearchResponse:
     config = get_config()
     warehouse = ArxivWarehouseService(config)
-    target_until = datetime.fromisoformat(date_until).replace(tzinfo=UTC) if date_until else None
-    sync_runs = warehouse.ensure_fresh(session, target_until=target_until)
+    parsed_from = (
+        date_from.replace(tzinfo=UTC) if date_from and not date_from.tzinfo else date_from
+    )
+    parsed_until = (
+        date_until.replace(tzinfo=UTC) if date_until and not date_until.tzinfo else date_until
+    )
+    sync_runs = warehouse.ensure_fresh(session, target_until=parsed_until)
     category_list = [item.strip() for item in (categories or "").split(",") if item.strip()]
     hits = warehouse.search(
         session,
         query_text=query,
         limit=limit,
         categories=category_list,
-        date_from=datetime.fromisoformat(date_from).replace(tzinfo=UTC) if date_from else None,
-        date_until=target_until,
+        date_from=parsed_from,
+        date_until=parsed_until,
     )
     recent_runs = sync_runs or warehouse.recent_sync_runs(session, limit=5)
     from libs.schemas.domain import ArxivPaper, ArxivSyncRun

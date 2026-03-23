@@ -180,17 +180,36 @@ def search_papers(
 def sync_arxiv(
     full: bool = False,
     incremental: bool = False,
+    background: bool = False,
 ) -> None:
     config = get_config()
     if config.auto_init_db:
         initialize_database(config)
+    mode = "full" if (full or not incremental) else "incremental"
+
+    if background:
+        from libs.orchestration.job_queue import enqueue_job
+
+        session_factory = get_session_factory(config)
+        with session_factory() as session:
+            job = enqueue_job(
+                session,
+                SYSTEM_ACTOR,
+                cycle_id=None,
+                operator_name="arxiv_warehouse_sync",
+                payload={"mode": mode},
+            )
+            session.commit()
+            echo_json({"job_public_id": job.public_id, "status": "enqueued", "mode": mode})
+        return
+
     warehouse = ArxivWarehouseService(config)
     session_factory = get_session_factory(config)
     with session_factory() as session:
-        if full or not incremental:
-            run = warehouse.sync_full(session)
-        else:
+        if mode == "incremental":
             run = warehouse.sync_incremental(session)
+        else:
+            run = warehouse.sync_full(session)
         echo_json({
             "public_id": run.public_id,
             "mode": run.mode,
@@ -202,6 +221,23 @@ def sync_arxiv(
             "skipped_count": run.skipped_count,
             "cursor_updated_until": run.cursor_updated_until,
         })
+
+
+embeddings_app = typer.Typer()
+app.add_typer(embeddings_app, name="embeddings")
+
+
+@embeddings_app.command("warmup")
+def warmup_embeddings() -> None:
+    """Pre-download and load the embedding model."""
+    from libs.adapters.embeddings.sentence_transformers import (
+        SentenceTransformerEmbeddingAdapter,
+    )
+
+    config = get_config()
+    adapter = SentenceTransformerEmbeddingAdapter(config.embedding)
+    info = adapter.warmup()
+    echo_json(info)
 
 
 @literature_app.command("summary")

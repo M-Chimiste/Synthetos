@@ -12,6 +12,8 @@ Three core loops drive the research process:
 
 The system uses **operator-over-shared-state** orchestration: typed operators read/write a shared `ResearchState` through an explicit state machine with append-only audit trail. All external systems (arXiv, models, Docker, git) sit behind adapter interfaces (hexagonal architecture).
 
+Literature search uses a **hybrid semantic search** pipeline: a local arXiv warehouse backed by PostgreSQL pgvector combines full-text search (BM25 via `tsvector`) with dense vector similarity (sentence-transformers embeddings) for ranked retrieval.
+
 ## Project Structure
 
 ```
@@ -30,8 +32,8 @@ libs/
   execution/    Docker execution, artifact collection, failure classification
   verification/ Result verification, postmortems
   reporting/    Report quality scoring, templates
-  retrieval/    Source retrieval adapters
-  adapters/     External system adapters (arXiv, LLM, embeddings, containers)
+  retrieval/    arXiv warehouse, hybrid search, source retrieval
+  adapters/     External system adapters (arXiv OAI-PMH, LLM, embeddings, containers)
   skills/       Skill manifest, loader, dependency validation
   sdk/          Python client SDK (sync + async)
 prompts/        Versioned Jinja2 prompt templates by phase
@@ -54,6 +56,7 @@ docs/           SDK quickstart, skill authoring guide
 | Frontend | React 19, TypeScript, Vite, Tailwind CSS, TanStack Query |
 | Execution | Docker Engine + NVIDIA Container Toolkit |
 | Workspace isolation | Git worktrees |
+| Embeddings | sentence-transformers (`gte-modernbert-base`) |
 | Linting | ruff |
 | Testing | pytest (backend), vitest + Testing Library (frontend) |
 
@@ -96,6 +99,41 @@ uv run python -m apps.worker
 pnpm --dir apps/web dev
 ```
 
+### arXiv Warehouse Setup
+
+The arXiv warehouse provides hybrid semantic search over paper metadata. First-time setup downloads the embedding model (~500MB):
+
+```bash
+# Pre-download the embedding model (optional but recommended)
+uv run python -m apps.cli embeddings warmup
+
+# Bootstrap the warehouse from Kaggle snapshot (requires Kaggle credentials)
+uv run python -m apps.cli papers sync-arxiv --full
+
+# Or run sync in the background via the worker
+uv run python -m apps.cli papers sync-arxiv --full --background
+
+# Incremental sync via OAI-PMH (fetches recent papers, retries on transient failures)
+uv run python -m apps.cli papers sync-arxiv --incremental
+
+# Search the warehouse
+uv run python -m apps.cli papers search "neural architecture search" --categories cs.LG --limit 10
+```
+
+### CLI Commands
+
+```bash
+synthetos cycle create       # Create a research cycle
+synthetos cycle list         # List all cycles
+synthetos cycle start-intake # Start literature intake for a cycle
+synthetos papers search      # Search the arXiv warehouse
+synthetos papers sync-arxiv  # Sync arXiv papers (--full/--incremental/--background)
+synthetos embeddings warmup  # Pre-download embedding model
+synthetos skills list        # List registered skills
+synthetos models probe       # Probe configured model routes
+synthetos worker run-once    # Process one job from the queue
+```
+
 ### Environment Variables
 
 See [.env.example](.env.example) for all configuration options. Key variables:
@@ -106,6 +144,9 @@ See [.env.example](.env.example) for all configuration options. Key variables:
 | `LAB_DATA_ROOT` | Local artifact storage directory |
 | `LAB_MODEL_CONFIG` | Path to model routing config |
 | `LAB_POLICY_CONFIG` | Path to policy config |
+| `LAB_EMBEDDING_CONFIG` | Path to embedding model config |
+| `LAB_ARXIV_KAGGLE_DATASET` | Kaggle dataset ID for arXiv snapshot |
+| `LAB_ARXIV_SYNC_FRESHNESS_HOURS` | Max age before warehouse auto-refreshes |
 | `LAB_SKILL_PATHS` | Comma-separated skill directories |
 | `LAB_AUTO_INIT_DB` | Auto-initialize DB on startup |
 
@@ -114,14 +155,17 @@ See [.env.example](.env.example) for all configuration options. Key variables:
 ### Running Tests
 
 ```bash
-# Backend tests
+# Backend tests (269 tests)
 uv run pytest
 
 # Backend tests with coverage
 uv run pytest --cov
 
-# Frontend tests
+# Frontend tests (12 tests)
 pnpm --dir apps/web test
+
+# Postgres integration tests (requires Docker + testcontainers)
+uv run pytest tests/integration/test_arxiv_warehouse_pg.py -v -m integration
 
 # Lint
 uv run ruff check .

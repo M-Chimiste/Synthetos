@@ -272,7 +272,9 @@ class ArxivPaperModel(TimestampMixin, Base):
         nullable=True,
     )
     embedding_model_id: Mapped[str | None] = mapped_column(String(255), nullable=True)
-    embedding_updated_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    embedding_updated_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True,
+    )
 
 
 class ArxivSyncRunModel(TimestampMixin, Base):

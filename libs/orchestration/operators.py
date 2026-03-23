@@ -260,8 +260,8 @@ def source_retrieval_operator(
     job: JobModel,
 ) -> OperatorResult:
     """Retrieve papers from hybrid arXiv warehouse + internal corpus."""
-    from libs.verification.failure_memory import aggregate_failure_guidance
     from libs.retrieval.arxiv_warehouse import ArxivWarehouseService
+    from libs.verification.failure_memory import aggregate_failure_guidance
 
     charter = session.get(ResearchCharterModel, cycle.charter_id)
     if charter is None:
@@ -319,17 +319,22 @@ def source_retrieval_operator(
 
     try:
         warehouse = ArxivWarehouseService(config)
-        warehouse.ensure_fresh(
-            session,
-            target_until=datetime.fromisoformat(date_until).replace(tzinfo=UTC) if date_until else None,
+        parsed_until = (
+            datetime.fromisoformat(date_until).replace(tzinfo=UTC)
+            if date_until else None
         )
+        parsed_from = (
+            datetime.fromisoformat(date_from).replace(tzinfo=UTC)
+            if date_from else None
+        )
+        warehouse.ensure_fresh(session, target_until=parsed_until)
         hits = warehouse.search(
             session,
             query_text=query_text,
             limit=max_results,
             categories=categories,
-            date_from=datetime.fromisoformat(date_from).replace(tzinfo=UTC) if date_from else None,
-            date_until=datetime.fromisoformat(date_until).replace(tzinfo=UTC) if date_until else None,
+            date_from=parsed_from,
+            date_until=parsed_until,
         )
         arxiv_papers = [warehouse.paper_to_raw_record(hit) for hit in hits]
         ingested = lit_svc.ingest_papers(session, cycle, arxiv_session, arxiv_papers)
@@ -2785,6 +2790,40 @@ def verification_report_operator(
     )
 
 
+def arxiv_warehouse_sync_operator(
+    session: Session,
+    config: AppConfig,
+    actor: Actor,
+    cycle: Any,
+    job: Any,
+) -> OperatorResult:
+    """Cycle-independent operator: sync arXiv warehouse in the background."""
+    from libs.retrieval.arxiv_warehouse import ArxivWarehouseService
+
+    mode = (job.payload or {}).get("mode", "full")
+    warehouse = ArxivWarehouseService(config)
+    if mode == "incremental":
+        run = warehouse.sync_incremental(session)
+    else:
+        run = warehouse.sync_full(session)
+    summary = (
+        f"Sync mode={run.mode} source={run.source} status={run.status} "
+        f"inserted={run.inserted_count} updated={run.updated_count} "
+        f"reembedded={run.reembedded_count} skipped={run.skipped_count}"
+    )
+    return OperatorResult(
+        state_patch=StatePatch(
+            target_state=CycleStatus.READY,
+            reason=f"Warehouse sync complete: {summary}",
+        ),
+        operator_report=OperatorReport(
+            title="arXiv Warehouse Sync",
+            body_markdown=f"## Sync Result\n\n{summary}",
+            prompt_id="system:arxiv_warehouse_sync",
+        ),
+    )
+
+
 OPERATOR_REGISTRY = {
     # Phase 0
     "initialize_cycle": initialize_cycle_operator,
@@ -2808,4 +2847,6 @@ OPERATOR_REGISTRY = {
     "run_verify": run_verify_operator,
     "failure_postmortem": failure_postmortem_operator,
     "verification_report": verification_report_operator,
+    # Cycle-independent
+    "arxiv_warehouse_sync": arxiv_warehouse_sync_operator,
 }

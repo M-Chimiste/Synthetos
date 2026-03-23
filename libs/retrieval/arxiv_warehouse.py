@@ -1,14 +1,15 @@
 from __future__ import annotations
 
+import hashlib
 import json
 import os
 import subprocess
-import hashlib
+from collections.abc import Iterator
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 from json import JSONDecodeError
 from pathlib import Path
-from typing import Any, Iterator
+from typing import Any
 
 import structlog
 from sqlalchemy import select, text
@@ -74,7 +75,11 @@ class ArxivWarehouseService:
 
         stale_after = completed.updated_at + timedelta(hours=self.config.arxiv_sync_freshness_hours)
         target = target_until or datetime.now(UTC)
-        covered_until = completed.cursor_updated_until or completed.effective_until or completed.updated_at
+        covered_until = (
+            completed.cursor_updated_until
+            or completed.effective_until
+            or completed.updated_at
+        )
         if stale_after < datetime.now(UTC) or covered_until is None or covered_until < target:
             sync_runs.append(self.sync_incremental(session, requested_until=target))
         return sync_runs
@@ -93,7 +98,10 @@ class ArxivWarehouseService:
         try:
             stats = self._upsert_records(
                 session,
-                (self._canonicalize_snapshot_row(row) for row in self.iter_snapshot_rows(snapshot_path)),
+                (
+                    self._canonicalize_snapshot_row(row)
+                    for row in self.iter_snapshot_rows(snapshot_path)
+                ),
             )
             self._finalize_run(run, stats)
             session.commit()
@@ -136,7 +144,11 @@ class ArxivWarehouseService:
                 session,
                 (self._canonicalize_raw_record(record) for record in adapter.search(query)),
             )
-            self._finalize_run(run, stats, requested_from=requested_from, requested_until=requested_until)
+            self._finalize_run(
+                run, stats,
+                requested_from=requested_from,
+                requested_until=requested_until,
+            )
             session.commit()
             return run
         except Exception as exc:
@@ -288,7 +300,9 @@ class ArxivWarehouseService:
 
         candidates = list(snapshot_path.parent.glob("arxiv-metadata-oai-snapshot*.json"))
         if not candidates:
-            raise RuntimeError("Kaggle download completed but the arXiv snapshot file was not found.")
+            raise RuntimeError(
+                "Kaggle download completed but the arXiv snapshot file was not found."
+            )
         candidates.sort()
         return candidates[0]
 
@@ -329,7 +343,8 @@ class ArxivWarehouseService:
                        websearch_to_tsquery('english', :query_text)
                    ) AS lexical_score
             FROM arxiv_papers
-            WHERE to_tsvector('english', search_text) @@ websearch_to_tsquery('english', :query_text)
+            WHERE to_tsvector('english', search_text)
+                  @@ websearch_to_tsquery('english', :query_text)
               AND (:categories_csv = '' OR EXISTS (
                     SELECT 1
                     FROM jsonb_array_elements_text(categories::jsonb) AS category

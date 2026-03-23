@@ -323,3 +323,13 @@ async def test_events_stream_includes_shortlist_and_escalation_events(client):
 
     assert "paper_shortlist_finalized" in seen_event_types
     assert "paper_escalation_decision_finalized" in seen_event_types
+
+
+def test_paper_search_invalid_date_returns_422(client):
+    """Invalid date_from string should return 422, not 500."""
+    resp = client.get(
+        "/api/v1/papers/search",
+        params={"query": "test", "date_from": "not-a-date"},
+        headers=AUTH_HEADERS,
+    )
+    assert resp.status_code == 422

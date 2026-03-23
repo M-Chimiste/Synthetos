@@ -14,6 +14,13 @@ import xml.etree.ElementTree as ET
 
 import httpx
 import structlog
+from tenacity import (
+    RetryError,
+    retry,
+    retry_if_exception_type,
+    stop_after_attempt,
+    wait_exponential,
+)
 
 from libs.adapters.literature import LiteratureSourceAdapter, RawPaperRecord, SourceQuery
 
@@ -48,11 +55,35 @@ class ArxivMetadataAdapter(LiteratureSourceAdapter):
 
     def search(self, query: SourceQuery) -> list[RawPaperRecord]:
         """Search arXiv metadata via OAI-PMH ListRecords."""
+        max_results = query.max_results or self.config.max_results
+        categories = query.categories or [""]
+
+        if len(categories) <= 1:
+            return self._harvest_category(
+                categories[0] if categories else "", query, max_results,
+            )
+
+        # Multi-category: harvest each, deduplicate by external_id
+        seen: set[str] = set()
+        records: list[RawPaperRecord] = []
+        for cat in categories:
+            for record in self._harvest_category(cat, query, max_results=None):
+                if record.external_id not in seen:
+                    seen.add(record.external_id)
+                    records.append(record)
+                    if max_results and len(records) >= max_results:
+                        return records
+        return records
+
+    def _harvest_category(
+        self,
+        category: str,
+        query: SourceQuery,
+        max_results: int | None,
+    ) -> list[RawPaperRecord]:
+        """Harvest records for a single OAI-PMH set (category)."""
         records: list[RawPaperRecord] = []
         resumption_token: str | None = None
-        max_results = query.max_results or self.config.max_results
-
-        category = query.categories[0] if query.categories else ""
 
         while True:
             params = self._build_params(
@@ -110,24 +141,42 @@ class ArxivMetadataAdapter(LiteratureSourceAdapter):
         return params
 
     def _request(self, params: dict[str, str]) -> str | None:
-        """Make a rate-limited HTTP request to the OAI-PMH endpoint."""
+        """Rate-limited HTTP request with automatic retry on transient failures."""
+        try:
+            return self._do_request(params)
+        except RetryError as exc:
+            log.warning(
+                "arxiv_oai_request_failed_after_retries",
+                error=str(exc),
+                attempts=exc.last_attempt.attempt_number if exc.last_attempt else "?",
+            )
+            return None
+
+    @retry(
+        stop=stop_after_attempt(3),
+        wait=wait_exponential(multiplier=3, min=3, max=30),
+        retry=retry_if_exception_type(httpx.HTTPError),
+        before_sleep=lambda rs: log.warning(
+            "arxiv_oai_retry",
+            attempt=rs.attempt_number,
+            wait=rs.next_action.sleep,  # type: ignore[union-attr]
+        ),
+    )
+    def _do_request(self, params: dict[str, str]) -> str:
+        """Make a single rate-limited HTTP request (retried by tenacity)."""
         elapsed = time.monotonic() - self._last_request_time
         if elapsed < self.config.request_interval:
             time.sleep(self.config.request_interval - elapsed)
 
-        try:
-            resp = httpx.get(
-                self.config.base_url,
-                params=params,
-                timeout=self.config.timeout,
-                headers={"User-Agent": "Synthetos-ML-Lab/1.0"},
-            )
-            self._last_request_time = time.monotonic()
-            resp.raise_for_status()
-            return resp.text
-        except httpx.HTTPError as exc:
-            log.warning("arxiv_oai_request_failed", error=str(exc))
-            return None
+        resp = httpx.get(
+            self.config.base_url,
+            params=params,
+            timeout=self.config.timeout,
+            headers={"User-Agent": "Synthetos-ML-Lab/1.0"},
+        )
+        self._last_request_time = time.monotonic()
+        resp.raise_for_status()
+        return resp.text
 
     def _parse_response(
         self, xml_text: str, query: SourceQuery,

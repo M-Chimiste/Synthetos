@@ -29,6 +29,9 @@ log = structlog.get_logger(__name__)
 
 _shutdown_event = threading.Event()
 
+# Operators that run without an associated research cycle.
+CYCLE_INDEPENDENT_OPERATORS: set[str] = {"arxiv_warehouse_sync"}
+
 # Operator pipelines: ordered sequences for resume logic.
 # Each pipeline maps to a sequence of operators that run in order.
 OPERATOR_PIPELINES: dict[str, list[str]] = {
@@ -86,6 +89,11 @@ def run_worker_once(
     job = claim_next_job(session, worker_id=actor.actor_id)
     if job is None:
         return "no_job"
+
+    # Cycle-independent operators skip all cycle state checks
+    if job.operator_name in CYCLE_INDEPENDENT_OPERATORS:
+        return _run_cycle_independent_job(session, config, actor, job)
+
     cycle = cycle_for_job(session, job)
     if cycle is None:
         mark_job_failed(session, job, "Job has no cycle")
@@ -217,6 +225,33 @@ def run_worker_once(
             },
             cycle_id=cycle.id,
             job_id=job.id,
+        )
+        mark_job_failed(session, job, str(exc))
+        return "job_failed"
+
+
+def _run_cycle_independent_job(
+    session: Session, config: AppConfig, actor: Actor, job: JobModel,
+) -> str:
+    """Execute a job that is not tied to any research cycle."""
+    operator = OPERATOR_REGISTRY[job.operator_name]
+    log.info(
+        "operator_starting",
+        job_id=job.public_id,
+        operator=job.operator_name,
+        cycle_independent=True,
+    )
+    try:
+        operator(session, config, actor, None, job)
+        mark_job_succeeded(session, job)
+        log.info("operator_succeeded", job_id=job.public_id, operator=job.operator_name)
+        return "job_succeeded"
+    except Exception as exc:
+        log.error(
+            "operator_failed",
+            job_id=job.public_id,
+            operator=job.operator_name,
+            error=str(exc),
         )
         mark_job_failed(session, job, str(exc))
         return "job_failed"

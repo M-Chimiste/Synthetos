@@ -82,7 +82,8 @@ def test_upsert_records_deduplicates_and_reembeds_on_text_change(tmp_path: Path)
     embedder = FakeEmbedder()
     service = WarehouseServiceForTest(config, embedder=embedder)
 
-    stats = service._upsert_records(session, iter([service._canonicalize_raw_record(_record("2401.00001"))]))
+    canon = service._canonicalize_raw_record(_record("2401.00001"))
+    stats = service._upsert_records(session, iter([canon]))
     session.commit()
     assert stats["inserted"] == 1
     assert stats["reembedded"] == 1
@@ -99,7 +100,9 @@ def test_upsert_records_deduplicates_and_reembeds_on_text_change(tmp_path: Path)
 
     changed_stats = service._upsert_records(
         session,
-        iter([service._canonicalize_raw_record(_record("2401.00001", abstract="Changed abstract"))]),
+        iter([service._canonicalize_raw_record(
+            _record("2401.00001", abstract="Changed abstract"),
+        )]),
     )
     session.commit()
     assert changed_stats["updated"] == 1

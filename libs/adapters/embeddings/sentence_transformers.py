@@ -2,8 +2,12 @@ from __future__ import annotations
 
 from collections.abc import Sequence
 
+import structlog
+
 from libs.adapters.embeddings.base import EmbeddingAdapter
 from libs.core.config import EmbeddingConfig
+
+log = structlog.get_logger(__name__)
 
 
 class SentenceTransformerEmbeddingAdapter(EmbeddingAdapter):
@@ -22,6 +26,12 @@ class SentenceTransformerEmbeddingAdapter(EmbeddingAdapter):
                     "sentence-transformers is required for semantic search. "
                     "Run `uv sync` to install project dependencies."
                 ) from exc
+            if not self.is_available():
+                log.warning(
+                    "embedding_model_downloading",
+                    model_id=self.config.model_id,
+                    message="Model not cached locally; downloading from HuggingFace",
+                )
             self._model = SentenceTransformer(
                 self.config.model_id,
                 device=self.config.device,
@@ -47,3 +57,20 @@ class SentenceTransformerEmbeddingAdapter(EmbeddingAdapter):
     def embed_query(self, text: str) -> list[float]:
         vectors = self._encode([text])
         return vectors[0] if vectors else []
+
+    def warmup(self) -> dict[str, str]:
+        """Pre-load the embedding model, downloading if needed."""
+        log.info("embedding_model_warmup_start", model_id=self.config.model_id)
+        self._get_model()
+        log.info("embedding_model_warmup_complete", model_id=self.config.model_id)
+        return {"model_id": self.config.model_id, "device": self.config.device}
+
+    def is_available(self) -> bool:
+        """Check if the model is already cached locally."""
+        try:
+            from huggingface_hub import try_to_load_from_cache
+
+            result = try_to_load_from_cache(self.config.model_id, "config.json")
+            return result is not None
+        except Exception:
+            return False

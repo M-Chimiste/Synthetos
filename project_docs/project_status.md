@@ -103,7 +103,7 @@
 
 ## What Was Done (Current Session)
 
-### Semantic arXiv warehouse + hybrid search
+### Semantic arXiv warehouse + hybrid search (Codex)
 - Added canonical `arxiv_papers` warehouse table and `arxiv_sync_runs` tracking table (migration `20260323_000010`)
 - Added Postgres pgvector/HNSW and full-text search index creation through Alembic for semantic paper search
 - Added local embedding adapter using Sentence Transformers with `Alibaba-NLP/gte-modernbert-base`
@@ -124,14 +124,19 @@
   - imports hits into cycle `paper_cards`
   - preserves the existing LLM screening / shortlist / escalation flow
 - Updated bootstrap to run Alembic cleanly for Postgres-backed semantic search setup
-- Added targeted tests for:
-  - OAI global-sync parameter handling
-  - warehouse snapshot parsing
-  - dedupe/re-embedding rules
-  - hybrid ranking fusion
-  - Phase 1 / Phase 2 integration flow using the new warehouse search path
-- Verification run completed for the focused semantic-search slice:
-  - 20 tests passing via `uv run --no-sync pytest tests/unit/test_adapters_arxiv.py tests/unit/test_arxiv_warehouse.py tests/integration/test_phase1_api.py tests/integration/test_phase2_api.py`
+
+### Warehouse hardening (6 gaps addressed)
+1. **Retry logic**: Added tenacity `@retry` to OAI-PMH `_do_request()` (3 attempts, exponential backoff 3-30s, respects arXiv rate limit). Safe wrapper `_request()` catches `RetryError` and returns `None`.
+2. **Multi-category queries**: Extracted `_harvest_category()` method. Multi-category queries harvest each category separately and deduplicate by `external_id`.
+3. **Date validation**: Changed `/papers/search` params from `str | None` to `datetime | None` — FastAPI auto-returns 422 on invalid dates instead of 500.
+4. **Embedding warmup**: Added `warmup()` and `is_available()` to `EmbeddingAdapter` ABC. `SentenceTransformerEmbeddingAdapter` logs warnings when downloading model. Added `synthetos embeddings warmup` CLI command.
+5. **Background sync**: New `arxiv_warehouse_sync` cycle-independent operator + `CYCLE_INDEPENDENT_OPERATORS` set in worker. CLI `papers sync-arxiv --background` enqueues a job instead of blocking.
+6. **Postgres integration tests**: 5 tests in `test_arxiv_warehouse_pg.py` covering FTS, vector cosine, hybrid search, category jsonb filter, and date range filter. Auto-skip when testcontainers/Docker unavailable.
+
+### Test summary
+- Backend: 269 tests passing (up from 264)
+- Ruff: clean
+- Postgres integration tests: ready to run when Docker is available
 
 ---
 
@@ -157,7 +162,7 @@
 - Pilot exercises on public ML benchmark tasks and internal research problems
 - Run `uv sync` in a network-enabled environment so the new `sentence-transformers` / `kaggle` dependencies are locked and installed consistently
 - Execute the first real Postgres-backed full Kaggle bootstrap and incremental OAI sync against a local database
-- Add Postgres integration coverage for the warehouse search API and sync commands beyond the current focused SQLite-safe/unit-mocked slice
+- Pull `pgvector/pgvector:pg16` Docker image and run Postgres integration tests (`uv run pytest tests/integration/test_arxiv_warehouse_pg.py -v -m integration`)
 - End-to-end usage validation from external orchestrator harness
 - Run a real local Docker smoke test for the offline benchmark on `cpu-small`
 - Validate optional `gpu-small` behavior on a machine with GPU runtime support
