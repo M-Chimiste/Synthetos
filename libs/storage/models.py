@@ -7,6 +7,7 @@ from sqlalchemy import JSON, Boolean, DateTime, ForeignKey, Integer, String, Tex
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from libs.storage.base import Base, TimestampMixin
+from libs.storage.vector_type import EmbeddingVector
 
 
 class ResearchCharterModel(TimestampMixin, Base):
@@ -246,6 +247,55 @@ class OrchestratorCommandModel(TimestampMixin, Base):
     target_resource: Mapped[str] = mapped_column(String(255))
     payload: Mapped[dict[str, Any]] = mapped_column(JSON, default=dict)
     result: Mapped[dict[str, Any]] = mapped_column(JSON, default=dict)
+
+
+class ArxivPaperModel(TimestampMixin, Base):
+    __tablename__ = "arxiv_papers"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    public_id: Mapped[str] = mapped_column(String(64), unique=True, index=True)
+    arxiv_id: Mapped[str] = mapped_column(String(64), unique=True, index=True)
+    title: Mapped[str] = mapped_column(Text)
+    abstract: Mapped[str | None] = mapped_column(Text, nullable=True)
+    authors: Mapped[list[str]] = mapped_column(JSON, default=list)
+    categories: Mapped[list[str]] = mapped_column(JSON, default=list)
+    created_date: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    updated_date: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    doi: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    source_url: Mapped[str] = mapped_column(String(512))
+    pdf_url: Mapped[str | None] = mapped_column(String(512), nullable=True)
+    search_text: Mapped[str] = mapped_column(Text)
+    content_hash: Mapped[str] = mapped_column(String(128), index=True)
+    raw_metadata: Mapped[dict[str, Any]] = mapped_column(JSON, default=dict)
+    embedding: Mapped[list[float] | None] = mapped_column(
+        EmbeddingVector(768),
+        nullable=True,
+    )
+    embedding_model_id: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    embedding_updated_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+
+
+class ArxivSyncRunModel(TimestampMixin, Base):
+    __tablename__ = "arxiv_sync_runs"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    public_id: Mapped[str] = mapped_column(String(64), unique=True, index=True)
+    mode: Mapped[str] = mapped_column(String(32), index=True)
+    source: Mapped[str] = mapped_column(String(32), index=True)
+    status: Mapped[str] = mapped_column(String(32), index=True, default="pending")
+    requested_from: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    requested_until: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    effective_from: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    effective_until: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    cursor_updated_until: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True),
+        nullable=True,
+    )
+    inserted_count: Mapped[int] = mapped_column(Integer, default=0)
+    updated_count: Mapped[int] = mapped_column(Integer, default=0)
+    reembedded_count: Mapped[int] = mapped_column(Integer, default=0)
+    skipped_count: Mapped[int] = mapped_column(Integer, default=0)
+    error_message: Mapped[str | None] = mapped_column(Text, nullable=True)
 
 
 class SourceRetrievalSessionModel(TimestampMixin, Base):

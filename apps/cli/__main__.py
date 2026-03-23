@@ -10,6 +10,7 @@ from libs.adapters.llm.gateway import ModelGateway
 from libs.core.config import get_config
 from libs.core.policy import SYSTEM_ACTOR
 from libs.orchestration.worker import run_worker_once
+from libs.retrieval.arxiv_warehouse import ArxivWarehouseService
 from libs.storage.session import get_session_factory, initialize_database
 
 app = typer.Typer(no_args_is_help=True)
@@ -149,6 +150,58 @@ def show_paper(cycle_id: str, paper_id: str) -> None:
         response = client.get(f"/api/v1/cycles/{cycle_id}/papers/{paper_id}")
         response.raise_for_status()
         echo_json(response.json())
+
+
+@papers_app.command("search")
+def search_papers(
+    query: str,
+    limit: int = 20,
+    categories: str = "",
+    date_from: str = "",
+    date_until: str = "",
+) -> None:
+    params = {
+        "query": query,
+        "limit": limit,
+    }
+    if categories:
+        params["categories"] = categories
+    if date_from:
+        params["date_from"] = date_from
+    if date_until:
+        params["date_until"] = date_until
+    with api_client() as client:
+        response = client.get("/api/v1/papers/search", params=params)
+        response.raise_for_status()
+        echo_json(response.json())
+
+
+@papers_app.command("sync-arxiv")
+def sync_arxiv(
+    full: bool = False,
+    incremental: bool = False,
+) -> None:
+    config = get_config()
+    if config.auto_init_db:
+        initialize_database(config)
+    warehouse = ArxivWarehouseService(config)
+    session_factory = get_session_factory(config)
+    with session_factory() as session:
+        if full or not incremental:
+            run = warehouse.sync_full(session)
+        else:
+            run = warehouse.sync_incremental(session)
+        echo_json({
+            "public_id": run.public_id,
+            "mode": run.mode,
+            "source": run.source,
+            "status": run.status,
+            "inserted_count": run.inserted_count,
+            "updated_count": run.updated_count,
+            "reembedded_count": run.reembedded_count,
+            "skipped_count": run.skipped_count,
+            "cursor_updated_until": run.cursor_updated_until,
+        })
 
 
 @literature_app.command("summary")

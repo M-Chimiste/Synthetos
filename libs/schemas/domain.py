@@ -387,6 +387,49 @@ class FailurePostmortem(BaseModel):
     updated_at: datetime
 
 
+class ArxivPaper(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+
+    public_id: str
+    arxiv_id: str
+    title: str
+    abstract: str | None = None
+    authors: list[str] = Field(default_factory=list)
+    categories: list[str] = Field(default_factory=list)
+    created_date: datetime | None = None
+    updated_date: datetime | None = None
+    doi: str | None = None
+    source_url: str
+    pdf_url: str | None = None
+    search_text: str
+    content_hash: str
+    embedding_model_id: str | None = None
+    embedding_updated_at: datetime | None = None
+    created_at: datetime
+    updated_at: datetime
+
+
+class ArxivSyncRun(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+
+    public_id: str
+    mode: str
+    source: str
+    status: str
+    requested_from: datetime | None = None
+    requested_until: datetime | None = None
+    effective_from: datetime | None = None
+    effective_until: datetime | None = None
+    cursor_updated_until: datetime | None = None
+    inserted_count: int
+    updated_count: int
+    reembedded_count: int
+    skipped_count: int
+    error_message: str | None = None
+    created_at: datetime
+    updated_at: datetime
+
+
 class OrchestratorClient(BaseModel):
     model_config = ConfigDict(from_attributes=True)
 

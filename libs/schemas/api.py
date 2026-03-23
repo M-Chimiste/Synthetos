@@ -6,6 +6,8 @@ from typing import Any, Literal
 from pydantic import BaseModel, Field
 
 from libs.schemas.domain import (
+    ArxivPaper,
+    ArxivSyncRun,
     DomainEventEnvelope,
     EvidenceCard,
     ExperimentSpec,
@@ -164,6 +166,19 @@ class LiteratureTriageResponse(BaseModel):
 
 class RetrievalSessionListResponse(BaseModel):
     items: list[SourceRetrievalSession]
+
+
+class PaperSearchHit(BaseModel):
+    paper: ArxivPaper
+    hybrid_score: float
+    vector_score: float | None = None
+    lexical_score: float | None = None
+
+
+class PaperSearchResponse(BaseModel):
+    items: list[PaperSearchHit]
+    total: int
+    sync_runs: list[ArxivSyncRun] = Field(default_factory=list)
 
 
 # ---------------------------------------------------------------------------

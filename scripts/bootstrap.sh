@@ -3,6 +3,5 @@ set -euo pipefail
 
 uv sync
 docker compose up -d postgres
-uv run alembic upgrade head || true
-echo "Phase 0 bootstrap complete."
-
+uv run alembic upgrade head
+echo "Semantic-search bootstrap complete."

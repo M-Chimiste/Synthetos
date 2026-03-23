@@ -44,11 +44,21 @@ class PolicyConfig(BaseModel):
         return errors
 
 
+class EmbeddingConfig(BaseModel):
+    provider: str = "sentence_transformers"
+    model_id: str = "Alibaba-NLP/gte-modernbert-base"
+    dimension: int = 768
+    batch_size: int = 16
+    device: str = "cpu"
+    normalize: bool = True
+
+
 class AppConfig(BaseModel):
     env: str = "dev"
     db_url: str = "sqlite:///./synthetos.db"
     data_root: Path = Path(".lab_data")
     model_config_path: Path = Path("configs/models/routes.yaml")
+    embedding_config_path: Path = Path("configs/models/embeddings.yaml")
     policy_config_path: Path = Path("configs/policies/default.yaml")
     execution_images_path: Path = Path("configs/execution/images.yaml")
     execution_profiles_path: Path = Path("configs/execution/profiles.yaml")
@@ -59,6 +69,9 @@ class AppConfig(BaseModel):
     api_port: int = 8000
     auto_init_db: bool = True
     _policy: PolicyConfig | None = None
+    _embedding: EmbeddingConfig | None = None
+    arxiv_kaggle_dataset_path: Path | None = None
+    arxiv_sync_freshness_hours: int = 24
 
     def load_yaml(self, path: Path) -> dict[str, Any]:
         resolved = Path(path)
@@ -74,6 +87,13 @@ class AppConfig(BaseModel):
             raw = self.load_yaml(self.policy_config_path)
             self._policy = PolicyConfig.from_raw(raw)
         return self._policy
+
+    @property
+    def embedding(self) -> EmbeddingConfig:
+        if self._embedding is None:
+            raw = self.load_yaml(self.embedding_config_path)
+            self._embedding = EmbeddingConfig.model_validate(raw or {})
+        return self._embedding
 
     @property
     def reports_dir(self) -> Path:
@@ -94,6 +114,12 @@ class AppConfig(BaseModel):
     @property
     def datasets_dir(self) -> Path:
         return self.data_root / "cache" / "datasets"
+
+    @property
+    def arxiv_snapshot_path(self) -> Path:
+        if self.arxiv_kaggle_dataset_path is not None:
+            return self.arxiv_kaggle_dataset_path
+        return self.datasets_dir / "arxiv-metadata-oai-snapshot.json"
 
     def ensure_data_dirs(self) -> None:
         for directory in [
@@ -117,6 +143,9 @@ def get_config() -> AppConfig:
         db_url=os.getenv("LAB_DB_URL", "sqlite:///./synthetos.db"),
         data_root=Path(os.getenv("LAB_DATA_ROOT", ".lab_data")),
         model_config_path=Path(os.getenv("LAB_MODEL_CONFIG", "configs/models/routes.yaml")),
+        embedding_config_path=Path(
+            os.getenv("LAB_EMBEDDING_CONFIG", "configs/models/embeddings.yaml")
+        ),
         policy_config_path=Path(os.getenv("LAB_POLICY_CONFIG", "configs/policies/default.yaml")),
         execution_images_path=Path(
             os.getenv("LAB_EXECUTION_IMAGES_CONFIG", "configs/execution/images.yaml")
@@ -132,6 +161,12 @@ def get_config() -> AppConfig:
         api_host=os.getenv("LAB_API_HOST", "127.0.0.1"),
         api_port=int(os.getenv("LAB_API_PORT", "8000")),
         auto_init_db=os.getenv("LAB_AUTO_INIT_DB", "true").lower() == "true",
+        arxiv_kaggle_dataset_path=(
+            Path(os.environ["LAB_ARXIV_KAGGLE_DATASET"])
+            if os.getenv("LAB_ARXIV_KAGGLE_DATASET")
+            else None
+        ),
+        arxiv_sync_freshness_hours=int(os.getenv("LAB_ARXIV_SYNC_FRESHNESS_HOURS", "24")),
     )
     config.ensure_data_dirs()
     return config

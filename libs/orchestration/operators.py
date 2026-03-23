@@ -9,7 +9,6 @@ import structlog
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
-from libs.adapters.arxiv.adapter import ArxivAdapterConfig, ArxivMetadataAdapter
 from libs.adapters.container import DockerContainerAdapter
 from libs.adapters.corpus.adapter import CorpusAdapterConfig, InternalCorpusAdapter
 from libs.adapters.git import GitWorktreeAdapter
@@ -260,8 +259,9 @@ def source_retrieval_operator(
     cycle: ResearchCycleModel,
     job: JobModel,
 ) -> OperatorResult:
-    """Retrieve papers from arXiv metadata + internal corpus."""
+    """Retrieve papers from hybrid arXiv warehouse + internal corpus."""
     from libs.verification.failure_memory import aggregate_failure_guidance
+    from libs.retrieval.arxiv_warehouse import ArxivWarehouseService
 
     charter = session.get(ResearchCharterModel, cycle.charter_id)
     if charter is None:
@@ -277,6 +277,7 @@ def source_retrieval_operator(
     # Extract keywords from problem statement if none specified
     if not keywords and charter.problem_statement:
         keywords = charter.problem_statement.split()[:10]
+    query_text = " ".join(keywords).strip() if keywords else charter.problem_statement.strip()
 
     categories = source_scope.get("categories", ["cs"])
     date_from = overrides.get("date_from", source_scope.get("date_from"))
@@ -305,20 +306,32 @@ def source_retrieval_operator(
         }
     ]
 
-    # arXiv metadata
+    # arXiv warehouse-backed hybrid search
     arxiv_session = SourceRetrievalSessionModel(
         public_id=generate_public_id("retsess"),
         cycle_id=cycle.id,
-        source_type="arxiv_metadata",
-        query_params=query.model_dump(),
+        source_type="arxiv_warehouse",
+        query_params={**query.model_dump(), "query_text": query_text},
         status="running",
     )
     session.add(arxiv_session)
     session.flush()
 
     try:
-        arxiv_adapter = ArxivMetadataAdapter(ArxivAdapterConfig(max_results=max_results))
-        arxiv_papers = arxiv_adapter.search(query)
+        warehouse = ArxivWarehouseService(config)
+        warehouse.ensure_fresh(
+            session,
+            target_until=datetime.fromisoformat(date_until).replace(tzinfo=UTC) if date_until else None,
+        )
+        hits = warehouse.search(
+            session,
+            query_text=query_text,
+            limit=max_results,
+            categories=categories,
+            date_from=datetime.fromisoformat(date_from).replace(tzinfo=UTC) if date_from else None,
+            date_until=datetime.fromisoformat(date_until).replace(tzinfo=UTC) if date_until else None,
+        )
+        arxiv_papers = [warehouse.paper_to_raw_record(hit) for hit in hits]
         ingested = lit_svc.ingest_papers(session, cycle, arxiv_session, arxiv_papers)
         all_papers.extend(ingested)
         log.info("arxiv_retrieval_complete", count=len(ingested))
@@ -379,6 +392,7 @@ def source_retrieval_operator(
                     if keywords
                     else "- Keywords: derived from problem statement"
                 ),
+                f"- Hybrid query text: {query_text}",
                 f"- Query categories: {', '.join(categories)}",
                 f"- Date range: {date_from or 'any'} to {date_until or 'any'}",
                 (

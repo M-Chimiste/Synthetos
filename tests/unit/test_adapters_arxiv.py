@@ -44,3 +44,12 @@ def test_parse_oai_pmh_subcategory_filter():
     # Only the second record has cs.CL
     assert len(records) == 1
     assert records[0].external_id == "2401.00002"
+
+
+def test_build_params_omits_category_set_for_global_incremental_sync():
+    adapter = ArxivMetadataAdapter(ArxivAdapterConfig())
+    params = adapter._build_params("", "2024-01-01", "2024-01-31", None)
+
+    assert params["verb"] == "ListRecords"
+    assert params["metadataPrefix"] == "arXiv"
+    assert "set" not in params

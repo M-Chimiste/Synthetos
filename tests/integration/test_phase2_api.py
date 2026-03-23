@@ -125,12 +125,14 @@ def _run_phase1(client: TestClient, cycle_id: str) -> None:
     )
     assert resp.status_code == 200
 
-    # Source retrieval (mock arXiv)
+    # Source retrieval (mock warehouse search)
     sample = _sample_papers()
-    with patch("libs.orchestration.operators.ArxivMetadataAdapter") as MockAdapter:
+    with patch("libs.retrieval.arxiv_warehouse.ArxivWarehouseService") as MockWarehouse:
         mock_instance = MagicMock()
+        mock_instance.ensure_fresh.return_value = []
         mock_instance.search.return_value = sample
-        MockAdapter.return_value = mock_instance
+        mock_instance.paper_to_raw_record.side_effect = lambda hit: hit
+        MockWarehouse.return_value = mock_instance
         assert _run_worker(client) == "job_succeeded"
 
     # Literature screen (mock LLM)

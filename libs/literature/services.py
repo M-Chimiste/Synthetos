@@ -260,6 +260,16 @@ def ingest_papers(
     return created
 
 
+def ingest_raw_records(
+    session: Session,
+    cycle: ResearchCycleModel,
+    retrieval_session: SourceRetrievalSessionModel,
+    raw_records: list[RawPaperRecord],
+) -> list[PaperCardModel]:
+    """Alias used by retrieval adapters that already return RawPaperRecord objects."""
+    return ingest_papers(session, cycle, retrieval_session, raw_records)
+
+
 # ---------------------------------------------------------------------------
 # Screening
 # ---------------------------------------------------------------------------

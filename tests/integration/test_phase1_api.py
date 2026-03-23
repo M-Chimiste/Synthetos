@@ -178,14 +178,16 @@ def test_full_literature_pipeline_with_mock_adapters(client, tmp_config):
     )
     assert resp.status_code == 200
 
-    # Mock the ArxivMetadataAdapter to return sample papers
+    # Mock the warehouse-backed search service to return sample papers
     sample = _sample_papers()
     with patch(
-        "libs.orchestration.operators.ArxivMetadataAdapter"
-    ) as MockAdapter:
+        "libs.retrieval.arxiv_warehouse.ArxivWarehouseService"
+    ) as MockWarehouse:
         mock_instance = MagicMock()
+        mock_instance.ensure_fresh.return_value = []
         mock_instance.search.return_value = sample
-        MockAdapter.return_value = mock_instance
+        mock_instance.paper_to_raw_record.side_effect = lambda hit: hit
+        MockWarehouse.return_value = mock_instance
 
         # Run source_retrieval
         result = _run_worker(client)
@@ -275,10 +277,12 @@ async def test_events_stream_includes_shortlist_and_escalation_events(client):
     assert resp.status_code == 200
 
     sample = _sample_papers()
-    with patch("libs.orchestration.operators.ArxivMetadataAdapter") as MockAdapter:
+    with patch("libs.retrieval.arxiv_warehouse.ArxivWarehouseService") as MockWarehouse:
         mock_instance = MagicMock()
+        mock_instance.ensure_fresh.return_value = []
         mock_instance.search.return_value = sample
-        MockAdapter.return_value = mock_instance
+        mock_instance.paper_to_raw_record.side_effect = lambda hit: hit
+        MockWarehouse.return_value = mock_instance
         assert _run_worker(client) == "job_succeeded"
 
     mock_llm_response = json.dumps({

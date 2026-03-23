@@ -3,7 +3,7 @@
 **Product:** ML Laboratory Co-Scientist
 **Repository:** `Synthetos`
 **Last Updated:** 2026-03-23
-**Overall Status:** Phase 5.1 complete, Phase 5.2 not started
+**Overall Status:** Phase 5.2 in progress
 
 ---
 
@@ -12,7 +12,7 @@
 | Phase | Status | Notes |
 |-------|--------|-------|
 | Phase 0 — Foundation | Complete | Repo skeleton, Postgres schemas, state machine, operator contract, model gateway, skill loader, event stream, API spine |
-| Phase 1 — Literature Intake | Complete | Research charter, arXiv metadata adapter, internal corpus adapter, title+abstract triage, shortlist ranking, fulltext escalation, literature reports |
+| Phase 1 — Literature Intake | Complete | Research charter, internal corpus adapter, title+abstract triage, shortlist ranking, fulltext escalation, literature reports, plus canonical arXiv warehouse + hybrid semantic search |
 | Phase 2 — Evidence & Hypotheses | Complete | Evidence extraction, hypothesis generation/critique, protocol compilation, experiment specs |
 | Phase 3 — Execution Lab MVP | Complete | Git worktree isolation, Docker container execution with GPU support, run telemetry streaming (SSE), pause/cancel/retry controls, automation policy, artifact collection, failure classification, 3 Phase 3 skills, run API endpoints |
 | Phase 4 — Verification | Complete | Same-charter history, policy-driven checks, output-contract validation, next-step recommendations, cycle verification summaries, failure-memory feedback loops, web UI visibility |
@@ -101,6 +101,40 @@
 
 ---
 
+## What Was Done (Current Session)
+
+### Semantic arXiv warehouse + hybrid search
+- Added canonical `arxiv_papers` warehouse table and `arxiv_sync_runs` tracking table (migration `20260323_000010`)
+- Added Postgres pgvector/HNSW and full-text search index creation through Alembic for semantic paper search
+- Added local embedding adapter using Sentence Transformers with `Alibaba-NLP/gte-modernbert-base`
+- Added dedicated embedding config at `configs/models/embeddings.yaml` and related env/config plumbing
+- Added warehouse service for:
+  - one-time Kaggle snapshot bootstrap
+  - incremental OAI-PMH delta sync
+  - deduplicated upsert by `arxiv_id`
+  - re-embedding only when title/abstract content changes
+  - hybrid lexical + vector search
+- Added global paper search API endpoint: `GET /api/v1/papers/search`
+- Added CLI commands:
+  - `synthetos papers search`
+  - `synthetos papers sync-arxiv`
+- Updated literature intake so the arXiv branch now:
+  - ensures warehouse freshness
+  - runs warehouse-backed hybrid search
+  - imports hits into cycle `paper_cards`
+  - preserves the existing LLM screening / shortlist / escalation flow
+- Updated bootstrap to run Alembic cleanly for Postgres-backed semantic search setup
+- Added targeted tests for:
+  - OAI global-sync parameter handling
+  - warehouse snapshot parsing
+  - dedupe/re-embedding rules
+  - hybrid ranking fusion
+  - Phase 1 / Phase 2 integration flow using the new warehouse search path
+- Verification run completed for the focused semantic-search slice:
+  - 20 tests passing via `uv run --no-sync pytest tests/unit/test_adapters_arxiv.py tests/unit/test_arxiv_warehouse.py tests/integration/test_phase1_api.py tests/integration/test_phase2_api.py`
+
+---
+
 ## What Was Done (Phase 4)
 
 - 3-operator verification pipeline, policy-driven checks, output-contract validation
@@ -121,6 +155,9 @@
 ## What Needs To Be Done Next (Phase 5.2)
 
 - Pilot exercises on public ML benchmark tasks and internal research problems
+- Run `uv sync` in a network-enabled environment so the new `sentence-transformers` / `kaggle` dependencies are locked and installed consistently
+- Execute the first real Postgres-backed full Kaggle bootstrap and incremental OAI sync against a local database
+- Add Postgres integration coverage for the warehouse search API and sync commands beyond the current focused SQLite-safe/unit-mocked slice
 - End-to-end usage validation from external orchestrator harness
 - Run a real local Docker smoke test for the offline benchmark on `cpu-small`
 - Validate optional `gpu-small` behavior on a machine with GPU runtime support

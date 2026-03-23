@@ -1,0 +1,6 @@
+provider: sentence_transformers
+model_id: Alibaba-NLP/gte-modernbert-base
+dimension: 768
+batch_size: 16
+device: cpu
+normalize: true

@@ -17,6 +17,7 @@ from libs.core.logging import configure_logging
 from libs.core.policy import Actor, TokenScope
 from libs.orchestration.job_queue import enqueue_job
 from libs.orchestration.worker import run_worker_once
+from libs.retrieval.arxiv_warehouse import ArxivWarehouseService
 from libs.schemas.api import (
     CreateCycleRequest,
     CycleCommandRequest,
@@ -38,6 +39,8 @@ from libs.schemas.api import (
     LiteratureTriageResponse,
     PaperCardDetail,
     PaperListResponse,
+    PaperSearchHit,
+    PaperSearchResponse,
     PortfolioRankingResponse,
     ReportDetailResponse,
     ReportListResponse,
@@ -241,6 +244,47 @@ def list_papers(
 ) -> PaperListResponse:
     items = services.list_papers_for_cycle(session, cycle_id, status_filter=status)
     return PaperListResponse(items=items, total=len(items))
+
+
+@app.get("/api/v1/papers/search", response_model=PaperSearchResponse)
+def search_papers(
+    query: str,
+    limit: int = Query(default=20, ge=1, le=100),
+    categories: str | None = Query(default=None),
+    date_from: str | None = Query(default=None),
+    date_until: str | None = Query(default=None),
+    actor: Actor = Depends(require_scopes(TokenScope.CYCLES_READ)),
+    session: Session = Depends(get_db),
+) -> PaperSearchResponse:
+    config = get_config()
+    warehouse = ArxivWarehouseService(config)
+    target_until = datetime.fromisoformat(date_until).replace(tzinfo=UTC) if date_until else None
+    sync_runs = warehouse.ensure_fresh(session, target_until=target_until)
+    category_list = [item.strip() for item in (categories or "").split(",") if item.strip()]
+    hits = warehouse.search(
+        session,
+        query_text=query,
+        limit=limit,
+        categories=category_list,
+        date_from=datetime.fromisoformat(date_from).replace(tzinfo=UTC) if date_from else None,
+        date_until=target_until,
+    )
+    recent_runs = sync_runs or warehouse.recent_sync_runs(session, limit=5)
+    from libs.schemas.domain import ArxivPaper, ArxivSyncRun
+
+    return PaperSearchResponse(
+        items=[
+            PaperSearchHit(
+                paper=ArxivPaper.model_validate(hit.paper),
+                hybrid_score=hit.hybrid_score,
+                vector_score=hit.vector_score,
+                lexical_score=hit.lexical_score,
+            )
+            for hit in hits
+        ],
+        total=len(hits),
+        sync_runs=[ArxivSyncRun.model_validate(run) for run in recent_runs],
+    )
 
 
 @app.get("/api/v1/cycles/{cycle_id}/papers/{paper_id}", response_model=PaperCardDetail)

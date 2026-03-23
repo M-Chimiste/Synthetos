@@ -52,7 +52,7 @@ class ArxivMetadataAdapter(LiteratureSourceAdapter):
         resumption_token: str | None = None
         max_results = query.max_results or self.config.max_results
 
-        category = query.categories[0] if query.categories else "cs"
+        category = query.categories[0] if query.categories else ""
 
         while True:
             params = self._build_params(
@@ -100,8 +100,9 @@ class ArxivMetadataAdapter(LiteratureSourceAdapter):
         params: dict[str, str] = {
             "verb": "ListRecords",
             "metadataPrefix": "arXiv",
-            "set": f"{category}",
         }
+        if category:
+            params["set"] = f"{category}"
         if date_from:
             params["from"] = date_from
         if date_until:

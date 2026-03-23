@@ -2,6 +2,8 @@ from __future__ import annotations
 
 from functools import lru_cache
 
+from alembic import command
+from alembic.config import Config as AlembicConfig
 from sqlalchemy import create_engine
 from sqlalchemy.engine import Engine
 from sqlalchemy.orm import Session, sessionmaker
@@ -31,6 +33,10 @@ def get_session_factory(config: AppConfig) -> sessionmaker[Session]:
 
 
 def initialize_database(config: AppConfig) -> None:
+    if config.db_url.startswith("postgresql"):
+        alembic_cfg = AlembicConfig("alembic.ini")
+        alembic_cfg.set_main_option("sqlalchemy.url", config.db_url)
+        command.upgrade(alembic_cfg, "head")
+        return
     engine = get_engine(config.db_url)
     Base.metadata.create_all(engine)
-
