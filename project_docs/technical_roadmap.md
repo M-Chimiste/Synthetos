@@ -25,13 +25,13 @@ This roadmap defines four phases to get there. Each phase is scoped to be indepe
 
 ## 2. Design Principles
 
-### 2.1 Deterministic first, LLM second
+### 2.1 The LLM wrote the code — it should fix the code
 
-The current verification system gets this right: outcome is determined by checks, the LLM explains. This principle extends to all new tiers. Auto-remediation is a lookup table. Directional signal is arithmetic on metrics. The LLM is called only when deterministic logic can't resolve ambiguity.
+The LLM generates the experiment code. When that code fails, the natural feedback loop is sending the error back to the same model. Even "obvious" fixes benefit from LLM context: a regex sees `No module named torch` and installs `torch`; the LLM sees the same error, notices the CUDA dependency, and installs `torch==2.3.1+cu121`. For directional signal and verification outcomes, deterministic checks come first and the LLM interprets — but for code-level remediation, the LLM is always in the loop.
 
 ### 2.2 The interesting failure is a successful run with bad results
 
-OOM is not interesting — halve batch size and retry. A run that completes, produces valid metrics, and shows the hypothesis moving the wrong direction? That's the signal the co-scientist needs to reason about. The system should spend its intelligence budget here, not on infrastructure.
+A missing dependency is a speed bump, not a research finding. A run that completes, produces valid metrics, and shows the hypothesis moving the wrong direction? That's the signal the co-scientist needs to reason about. The system should resolve mechanical failures quickly (with LLM help) so it can spend its real intelligence budget on interpreting experimental results.
 
 ### 2.3 Autonomy is the default, escalation is the exception
 
@@ -65,67 +65,89 @@ Autoresearch's binary keep/discard on a single scalar is crude but decisive. Our
 
 ## 4. Phase A — Auto-Remediation Layer
 
-**Goal:** Mechanical failures never reach the LLM. Infrastructure noise is handled by a deterministic retry-with-fix loop.
+**Goal:** Mechanical failures are resolved autonomously through LLM-assisted remediation. The system fixes its own mistakes, iterating on errors the way a developer would — reading the stack trace, understanding the context, and patching the code.
 
-**Why first:** This is the highest-ROI change. It eliminates wasted LLM calls and compute on problems with known solutions, freeing the system to focus on experimental signal.
+**Why first:** This is the highest-ROI change. The LLM writes the experiment code. When that code fails, the natural loop is feeding the error back to the same model for a fix. The current system generates an expensive postmortem for every failure, including trivial ones a developer would fix in 30 seconds. This phase replaces that with a tight remediation loop that resolves most failures without human intervention.
 
-### A.1 Two-Stage Remediation
+### A.1 LLM-Assisted Remediation
 
-Mechanical failures get a **fast deterministic fix first**, then **LLM-assisted debugging if the fast fix doesn't work**. The LLM is writing the experiment code, so feeding stack traces and error context back to it for a code-level fix is the natural loop.
+Every mechanical failure goes through the LLM. The difference is **how much context the LLM needs** and **what kind of fix it produces**. For well-understood failure classes, the LLM gets a focused prompt with strong priors (e.g., "this is a missing dependency — figure out which package and version to install"). For unknown failures, the LLM gets the full error context and more latitude.
 
-**Stage 1 — Deterministic fix (no LLM):**
+**Known failure patterns — focused LLM call (cheap, fast):**
 
-| Failure Class | Fast Fix | Max Attempts |
-|---------------|----------|--------------|
-| `dependency_failure` | Parse missing module from stderr, add to `requirements.txt` / build recipe, rebuild container, retry | 2 |
-| `oom_or_resource_limit` | Halve batch size in experiment spec (or step up execution profile if available), retry | 2 |
-| `timeout` | Double timeout limit (up to policy max), retry | 1 |
-| `metric_parse_failure` | Inject metrics-writing wrapper into run script, retry | 1 |
-| `invalid_artifact_output` | Inject artifact manifest writer, retry | 1 |
+| Failure Class | Context Given to LLM | Expected Fix Type |
+|---------------|---------------------|-------------------|
+| `dependency_failure` | Stderr with import error, current requirements.txt, experiment spec | Package name + version pin to add to build recipe |
+| `oom_or_resource_limit` | Model architecture from spec, batch size, dataset size, available profiles | Batch size reduction, gradient checkpointing, or profile step-up |
+| `timeout` | Runtime duration, what phase was running (data load vs training), resource snapshot | Timeout extension, data loading optimization, or early stopping config |
+| `metric_parse_failure` | Generated code's output section, expected metrics format from spec | Code patch to fix metrics serialization |
+| `invalid_artifact_output` | Generated code's artifact writing section, expected output contract | Code patch to produce the declared artifacts |
 
-**Stage 2 — LLM-assisted debugging (if Stage 1 fails or isn't applicable):**
+These use a **focused prompt template** per failure class — the LLM isn't doing open-ended debugging, it's answering a specific question with strong constraints. This keeps the call cheap (~500 tokens out) and fast.
 
-| Failure Class | LLM Action |
-|---------------|-----------|
-| `runtime_exception` | Feed stack trace + experiment code + stderr to coder/debugger route. LLM patches the generated code and retries. |
-| `dependency_failure` (Stage 1 exhausted) | LLM analyzes the full dependency conflict, suggests version pins or alternative packages. |
-| `oom_or_resource_limit` (Stage 1 exhausted) | LLM reviews the code for memory inefficiencies (e.g., loading full dataset into memory, redundant copies). |
-| `metric_parse_failure` (Stage 1 exhausted) | LLM reads the experiment code's output logic and fixes the metrics serialization. |
-| Any failure with stack trace | LLM gets: original experiment spec, generated code, full stderr/stack trace, and the failure class. Returns a code patch + explanation. |
+**Unknown failures — full debugging LLM call (more expensive, deeper):**
 
-This creates a natural feedback loop: the LLM writes the experiment code (in the coding operator), and when that code fails, the stack trace and error context flow back to the same model route for debugging — similar to how a developer would read their own error output.
+| Failure Class | Context Given to LLM | Expected Fix Type |
+|---------------|---------------------|-------------------|
+| `runtime_exception` | Full stderr/stack trace, generated code, experiment spec, prior remediation attempts | Code patch (unified diff) + explanation |
+| Any failure after focused fix fails | All of the above, plus the focused fix that was tried and why it didn't work | Revised code patch informed by the failed attempt |
+
+The full debugging call uses a **general debug prompt** that gives the LLM the complete picture. The LLM wrote the code — it should be able to read its own stack trace and fix it.
+
+**Key design point:** The LLM is *always* in the loop, even for "obvious" fixes. A regex parser would see `No module named torch` and install `torch`. The LLM sees the same error but also understands that the experiment uses CUDA, so it installs `torch` with the right CUDA index URL and pins the version compatible with the other deps. The LLM's contextual understanding is what makes remediation actually work.
 
 ### A.2 Remediation Operator
 
 New operator: `auto_remediate_operator`. Runs *before* the postmortem operator in the verification chain.
 
-- Input: run record with failure classification, stderr, generated code
-- **Stage 1**: Check deterministic remediation table. If a fast fix exists and under attempt limit: apply fix, enqueue retry, emit `auto_remediated` event with `stage: "deterministic"`
-- **Stage 2**: If Stage 1 fails or isn't applicable, and the failure has a stack trace or meaningful stderr: call LLM debugger route with the error context + original code. If LLM produces a code patch: apply patch, enqueue retry, emit `auto_remediated` event with `stage: "llm_debug"`
-- **Escalate**: If both stages exhausted: pass through to existing postmortem operator for full analysis
+- Input: run record with failure classification, stderr, generated code, experiment spec, prior remediation lineage
+- **Attempt 1 (focused):** If failure class is recognized, use the focused prompt template for that class. LLM returns a targeted fix (spec mutation, code patch, or build recipe change). Apply fix, enqueue retry, emit `auto_remediated` event.
+- **Attempt 2+ (escalated):** If the focused fix didn't resolve the failure, escalate to the full debug prompt with the prior attempt's context included. The LLM knows what was already tried.
+- **Give up:** If max remediation attempts reached, or if the LLM returns a low-confidence fix, pass through to the existing postmortem operator for full structured analysis.
 
-### A.3 Spec Mutation & Code Patching Primitives
+The operator maintains a **remediation conversation** — each attempt builds on the previous one, similar to a developer iterating on a fix. The LLM sees what it tried last time and why it didn't work.
 
-**Deterministic mutations** (Stage 1) — modify ExperimentSpec or RunSpec:
+### A.3 Fix Primitives
 
-- `add_dependency(spec, package_name)` — adds to `resource_requirements.packages`
-- `reduce_batch_size(spec, factor=0.5)` — halves batch size in method params
-- `step_up_profile(spec, available_profiles)` — moves to next execution profile
-- `extend_timeout(spec, factor=2.0, max_seconds)` — doubles timeout within policy limit
+The LLM's output is parsed into one or more **fix actions** that the remediation operator applies:
 
-**LLM code patches** (Stage 2) — modify the generated experiment code:
+**Spec/config mutations:**
+- `add_dependency(spec, package, version, index_url)` — adds to build recipe with version pin
+- `reduce_batch_size(spec, new_size)` — LLM chooses the appropriate size given model architecture
+- `step_up_profile(spec, target_profile)` — moves to a profile with more resources
+- `extend_timeout(spec, new_timeout, reason)` — LLM justifies the extension
+- `modify_hyperparameter(spec, param_path, new_value)` — generic spec mutation
 
-- `debug_and_patch(code, stderr, stack_trace, spec, model_route)` — sends error context to LLM debugger route, returns a code diff + explanation
-- The LLM receives: the original experiment spec (what the code is supposed to do), the generated code (what was written), the full stderr/stack trace (what went wrong), and the failure classification (category of problem)
-- The LLM returns: a code patch (unified diff or replacement), an explanation of the fix, and a confidence level
-- Low-confidence patches (LLM unsure of the fix) are logged but not auto-applied — escalated to postmortem instead
+**Code patches:**
+- `patch_code(workspace, diff)` — applies a unified diff to the generated experiment code
+- `replace_code_section(workspace, file, old_section, new_section)` — targeted replacement
 
-**Lineage tracking**: Every mutation (deterministic or LLM) is recorded in `remediation_lineage` on the new run, creating an audit trail of what was tried:
+**Build recipe changes:**
+- `add_system_package(recipe, package)` — adds an OS-level package to the container build
+- `change_base_image(recipe, new_image)` — switches to a different base container
+
+**Lineage tracking:** Every fix is recorded in `remediation_lineage` on the new run:
 
 ```
 remediation_lineage: [
-  {stage: "deterministic", action: "reduce_batch_size", factor: 0.5, attempt: 1},
-  {stage: "llm_debug", model_route: "debugger", patch_summary: "Fixed tensor shape mismatch in forward()", confidence: 0.85, attempt: 2}
+  {
+    attempt: 1,
+    failure_class: "dependency_failure",
+    prompt_type: "focused",
+    model_route: "debugger",
+    actions: [{type: "add_dependency", package: "torch", version: "2.3.1+cu121"}],
+    explanation: "Added torch with CUDA 12.1 support to match the container's CUDA toolkit",
+    confidence: 0.92
+  },
+  {
+    attempt: 2,
+    failure_class: "runtime_exception",
+    prompt_type: "full_debug",
+    model_route: "debugger",
+    actions: [{type: "patch_code", summary: "Fixed tensor device mismatch in forward()"}],
+    explanation: "Model weights were on CPU but input was on CUDA. Moved model.to(device) before training loop.",
+    confidence: 0.88
+  }
 ]
 ```
 
@@ -136,31 +158,38 @@ New policy section in `default.yaml`:
 ```yaml
 remediation:
   enabled: true
-  max_auto_remediations_per_run: 3
-  allowed_actions:
-    - install_dependency
+  max_attempts_per_run: 3           # budget cap prevents infinite loops — no confidence gating
+  allowed_fix_types:
+    - add_dependency
     - reduce_batch_size
     - step_up_profile
     - extend_timeout
-  escalate_after_exhaustion: true  # fall through to postmortem
+    - modify_hyperparameter
+    - patch_code
+    - add_system_package
+  blocked_fix_types:               # never auto-apply these
+    - change_base_image
+  escalate_after_exhaustion: true   # fall through to postmortem when attempts exhausted
+  model_route: debugger             # which model route handles remediation calls
 ```
 
 ### A.5 Changes to Existing Code
 
-- `failure_postmortem_operator` gains a guard: skip if `auto_remediate_operator` already handled the failure
-- `get_hypothesis_failure_caution()` excludes auto-remediated runs from penalty calculation (they're infrastructure, not experimental signal)
-- New domain event: `auto_remediated` with remediation action, original failure class, and lineage
+- `failure_postmortem_operator` gains a guard: skip if `auto_remediate_operator` already resolved the failure
+- `get_hypothesis_failure_caution()` excludes auto-remediated runs from penalty calculation — infrastructure fixes aren't experimental signal
+- New domain event: `auto_remediated` with the full remediation lineage
+- `classify_failure()` remains as-is — it provides the failure class that routes to the right focused prompt
 
 ### A.6 Acceptance Criteria
 
-- Dependency failure with "No module named torch" → Stage 1 auto-installs torch, retries, succeeds without human intervention
-- OOM on first run → Stage 1 halves batch size, second run succeeds
-- Runtime exception with stack trace → Stage 2 sends error to LLM debugger, LLM patches the code, retry succeeds
-- Stage 1 fix fails (e.g., dependency conflict persists) → Stage 2 LLM analyzes the full error, suggests version pin or alternative
-- Both stages exhausted → escalates to full postmortem operator
-- Low-confidence LLM patch → logged but not applied, escalates to postmortem
-- Remediation lineage is visible on the run record showing every fix attempt
-- Auto-remediated runs are excluded from hypothesis failure penalty
+- Dependency failure with "No module named torch" → focused LLM call installs torch with correct CUDA version, retry succeeds
+- OOM → focused LLM call analyzes model size and data, recommends appropriate batch size (not just blind halving), retry succeeds
+- Runtime exception with shape mismatch → full debug call reads the stack trace, patches the tensor operation, retry succeeds
+- First focused fix doesn't resolve the issue → second attempt escalates with prior context, LLM adjusts approach
+- All attempts exhausted → escalates to full postmortem operator with the entire remediation history attached
+- Every fix the LLM produces is applied (no confidence gating) — the attempt budget is the safety valve
+- Remediation lineage visible on run record showing every attempt, action, and explanation
+- Auto-remediated runs excluded from hypothesis failure penalty
 
 ---
 
@@ -199,26 +228,28 @@ New module: `libs/verification/trend.py`
 Research problems often have multiple metrics (accuracy + latency, F1 + inference time). When metrics conflict:
 
 - Charter declares a **primary metric** and optional **constraint metrics** with bounds
-- Primary metric direction drives the keep/discard decision
-- Constraint violations (latency > 100ms) trigger `constraint_violated` signal regardless of primary metric
-- When primary is `advancing` but a constraint is violated: `advancing_with_constraints` — the system should attempt to address the constraint without abandoning the approach
+- Primary metric direction drives the keep/discard decision for clear-cut cases
+- Constraint violations (latency > 100ms) are flagged regardless of primary metric direction
+- **When metrics conflict (primary advancing but constraint violated):** the full metric picture is sent to the LLM (verifier route) which decides whether to continue refining the current approach or pivot. This avoids brittle rules for tradeoffs that require judgment — e.g., a 3% accuracy gain might justify a 10ms latency increase in one context but not another
 
 ### B.4 Significance Thresholds
 
-Per-metric configurable thresholds in the experiment spec or charter:
+Relative thresholds, defined per-problem in the charter or experiment spec. Different research problems have wildly different metric scales — a 0.5% delta is meaningful for ImageNet accuracy but noise for a loss function. The hypothesis and experimental design drive what counts as meaningful change.
 
 ```yaml
 success_criteria:
   primary_metric: val_accuracy
   higher_is_better: true
-  significance_threshold: 0.005   # 0.5% change counts as meaningful
-  stall_window: 3                 # 3 consecutive runs below threshold = stalled
+  significance_threshold_pct: 0.5   # 0.5% relative change counts as meaningful
+  stall_window: 3                   # 3 consecutive runs below threshold = stalled
   constraint_metrics:
     - name: inference_time_ms
       upper_bound: 100
     - name: model_size_mb
       upper_bound: 500
 ```
+
+If no threshold is specified, the system defaults to a conservative relative threshold (1%) and logs a warning suggesting the researcher define one explicitly.
 
 ### B.5 Integration with Verification
 
@@ -261,39 +292,52 @@ Extend `configs/policies/default.yaml`:
 
 ```yaml
 autonomy:
-  mode: supervised          # supervised | autonomous | overnight
-  max_unattended_runs: 10   # hard cap before requiring human check-in
+  mode: supervised          # supervised | autonomous
   auto_pivot_on_stall: true
   auto_pivot_on_regression: true
   auto_continue_on_advancing: true
-  escalate_on_breakthrough: true
-  escalate_on_portfolio_exhausted: true
-  escalate_on_ambiguous_signal: true
-  budget_limits:
-    max_compute_hours: 8
-    max_runs_per_hypothesis: 5
-    max_total_runs: 50
+  auto_regenerate_hypotheses: true  # trigger literature re-intake when portfolio stalls
+  escalate_on_portfolio_exhausted: true  # only after re-generation also fails
 ```
 
-Three modes:
+Budget is set per-project by the user (on the charter or cycle), not in the global policy:
+
+```yaml
+# Example charter budget (set by user at project start)
+budget:
+  max_compute_hours: 8
+  max_runs_per_hypothesis: 5
+  max_total_runs: 50
+  max_wall_clock_hours: 12
+```
+
+Two modes:
 
 - **supervised** (current behavior): human approves each transition
-- **autonomous**: system executes the full loop, escalates only at defined boundaries
-- **overnight**: autonomous + relaxed escalation (only on portfolio exhaustion or budget limits)
+- **autonomous**: system executes the full loop including hypothesis re-generation, escalates only on true portfolio exhaustion (after re-generation) or user-defined budget limits
 
 ### C.2 Loop Operator
 
 New operator: `autonomous_loop_operator`. Replaces the current linear operator pipeline when autonomy mode is enabled.
 
 ```
-while budget_remaining and portfolio_not_exhausted:
+while budget_remaining:
     hypothesis = pick_next_hypothesis(portfolio)
-    spec = generate_or_reuse_experiment_spec(hypothesis)
 
+    if hypothesis is None:
+        # Portfolio stalled — attempt re-generation before giving up
+        if auto_regenerate_hypotheses and regeneration_budget_remaining:
+            run_literature_intake_sub_loop()   # retrieve → synthesize → generate → rank
+            continue                            # re-enter loop with refreshed portfolio
+        else:
+            escalate: "portfolio exhausted after re-generation"
+            break
+
+    spec = generate_or_reuse_experiment_spec(hypothesis)
     run = execute_run(spec)
 
-    if run.failed and auto_remediable:
-        run = auto_remediate_and_retry(run)  # Phase A
+    if run.failed:
+        run = auto_remediate_and_retry(run)    # Phase A — LLM fixes the code
 
     if run.succeeded:
         signal = evaluate_directional_signal(run)  # Phase B
@@ -301,23 +345,24 @@ while budget_remaining and portfolio_not_exhausted:
         match signal:
             case advancing:
                 update_frontier(run)
-                continue with same hypothesis (maybe intensify)
+                # continue with same hypothesis (maybe intensify)
             case stalled:
                 if runs_on_this_hypothesis >= max_runs_per_hypothesis:
                     mark_hypothesis_stalled, pick next
                 else:
                     suggest_parameter_variation, retry
             case regressing:
-                mark_hypothesis_regressing, pick next
+                mark_hypothesis_deprioritized, pick next
             case noisy:
                 increase_run_count, retry for statistical power
             case breakthrough:
                 update_frontier(run)
-                if escalate_on_breakthrough: notify human
-                else: continue
+                # continue — breakthroughs don't interrupt the loop
+            case conflicting_metrics:
+                pivot_decision = ask_llm_to_evaluate_tradeoff(run)
+                apply pivot_decision
 
-    if all hypotheses stalled or regressing:
-        escalate: "portfolio exhausted, need new hypotheses or literature"
+generate_completion_report()  # full research report as ReportBundle
 ```
 
 ### C.3 Hypothesis Lifecycle Transitions
@@ -336,27 +381,54 @@ Extend `HypothesisCard.status` with autonomous transitions:
 
 ### C.4 Run Budget Tracking
 
+Budget is **defined by the user at project start**, not dynamically allocated by the system. The user declares how much compute and how many loops the co-scientist gets.
+
 New fields on `ResearchCycle`:
 
-- `total_compute_minutes` — accumulated across all runs
-- `total_run_count` — count of completed runs
+- `budget_max_compute_minutes` — user-declared compute limit
+- `budget_max_total_runs` — user-declared max experiment count
+- `budget_max_wall_clock_hours` — user-declared time limit
+- `budget_max_runs_per_hypothesis` — user-declared per-hypothesis cap
+- `used_compute_minutes` — accumulated across all runs
+- `used_run_count` — count of completed runs
 - `runs_per_hypothesis` — dict of hypothesis_id → run count
 
-Budget checks run before each experiment. When limits hit, the loop stops cleanly with a summary of what was tried and where things stand.
+Budget checks run before each experiment. When any limit is hit, the loop stops cleanly and generates the completion report.
 
-### C.5 Overnight Mode
+### C.5 Per-Experiment Results Writeup
 
-When `autonomy.mode == "overnight"`:
+Every experiment produces a structured results writeup (not just metrics). This is the atomic unit of research documentation and feeds into both the completion report and long-term pattern learning.
+
+Each writeup covers:
+- **What was tried**: hypothesis, approach, key parameters
+- **What happened**: metrics, directional signal, any remediations applied
+- **Decision**: pivot to next hypothesis, double down with variation, or mark as promising
+- **Rationale**: why this decision was made (LLM-generated, grounded in the metrics)
+
+These writeups accumulate on the cycle and become the backbone of the completion report. They also provide the signal for measuring co-scientist effectiveness over time: what fraction of experiments produced positive signal vs negative signal? Is the system getting better at picking winners?
+
+Stored as lightweight `ReportBundle` entries (type: `experiment_result`) linked to the run record.
+
+### C.6 Autonomous Mode & Completion Report
+
+When `autonomy.mode == "autonomous"`:
 
 - Breakthroughs are logged but don't interrupt the loop
 - Stalled hypotheses are auto-pivoted without notification
-- The loop runs until budget exhaustion or portfolio exhaustion
-- On completion: generate a structured summary report covering all runs, pivots, and the final state of each hypothesis
-- The human reviews the summary in the morning, not individual run approvals
+- When the portfolio stalls, the system triggers hypothesis re-generation (literature re-intake → evidence synthesis → new hypotheses) before declaring exhaustion
+- The loop runs until budget exhaustion or true portfolio exhaustion (no viable hypotheses remain even after re-generation)
+- **On completion:** generate a full research report as a first-class `ReportBundle`. This is not a log dump — it's a structured report covering:
+  - Which hypotheses were tried and in what order
+  - Experimental results for each (metrics, frontier progression)
+  - Which approaches showed promise and which were dead ends
+  - The current metric frontier and best-performing configuration
+  - Remediation actions taken and their outcomes
+  - Recommendations for next steps (if any)
+- The human reviews a research report, not individual run approvals
 
-### C.6 Acceptance Criteria
+### C.7 Acceptance Criteria
 
-- Overnight mode: system runs 10+ experiments across 3+ hypotheses without human input
+- Autonomous mode: system runs 10+ experiments across 3+ hypotheses without human input
 - Auto-pivot: hypothesis stalls after 3 runs → system picks next ranked hypothesis and continues
 - Budget enforcement: loop stops at compute hour limit with clean summary
 - Portfolio exhaustion: all hypotheses stalled/regressing → system stops and requests new literature intake
@@ -383,13 +455,14 @@ New entity: `CanonicalPattern`
 CanonicalPattern:
   public_id: str
   pattern_type: str           # "failure_pattern" | "method_pattern" | "signal_pattern"
+  polarity: str               # "positive" (do this) | "negative" (don't do this)
   title: str                  # "OOM on large tabular datasets with default batch size"
   description: str            # 2-3 sentence abstract
   trigger_conditions: list    # When does this pattern apply?
   proven_actions: list        # What worked? [{action, success_rate, evidence_count}]
-  disproven_actions: list     # What didn't work?
+  disproven_actions: list     # What didn't work? [{action, failure_rate, evidence_count}]
   evidence_refs: list         # Links to source postmortems/runs across charters
-  confidence_score: float     # Based on evidence count and consistency
+  evidence_count: int         # Total observations supporting this pattern
   staleness_context: dict     # Environment assumptions (torch version, hardware, etc.)
   created_at: datetime
   updated_at: datetime
@@ -436,18 +509,23 @@ Patterns have an environmental context (Python version, framework versions, hard
 
 ### D.6 Hermes-Inspired Skill Extraction
 
-When a canonical pattern reaches high confidence (5+ evidence refs, 80%+ success rate), the system can extract it as a **procedural skill** — a reusable instruction set that gets injected into operator context.
+Canonical patterns are extracted at **any confidence threshold** — the system learns from both successes and failures. Negative patterns ("data augmentation on tabular data consistently hurts performance") are as valuable as positive ones, specifically to prevent the system from repeating failed approaches.
 
-Example: a failure pattern about CUDA compatibility evolves into a skill that proactively checks CUDA version before launching GPU runs.
+Pattern types and how they're applied:
 
-This bridges Hermes Agent's "skill files as procedural memory" concept into our operator architecture.
+- **Positive patterns** (proven actions): injected as suggestions into hypothesis generation and experiment design. "Learning rate warmup improves transformer fine-tuning convergence" → the hypothesis generator considers warmup when proposing transformer experiments.
+- **Negative patterns** (disproven actions): injected as warnings. "Random rotation augmentation degrades tabular model accuracy" → the hypothesis generator avoids this approach or explicitly justifies diverging from the pattern.
+- **Failure remediation patterns**: fed into the auto-remediation operator as prior knowledge. "CUDA OOM on models >500M params with batch size >32 on A100" → the remediation operator starts with a smaller batch size instead of discovering this through trial and error.
+
+This bridges Hermes Agent's "skill files as procedural memory" concept into our operator architecture. The key difference from Hermes: we extract patterns from both success *and* failure trajectories, not just successful complex tasks.
 
 ### D.7 Acceptance Criteria
 
-- After 20+ runs across 3+ charters: at least 2 canonical patterns auto-generated
-- Pattern with "reduce batch size on OOM" matches across charters with high confidence
-- Pattern confidence decays when environment context changes
-- Patterns with 80%+ success rate are usable by auto-remediation without LLM postmortem
+- After 20+ runs across 3+ charters: both positive and negative patterns auto-generated
+- Negative pattern ("X consistently fails in context Y") prevents the hypothesis generator from proposing X in similar contexts
+- Positive pattern ("reduce batch size on OOM") is applied by auto-remediation without rediscovering it each time
+- Pattern staleness decay triggers when environment context changes (e.g., framework version bump)
+- Consolidation runs on configured time interval without manual triggering
 - Human can view, confirm, or dismiss patterns through the API/UI
 
 ---
@@ -485,30 +563,31 @@ Phases A and B can be developed in parallel — they're independent. Phase C dep
 | Policy Key | Phase | Purpose |
 |------------|-------|---------|
 | `remediation.enabled` | A | Toggle auto-remediation |
-| `remediation.allowed_actions` | A | Which auto-fixes are permitted |
-| `remediation.max_auto_remediations_per_run` | A | Cap per-run auto-fix attempts |
-| `signal.significance_threshold` | B | Minimum delta to count as meaningful |
-| `signal.stall_window` | B | Consecutive below-threshold runs to declare stall |
-| `autonomy.mode` | C | supervised / autonomous / overnight |
-| `autonomy.max_unattended_runs` | C | Hard cap before human check-in |
+| `remediation.allowed_fix_types` | A | Which auto-fixes are permitted |
+| `remediation.max_attempts_per_run` | A | Cap per-run fix attempts (the only safety valve — no confidence gating) |
+| `remediation.model_route` | A | Which model route handles remediation LLM calls |
+| Charter `success_criteria.significance_threshold_pct` | B | Relative minimum delta to count as meaningful (per-problem) |
+| Charter `success_criteria.stall_window` | B | Consecutive below-threshold runs to declare stall (per-problem) |
+| `autonomy.mode` | C | supervised / autonomous |
 | `autonomy.auto_pivot_on_stall` | C | Auto-switch hypothesis on stall |
-| `autonomy.budget_limits.*` | C | Compute hours, run counts |
-| `memory.consolidation_interval` | D | How often to run pattern consolidation |
-| `memory.confidence_decay_rate` | D | Monthly decay multiplier for stale patterns |
+| `autonomy.auto_regenerate_hypotheses` | C | Trigger literature re-intake when portfolio stalls |
+| Charter `budget.*` | C | User-defined compute hours, run counts, wall clock hours (per-project) |
+| `memory.consolidation_interval_hours` | D | Time-based trigger for pattern consolidation |
+| `memory.staleness_decay_rate` | D | Monthly decay multiplier for stale patterns |
 
 ---
 
 ## 11. Files Likely Affected
 
 ### Phase A
-- `libs/execution/artifacts.py` — extend `classify_failure()` or add `lookup_remediation()`
-- `libs/orchestration/operators.py` — new `auto_remediate_operator` (two-stage)
-- `libs/execution/remediation.py` — new module: deterministic remediation table + spec mutation primitives
-- `libs/execution/debug.py` — new module: LLM code patching (`debug_and_patch()`, error context assembly)
+- `libs/execution/artifacts.py` — `classify_failure()` unchanged, provides routing to correct prompt
+- `libs/orchestration/operators.py` — new `auto_remediate_operator`
+- `libs/execution/remediation.py` — new module: fix primitives (spec mutations, code patching, build recipe changes)
+- `libs/execution/debug.py` — new module: LLM remediation calls (context assembly, response parsing, confidence evaluation)
 - `libs/verification/failure_memory.py` — exclude auto-remediated runs from penalty
 - `configs/policies/default.yaml` — new `remediation` section
-- `configs/models/routes.yaml` — new `debugger` model route for Stage 2 LLM calls
-- `prompts/remediation/v1/debug_code.md` — prompt template for LLM code debugging
+- `configs/models/routes.yaml` — new `debugger` model route
+- `prompts/remediation/v1/` — focused prompt templates per failure class + general debug prompt
 - `libs/schemas/domain.py` — `RemediationAction` schema with lineage
 
 ### Phase B
@@ -526,8 +605,10 @@ Phases A and B can be developed in parallel — they're independent. Phase C dep
 - `libs/ideation/services.py` — autonomous hypothesis lifecycle transitions
 - `libs/schemas/domain.py` — `RunBudget`, extended `HypothesisCard` status values
 - `libs/storage/models.py` — budget tracking columns on `ResearchCycle`
+- `libs/reporting/` — per-experiment results writeup generation, completion report template
 - `configs/policies/default.yaml` — `autonomy` section
-- `prompts/` — overnight summary report template
+- `prompts/reporting/v1/experiment_result.md` — per-experiment writeup template
+- `prompts/reporting/v1/completion_report.md` — full research completion report template
 
 ### Phase D
 - `libs/memory/` — new package: canonical patterns, consolidation, retrieval
@@ -539,16 +620,34 @@ Phases A and B can be developed in parallel — they're independent. Phase C dep
 
 ---
 
-## 12. Open Questions
+## 12. Resolved Design Decisions
 
-1. **Metric significance**: Should the significance threshold be absolute (0.005) or relative (0.5%)? Relative makes more sense across diverse metrics but is harder to configure.
+1. **Metric significance**: Relative thresholds, not absolute. The threshold is defined per-problem in the charter's `success_criteria` or the experiment spec's declared metrics. Different research problems have wildly different scales — 0.5% is meaningful for ImageNet accuracy but noise for a loss function. The hypothesis and experimental design drive the threshold, not a global default.
 
-2. **Multi-metric weighting**: When primary metric advances but a constraint is violated, how aggressive should the system be? Always pivot, or attempt to fix the constraint while maintaining the approach?
+2. **Multi-metric weighting**: The LLM decides when to pivot. When primary metric advances but a constraint is violated, the directional signal evaluation sends the full metric picture to the LLM (verifier route) and asks: "given this tradeoff, should the system continue refining this approach or pivot?" This avoids brittle rules for situations that require judgment.
 
-3. **Overnight summary format**: What does the human need to see in the morning? A ranked list of hypotheses with their status? A frontier chart? A diff of what changed?
+3. **Completion summary format**: Not "overnight" specifically — the summary is generated when the agent reaches its configured time/budget limit for a research project. The output is a **full research report**: what hypotheses were tried, experimental results for each, which approaches showed promise, which were dead ends, and the current frontier. This is a first-class `ReportBundle` with a dedicated template, not a log dump.
 
-4. **Pattern consolidation trigger**: Time-based (every N days), event-based (every N cycles), or on-demand? Event-based is more responsive but harder to predict.
+4. **Pattern consolidation trigger**: Time-based, configured at research project start. The interval is set in the charter or policy (e.g., `memory.consolidation_interval_hours: 24`). Simpler than event-based, predictable, and avoids consolidation storms after bursts of activity.
 
-5. **Skill extraction threshold**: At what confidence level should a canonical pattern become a procedural skill that's always applied? Too low risks bad automation; too high wastes knowledge.
+5. **Skill extraction threshold**: Any threshold — both positive and negative results are extracted as patterns. A pattern that says "learning rate warmup helps transformer fine-tuning" is valuable. A pattern that says "data augmentation on tabular data consistently hurts performance" is equally valuable. The system should learn what *not* to try as much as what *to* try, specifically to avoid repeating failed approaches.
 
-6. **Hypothesis generation in the loop**: When the portfolio is stalled but not exhausted, should the system generate new hypotheses autonomously, or only pivot among existing ones? Generating new hypotheses mid-loop requires literature re-intake.
+6. **Hypothesis generation in the loop**: Yes, the system generates new hypotheses autonomously. When the existing portfolio stalls, the loop triggers literature re-intake and hypothesis generation before declaring portfolio exhaustion. This is a full sub-loop (retrieve → synthesize evidence → generate hypotheses → rank → continue), not just a shuffle of existing hypotheses.
+
+7. **Remediation confidence calibration**: Just try it. The cost of a failed fix attempt is a few minutes of compute. The cost of *not* trying (escalating to a postmortem, possibly waiting for a human) is much higher. The `max_attempts_per_run` budget cap prevents infinite loops. No confidence threshold gating — if the LLM produces a fix, apply it. Revisit if empirical data shows the system wasting significant compute on bad patches.
+
+---
+
+## 13. Resolved Design Decisions (continued)
+
+8. **Budget allocation**: Defined upfront by the user at project start. The user sets both the total number of experiment loops and compute limits (hours, runs). The system doesn't need to dynamically split budget between hypothesis re-generation and experiments — it operates within the user's declared budget and stops when it's spent.
+
+9. **Negative pattern representation**: Negative patterns are simply negative experimental results — "I tried X and the metrics got worse / didn't improve." No special constraint mechanism needed. They're stored the same way as positive patterns, just with negative signal. When the hypothesis generator sees prior evidence that approach X degraded metrics in a similar context, it factors that into its ranking naturally.
+
+10. **Pivot decision quality tracking**: Per-experiment results writeups. Every experiment produces a structured report discussing: what was tried, what happened, and the decision to pivot or double down. Over time, the system's effectiveness is measured by the ratio of positive-signal experiments to negative-signal experiments — are we getting better at picking hypotheses that work? This is a reportable metric, not a runtime gate.
+
+---
+
+## 14. Open Questions
+
+None currently. All design decisions resolved. Ready for detailed implementation planning.
