@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 from datetime import UTC, datetime
 from pathlib import Path
+from typing import Any
 
 import structlog
 from sqlalchemy import select
@@ -260,6 +261,8 @@ def source_retrieval_operator(
     job: JobModel,
 ) -> OperatorResult:
     """Retrieve papers from arXiv metadata + internal corpus."""
+    from libs.verification.failure_memory import aggregate_failure_guidance
+
     charter = session.get(ResearchCharterModel, cycle.charter_id)
     if charter is None:
         raise ValueError("Cycle is missing a charter")
@@ -287,12 +290,18 @@ def source_retrieval_operator(
         date_until=date_until,
         max_results=max_results,
     )
+    failure_guidance = aggregate_failure_guidance(session, charter_id=charter.id)
+    retrieval_guidance = failure_guidance["retrieval_guidance"][:3]
 
     all_papers = []
     events: list[dict] = [
         {
             "event_type": "source_retrieval_started",
-            "payload": {"cycle_public_id": cycle.public_id, "query": query.model_dump()},
+            "payload": {
+                "cycle_public_id": cycle.public_id,
+                "query": query.model_dump(),
+                "retrieval_hints": retrieval_guidance,
+            },
         }
     ]
 
@@ -375,6 +384,15 @@ def source_retrieval_operator(
                 (
                     "- Fulltext budget: "
                     f"{source_scope.get('fulltext_budget', {}).get('max_fetches', 'n/a')}"
+                ),
+                (
+                    "- Failure-memory retrieval hints: "
+                    + "; ".join(
+                        f"{item.get('query')} ({item.get('rationale', 'no rationale')})"
+                        for item in retrieval_guidance
+                    )
+                    if retrieval_guidance
+                    else "- Failure-memory retrieval hints: none"
                 ),
             ]),
         ),
@@ -1275,7 +1293,12 @@ def hypothesis_critique_operator(
             },
         })
 
-    ranked = ideation_svc.compute_portfolio_ranking(session, cycle.id, auto_approve_top_n=3)
+    ranked = ideation_svc.compute_portfolio_ranking(
+        session,
+        cycle.id,
+        auto_approve_top_n=3,
+        charter_id=charter.id,
+    )
     top_hyp = ranked[0] if ranked else None
 
     events.append({
@@ -1931,6 +1954,7 @@ def run_finalize_operator(
             ),
         ),
         skill_execution_records=skill_outcomes,
+        next_actions=[NextAction(action="run_verify", payload={"run_public_id": run.public_id})],
     )
 
 
@@ -2009,6 +2033,744 @@ def run_retry_repair_operator(
     )
 
 
+# ---------------------------------------------------------------------------
+# Phase 4 — Verification, Historical Comparison, Failure Memory
+# ---------------------------------------------------------------------------
+
+
+def run_verify_operator(
+    session: Session,
+    config: AppConfig,
+    actor: Actor,
+    cycle: ResearchCycleModel,
+    job: JobModel,
+) -> OperatorResult:
+    """Run verification checks and determine outcome for a completed run."""
+    from libs.storage.services import (
+        create_verification_report,
+    )
+    from libs.verification.checks import (
+        check_artifacts_present,
+        check_leakage_signals,
+        check_metric_sanity,
+        check_output_contract,
+        compare_to_baseline,
+        validate_split,
+    )
+    from libs.verification.historical import (
+        collect_historical_memory_refs,
+        compare_to_historical,
+        find_comparable_runs,
+    )
+    from libs.verification.outcome import determine_outcome
+    from libs.verification.recommendations import build_rerun_note
+
+    run = get_run_by_public_id(session, job.payload["run_public_id"])
+    spec = session.get(ExperimentSpecModel, run.experiment_spec_id)
+    if spec is None:
+        raise ValueError("Run is missing its experiment spec")
+
+    charter = session.get(ResearchCharterModel, cycle.charter_id)
+    verification_policy = (
+        config.load_yaml(config.policy_config_path).get("verification", {})
+    )
+    require_baseline_comparison = bool(
+        verification_policy.get("require_baseline_comparison", False)
+    )
+    require_historical_comparison = bool(
+        verification_policy.get("require_historical_comparison", False)
+    )
+    auto_postmortem_on_failure = bool(
+        verification_policy.get("auto_postmortem_on_failure", True)
+    )
+    leakage_check_enabled = bool(verification_policy.get("leakage_check_enabled", True))
+    split_validation_enabled = bool(verification_policy.get("split_validation_enabled", True))
+
+    skill_keys, skill_outcomes = _bound_skill_context(
+        session,
+        cycle,
+        job.operator_name,
+        influence="verification_review",
+        payload={"run_status": run.status, "has_metrics": bool(run.metrics_summary)},
+    )
+    _assign_run_public_id(skill_outcomes, run.public_id)
+
+    # ---- Deterministic checks ----
+    artifact_checks = check_artifacts_present(
+        run.artifact_manifest or {},
+        [],
+    )
+    output_contract_checks = check_output_contract(
+        run.artifact_manifest or {},
+        spec.expected_outputs or [],
+    )
+    metric_sanity_checks = check_metric_sanity(
+        run.metrics_summary or {},
+        spec.metrics or [],
+    )
+    baseline_comparison = compare_to_baseline(
+        run.metrics_summary or {},
+        spec.baseline_description or "",
+        spec.metrics or [],
+    )
+    leakage_signals = (
+        check_leakage_signals(
+            run.metrics_summary or {},
+            {"datasets": spec.datasets or [], "controls": spec.controls or []},
+        )
+        if leakage_check_enabled
+        else [{
+            "signal_name": "leakage_check_disabled",
+            "detected": False,
+            "detail": "Leakage checks disabled by policy",
+        }]
+    )
+    split_validation = (
+        validate_split(
+            run.metrics_summary or {},
+            {"datasets": spec.datasets or []},
+        )
+        if split_validation_enabled
+        else {
+            "intended_split": None,
+            "actual_split": None,
+            "matched": True,
+            "detail": "Split validation disabled by policy",
+        }
+    )
+
+    # ---- Historical comparison ----
+    prior_runs = find_comparable_runs(
+        session,
+        run,
+        spec,
+        charter_id=cycle.charter_id,
+    )
+    historical_comparisons = compare_to_historical(
+        run.metrics_summary or {},
+        prior_runs,
+        spec.metrics or [],
+    )
+    historical_memory_refs = collect_historical_memory_refs(session, prior_runs)
+
+    # ---- Determine outcome ----
+    outcome = determine_outcome(
+        run_status=run.status,
+        baseline_comparison=baseline_comparison,
+        metric_sanity_checks=metric_sanity_checks,
+        artifact_checks=artifact_checks,
+        output_contract_checks=output_contract_checks,
+        leakage_signals=leakage_signals,
+        split_validation=split_validation,
+        historical_comparisons=historical_comparisons,
+        require_baseline_comparison=require_baseline_comparison,
+        require_historical_comparison=require_historical_comparison,
+        leakage_check_enabled=leakage_check_enabled,
+        split_validation_enabled=split_validation_enabled,
+    )
+    rerun_note = build_rerun_note(
+        outcome=outcome.value,
+        run_status=run.status,
+        baseline_comparison=baseline_comparison,
+        historical_comparisons=historical_comparisons,
+        output_contract_checks=output_contract_checks,
+        metric_sanity_checks=metric_sanity_checks,
+    )
+
+    # ---- LLM review (only for non-failed runs) ----
+    prompt_id = "prompts/verification/v1/verification_review.md"
+    model_route_id = "deterministic"
+    fail_info = run.failure_classification or "none"
+    outcome_rationale = f"Run status: {run.status}. Failure: {fail_info}."
+    reviewer_summary = f"Outcome: {outcome.value}. Run {run.status}."
+
+    if run.status not in ("failed", "cancelled"):
+        try:
+            gateway = ModelGateway.from_config(config)
+            prompt_context = {
+                "charter_problem": charter.problem_statement if charter else "",
+                "experiment_title": spec.title,
+                "experiment_objective": spec.objective,
+                "baseline_description": spec.baseline_description,
+                "run_status": run.status,
+                "metrics_summary": json.dumps(run.metrics_summary or {}, sort_keys=True),
+                "exit_code": run.exit_code,
+                "baseline_comparison": json.dumps(baseline_comparison, sort_keys=True),
+                "historical_comparisons": historical_comparisons,
+                "historical_memory_refs": historical_memory_refs,
+                "metric_sanity_checks": metric_sanity_checks,
+                "artifact_checks": artifact_checks,
+                "output_contract_checks": output_contract_checks,
+                "leakage_signals": leakage_signals,
+                "split_validation": json.dumps(split_validation, sort_keys=True),
+                "outcome": outcome.value,
+            }
+            from jinja2 import Template
+
+            template_text = Path(prompt_id).read_text(encoding="utf-8")
+            rendered = Template(template_text).render(**prompt_context)
+            response = gateway.call_structured(
+                "verifier",
+                [{"role": "user", "content": rendered}],
+                temperature=0.3,
+                max_tokens=512,
+            )
+            if isinstance(response, dict):
+                outcome_rationale = response.get("outcome_rationale", outcome_rationale)
+                reviewer_summary = response.get("reviewer_summary", reviewer_summary)
+                model_route_id = gateway.resolve_route("verifier").id
+        except Exception:
+            log.warning("verification_llm_review_failed", run_public_id=run.public_id)
+
+    # ---- Persist verification report ----
+    hypothesis_card_id = spec.hypothesis_card_id if spec else None
+    vr = create_verification_report(
+        session,
+        cycle=cycle,
+        run=run,
+        experiment_spec=spec,
+        hypothesis_card_id=hypothesis_card_id,
+        outcome=outcome.value,
+        outcome_rationale=outcome_rationale,
+        baseline_comparison=baseline_comparison,
+        historical_comparisons=historical_comparisons,
+        metric_sanity_checks=metric_sanity_checks,
+        artifact_checks=artifact_checks,
+        output_contract_checks=output_contract_checks,
+        leakage_signals=leakage_signals,
+        split_validation=split_validation,
+        rerun_note=rerun_note,
+        reviewer_summary=reviewer_summary,
+        model_route_id=model_route_id,
+        prompt_id=prompt_id,
+    )
+    run.verification_outcome = outcome.value
+    session.flush()
+
+    events = [
+        {
+            "event_type": "run_verified",
+            "payload": {
+                "cycle_public_id": cycle.public_id,
+                "run_public_id": run.public_id,
+                "outcome": outcome.value,
+                "verification_report_public_id": vr.public_id,
+            },
+        }
+    ]
+
+    # Chain: failed/rejected → postmortem, otherwise → verification_report
+    needs_postmortem = auto_postmortem_on_failure and outcome.value in ("rejected", "invalid")
+    next_op = "failure_postmortem" if needs_postmortem else "verification_report"
+
+    return OperatorResult(
+        state_patch=StatePatch(
+            target_state=CycleStatus.VERIFYING,
+            reason=f"Verification complete: {outcome.value}",
+            context={
+                "run_public_id": run.public_id,
+                "phase": "phase4_verification",
+                "outcome": outcome.value,
+            },
+        ),
+        emitted_events=events,
+        operator_report=OperatorReport(
+            title=f"Verification: {run.public_id} — {outcome.value}",
+            prompt_id=prompt_id,
+            report_type="verification_check_report",
+            body_markdown="\n".join([
+                "# Verification Check Report",
+                "",
+                f"- Run: **{run.public_id}**",
+                f"- Outcome: **{outcome.value}**",
+                f"- Baseline passed: **{baseline_comparison.get('passed', 'N/A')}**",
+                f"- Historical comparisons: **{len(historical_comparisons)}**",
+                f"- Historical memory refs: **{len(historical_memory_refs)}**",
+                f"- Artifact checks: **{len(artifact_checks)}**",
+                f"- Output-contract checks: **{len(output_contract_checks)}**",
+                f"- Sanity checks failed: "
+                f"**{sum(1 for c in metric_sanity_checks if not c.get('passed'))}**",
+                f"- Leakage signals: **{sum(1 for s in leakage_signals if s.get('detected'))}**",
+                (f"- Rerun note: {rerun_note}" if rerun_note else "- Rerun note: none"),
+                "",
+                f"**Summary:** {reviewer_summary}",
+            ]),
+        ),
+        skill_execution_records=skill_outcomes,
+        next_actions=[NextAction(action=next_op, payload={
+            "run_public_id": run.public_id,
+            "verification_report_public_id": vr.public_id,
+            "postmortem_skipped_by_policy": (
+                not needs_postmortem and outcome.value in ("rejected", "invalid")
+            ),
+        })],
+    )
+
+
+def failure_postmortem_operator(
+    session: Session,
+    config: AppConfig,
+    actor: Actor,
+    cycle: ResearchCycleModel,
+    job: JobModel,
+) -> OperatorResult:
+    """Generate a structured postmortem for a failed or rejected run."""
+    from libs.storage.models import VerificationReportModel
+    from libs.storage.services import create_failure_postmortem
+    from libs.verification.historical import find_similar_postmortems
+
+    run = get_run_by_public_id(session, job.payload["run_public_id"])
+    spec = session.get(ExperimentSpecModel, run.experiment_spec_id)
+    if spec is None:
+        raise ValueError("Run is missing its experiment spec")
+
+    charter = session.get(ResearchCharterModel, cycle.charter_id)
+
+    skill_keys, skill_outcomes = _bound_skill_context(
+        session,
+        cycle,
+        job.operator_name,
+        influence="postmortem_analysis",
+        payload={
+            "failure_classification": run.failure_classification,
+            "run_status": run.status,
+        },
+    )
+    _assign_run_public_id(skill_outcomes, run.public_id)
+
+    # Determine failure class and stage
+    failure_class = run.failure_classification or run.verification_outcome or "unknown"
+    failure_stage = "execution" if run.status == "failed" else "verification"
+
+    # Load verification report if available
+    vr_public_id = job.payload.get("verification_report_public_id")
+    vr = None
+    vr_id = None
+    if vr_public_id:
+        vr = session.scalar(
+            select(VerificationReportModel).where(
+                VerificationReportModel.public_id == vr_public_id
+            )
+        )
+        vr_id = vr.id if vr else None
+
+    # Find similar prior postmortems
+    similar = find_similar_postmortems(
+        session,
+        failure_class,
+        charter_id=cycle.charter_id,
+        exclude_run_record_id=run.id,
+    )
+    similar_data = [
+        {
+            "postmortem_public_id": pm.public_id,
+            "failure_class": pm.failure_class,
+            "root_cause_summary": pm.root_cause_summary,
+        }
+        for pm in similar
+    ]
+
+    # LLM postmortem generation
+    prompt_id = "prompts/verification/v1/failure_postmortem.md"
+    model_route_id = "deterministic"
+    root_cause_summary = f"Run failed with classification: {failure_class}."
+    contributing_factors: list[dict[str, Any]] = []
+    remediation_suggestions: list[dict[str, Any]] = []
+    retrieval_hints: list[dict[str, Any]] = []
+    protocol_update_hints: list[dict[str, Any]] = []
+
+    # Read stderr excerpt if available
+    stderr_excerpt = ""
+    if run.stderr_path:
+        try:
+            stderr_text = Path(run.stderr_path).read_text(encoding="utf-8")
+            stderr_excerpt = stderr_text[-2000:] if len(stderr_text) > 2000 else stderr_text
+        except OSError:
+            pass
+
+    try:
+        gateway = ModelGateway.from_config(config)
+        prompt_context = {
+            "charter_problem": charter.problem_statement if charter else "",
+            "experiment_title": spec.title,
+            "experiment_objective": spec.objective,
+            "method_description": spec.method_description,
+            "run_status": run.status,
+            "failure_classification": failure_class,
+            "failure_stage": failure_stage,
+            "exit_code": run.exit_code,
+            "last_error": run.last_error or "",
+            "stderr_excerpt": stderr_excerpt,
+            "verification_summary": vr.reviewer_summary if vr else "N/A",
+            "similar_prior_failures": similar_data,
+        }
+        from jinja2 import Template
+
+        template_text = Path(prompt_id).read_text(encoding="utf-8")
+        rendered = Template(template_text).render(**prompt_context)
+        response = gateway.call_structured(
+            "verifier",
+            [{"role": "user", "content": rendered}],
+            temperature=0.3,
+            max_tokens=1024,
+        )
+        if isinstance(response, dict):
+            root_cause_summary = response.get("root_cause_summary", root_cause_summary)
+            contributing_factors = response.get("contributing_factors", [])
+            remediation_suggestions = response.get("remediation_suggestions", [])
+            retrieval_hints = response.get("retrieval_hints", [])
+            protocol_update_hints = response.get("protocol_update_hints", [])
+            model_route_id = gateway.resolve_route("verifier").id
+    except Exception:
+        log.warning("postmortem_llm_generation_failed", run_public_id=run.public_id)
+
+    # Persist postmortem
+    pm = create_failure_postmortem(
+        session,
+        cycle=cycle,
+        run=run,
+        verification_report_id=vr_id,
+        failure_class=failure_class,
+        failure_stage=failure_stage,
+        root_cause_summary=root_cause_summary,
+        contributing_factors=contributing_factors,
+        remediation_suggestions=remediation_suggestions,
+        retrieval_hints=retrieval_hints,
+        protocol_update_hints=protocol_update_hints,
+        similar_prior_failures=similar_data,
+        model_route_id=model_route_id,
+        prompt_id=prompt_id,
+    )
+
+    events = [
+        {
+            "event_type": "postmortem_created",
+            "payload": {
+                "cycle_public_id": cycle.public_id,
+                "run_public_id": run.public_id,
+                "postmortem_public_id": pm.public_id,
+                "failure_class": failure_class,
+                "failure_stage": failure_stage,
+            },
+        }
+    ]
+
+    return OperatorResult(
+        state_patch=StatePatch(
+            target_state=CycleStatus.VERIFYING,
+            reason="Postmortem generated",
+            context={
+                "run_public_id": run.public_id,
+                "phase": "phase4_postmortem",
+                "postmortem_public_id": pm.public_id,
+            },
+        ),
+        emitted_events=events,
+        operator_report=OperatorReport(
+            title=f"Postmortem: {run.public_id} — {failure_class}",
+            prompt_id=prompt_id,
+            report_type="failure_postmortem_report",
+            body_markdown="\n".join([
+                "# Failure Postmortem",
+                "",
+                f"- Run: **{run.public_id}**",
+                f"- Failure class: **{failure_class}**",
+                f"- Failure stage: **{failure_stage}**",
+                f"- Root cause: {root_cause_summary}",
+                f"- Remediation suggestions: **{len(remediation_suggestions)}**",
+                f"- Retrieval hints: **{len(retrieval_hints)}**",
+                f"- Similar prior failures: **{len(similar_data)}**",
+                f"- Bound skills: **{_format_skill_line(skill_keys)}**",
+            ]),
+        ),
+        skill_execution_records=skill_outcomes,
+        next_actions=[NextAction(action="verification_report", payload={
+            "run_public_id": run.public_id,
+            "verification_report_public_id": job.payload.get("verification_report_public_id"),
+            "postmortem_public_id": pm.public_id,
+        })],
+    )
+
+
+def verification_report_operator(
+    session: Session,
+    config: AppConfig,
+    actor: Actor,
+    cycle: ResearchCycleModel,
+    job: JobModel,
+) -> OperatorResult:
+    """Generate a final human-readable verification report for a run."""
+    from libs.storage.models import (
+        FailurePostmortemModel,
+        HypothesisCardModel,
+        VerificationReportModel,
+    )
+    from libs.storage.services import create_report, get_verification_summary_for_cycle
+    from libs.verification.failure_memory import aggregate_failure_guidance
+    from libs.verification.recommendations import build_next_step_recommendations
+
+    run = get_run_by_public_id(session, job.payload["run_public_id"])
+    spec = session.get(ExperimentSpecModel, run.experiment_spec_id)
+    if spec is None:
+        raise ValueError("Run is missing its experiment spec")
+
+    charter = session.get(ResearchCharterModel, cycle.charter_id)
+
+    skill_keys, skill_outcomes = _bound_skill_context(
+        session,
+        cycle,
+        job.operator_name,
+        influence="verification_summary",
+        payload={"outcome": run.verification_outcome or "unknown"},
+    )
+    _assign_run_public_id(skill_outcomes, run.public_id)
+
+    # Load verification report
+    vr_public_id = job.payload.get("verification_report_public_id")
+    vr = None
+    if vr_public_id:
+        vr = session.scalar(
+            select(VerificationReportModel).where(
+                VerificationReportModel.public_id == vr_public_id
+            )
+        )
+
+    # Load postmortem if exists
+    pm_public_id = job.payload.get("postmortem_public_id")
+    pm = None
+    if pm_public_id:
+        pm = session.scalar(
+            select(FailurePostmortemModel).where(
+                FailurePostmortemModel.public_id == pm_public_id
+            )
+        )
+
+    # Load hypothesis
+    hyp = None
+    if spec.hypothesis_card_id:
+        hyp = session.get(HypothesisCardModel, spec.hypothesis_card_id)
+
+    # LLM summary generation
+    prompt_id = "prompts/verification/v1/verification_summary.md"
+    outcome = run.verification_outcome or "unknown"
+    verification_policy = (
+        config.load_yaml(config.policy_config_path).get("verification", {})
+    )
+    min_outcome_for_promotion = str(
+        verification_policy.get("min_outcome_for_promotion", "tentative")
+    )
+    failure_guidance = aggregate_failure_guidance(session, charter_id=cycle.charter_id)
+    retrieval_hints = list(pm.retrieval_hints or []) if pm else []
+    if not retrieval_hints:
+        retrieval_hints = failure_guidance["retrieval_guidance"][:3]
+    protocol_update_hints = list(pm.protocol_update_hints or []) if pm else []
+    recommendations = build_next_step_recommendations(
+        outcome=outcome,
+        min_outcome_for_promotion=min_outcome_for_promotion,
+        rerun_note=vr.rerun_note if vr else None,
+        retrieval_hints=retrieval_hints,
+        protocol_update_hints=protocol_update_hints,
+        reviewer_summary=vr.reviewer_summary if vr else None,
+    )
+
+    # Build markdown report body
+    report_lines = [
+        "# Verification Report",
+        "",
+        f"**Run:** {run.public_id}",
+        f"**Status:** {run.status}",
+        f"**Outcome:** {outcome}",
+        f"**Execution Profile:** {run.execution_profile}",
+        "",
+    ]
+
+    if vr:
+        report_lines.extend([
+            "## Verification Summary",
+            "",
+            vr.reviewer_summary,
+            "",
+            "## Baseline Comparison",
+            "",
+            f"```json\n{json.dumps(vr.baseline_comparison or {}, indent=2)}\n```",
+            "",
+            "## Output Contract Checks",
+            "",
+            f"```json\n{json.dumps(vr.output_contract_checks or [], indent=2)}\n```",
+            "",
+        ])
+        if vr.historical_comparisons:
+            report_lines.extend([
+                "## Historical Comparisons",
+                "",
+            ])
+            for comp in vr.historical_comparisons:
+                report_lines.append(
+                    f"- **{comp.get('metric')}**: prior={comp.get('prior_value')} "
+                    f"→ current={comp.get('current_value')} (delta={comp.get('delta')})"
+                )
+            report_lines.append("")
+        if vr.rerun_note:
+            report_lines.extend([
+                "## Replay / Rerun Guidance",
+                "",
+                vr.rerun_note,
+                "",
+            ])
+
+    if pm:
+        report_lines.extend([
+            "## Failure Postmortem",
+            "",
+            f"**Failure Class:** {pm.failure_class}",
+            f"**Stage:** {pm.failure_stage}",
+            f"**Root Cause:** {pm.root_cause_summary}",
+            "",
+        ])
+        if pm.remediation_suggestions:
+            report_lines.append("### Remediation Suggestions")
+            report_lines.append("")
+            for sug in pm.remediation_suggestions:
+                report_lines.append(
+                    f"- [{sug.get('category', 'general')}] {sug.get('suggestion', '')}"
+                )
+            report_lines.append("")
+
+    report_lines.extend([
+        "## Metrics",
+        "",
+        f"```json\n{json.dumps(run.metrics_summary or {}, indent=2, sort_keys=True)}\n```",
+        "",
+    ])
+    if recommendations:
+        report_lines.extend([
+            "## Recommendations",
+            "",
+        ])
+        for item in recommendations:
+            report_lines.append(
+                f"- **{item.get('recommendation_type', 'next_step')}**: {item.get('rationale', '')}"
+            )
+        report_lines.append("")
+    report_lines.append(f"**Bound skills:** {_format_skill_line(skill_keys)}")
+
+    # Try LLM-enhanced summary
+    try:
+        gateway = ModelGateway.from_config(config)
+        prompt_context = {
+            "charter_problem": charter.problem_statement if charter else "",
+            "experiment_title": spec.title,
+            "experiment_objective": spec.objective,
+            "hypothesis_statement": hyp.statement if hyp else "N/A",
+            "run_public_id": run.public_id,
+            "run_status": run.status,
+            "execution_profile": run.execution_profile,
+            "metrics_summary": json.dumps(run.metrics_summary or {}, sort_keys=True),
+            "outcome": outcome,
+            "outcome_rationale": vr.outcome_rationale if vr else "",
+            "baseline_comparison": json.dumps(vr.baseline_comparison if vr else {}, sort_keys=True),
+            "historical_comparisons": vr.historical_comparisons if vr else [],
+            "output_contract_checks": json.dumps(
+                vr.output_contract_checks if vr else [],
+                sort_keys=True,
+            ),
+            "rerun_note": vr.rerun_note if vr else None,
+            "postmortem": {
+                "failure_class": pm.failure_class,
+                "failure_stage": pm.failure_stage,
+                "root_cause_summary": pm.root_cause_summary,
+                "remediation_suggestions": pm.remediation_suggestions or [],
+            } if pm else None,
+        }
+        from jinja2 import Template
+
+        template_text = Path(prompt_id).read_text(encoding="utf-8")
+        rendered = Template(template_text).render(**prompt_context)
+        llm_report = gateway.call_chat_completion(
+            "reporter",
+            [{"role": "user", "content": rendered}],
+            temperature=0.3,
+            max_tokens=2048,
+        )
+        if llm_report:
+            report_lines = [llm_report]
+    except Exception:
+        log.warning("verification_report_llm_failed", run_public_id=run.public_id)
+
+    body_markdown = "\n".join(report_lines)
+    cycle_summary = get_verification_summary_for_cycle(session, cycle.public_id)
+    cycle_summary_lines = [
+        f"# Cycle Verification Summary: {cycle.public_id}",
+        "",
+        f"- Total runs: **{cycle_summary.total_runs}**",
+        f"- Robust: **{cycle_summary.robust_count}**",
+        f"- Tentative: **{cycle_summary.tentative_count}**",
+        f"- Rejected: **{cycle_summary.rejected_count}**",
+        f"- Invalid: **{cycle_summary.invalid_count}**",
+        f"- Pending: **{cycle_summary.pending_count}**",
+        f"- Postmortems: **{cycle_summary.postmortem_count}**",
+        "",
+        "## Latest Recommendations",
+        "",
+    ]
+    for item in recommendations:
+        cycle_summary_lines.append(
+            f"- **{item.get('recommendation_type', 'next_step')}**: {item.get('rationale', '')}"
+        )
+    cycle_summary_report = create_report(
+        session,
+        config,
+        cycle=cycle,
+        job=job,
+        title=f"Cycle Verification Summary: {cycle.public_id}",
+        report_type="verification_cycle_summary",
+        body_markdown="\n".join(cycle_summary_lines),
+    )
+    cycle_summary_report.report_metadata = {
+        **(cycle_summary_report.report_metadata or {}),
+        "run_public_id": run.public_id,
+    }
+
+    events = [
+        {
+            "event_type": "verification_report_created",
+            "payload": {
+                "cycle_public_id": cycle.public_id,
+                "run_public_id": run.public_id,
+                "outcome": outcome,
+            },
+        },
+        {
+            "event_type": "verification_cycle_summary_created",
+            "payload": {
+                "cycle_public_id": cycle.public_id,
+                "run_public_id": run.public_id,
+                "report_public_id": cycle_summary_report.public_id,
+            },
+        }
+    ]
+
+    return OperatorResult(
+        state_patch=StatePatch(
+            target_state=CycleStatus.READY,
+            reason="Verification cycle complete",
+            context={
+                "run_public_id": run.public_id,
+                "phase": "phase4_complete",
+                "outcome": outcome,
+            },
+        ),
+        emitted_events=events,
+        operator_report=OperatorReport(
+            title=f"Verification Report: {run.public_id} — {outcome}",
+            prompt_id=prompt_id,
+            report_type="verification_report",
+            body_markdown=body_markdown,
+        ),
+        skill_execution_records=skill_outcomes,
+    )
+
+
 OPERATOR_REGISTRY = {
     # Phase 0
     "initialize_cycle": initialize_cycle_operator,
@@ -2028,4 +2790,8 @@ OPERATOR_REGISTRY = {
     "run_execute": run_execute_operator,
     "run_finalize": run_finalize_operator,
     "run_retry_repair": run_retry_repair_operator,
+    # Phase 4
+    "run_verify": run_verify_operator,
+    "failure_postmortem": failure_postmortem_operator,
+    "verification_report": verification_report_operator,
 }

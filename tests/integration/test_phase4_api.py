@@ -1,0 +1,564 @@
+"""Integration tests for Phase 4 verification, postmortem, and historical comparison."""
+
+from __future__ import annotations
+
+import json
+from pathlib import Path
+from unittest.mock import patch
+
+import pytest
+from fastapi.testclient import TestClient
+from sqlalchemy import create_engine
+from sqlalchemy.orm import sessionmaker
+
+from apps.api.main import app, get_db
+from libs.adapters.container import ContainerExecutionResult
+from libs.adapters.git import WorktreeInfo
+from libs.core.config import AppConfig
+from libs.storage import services
+from libs.storage.base import Base
+from libs.storage.models import (
+    ExperimentSpecModel,
+    HypothesisCardModel,
+    ResearchCharterModel,
+    ResearchCycleModel,
+)
+
+AUTH_HEADERS = {"Authorization": "Bearer lab-local-admin"}
+
+
+class FakeGitWorktreeAdapter:
+    def __init__(self, _repo_root: Path):
+        pass
+
+    def create_worktree(
+        self, workspaces_root: Path, run_public_id: str,
+    ) -> WorktreeInfo:
+        path = workspaces_root / run_public_id
+        path.mkdir(parents=True, exist_ok=True)
+        return WorktreeInfo(
+            workspace_path=path,
+            base_commit="abc123",
+            base_branch="main",
+        )
+
+    def capture_patch_archive(
+        self, _workspace_path: Path, destination: Path,
+    ) -> Path:
+        destination.parent.mkdir(parents=True, exist_ok=True)
+        destination.write_text(
+            "diff --git a/file b/file\n", encoding="utf-8",
+        )
+        return destination
+
+    def remove_worktree(self, _workspace_path: Path) -> None:
+        pass
+
+
+class FakeDockerContainerAdapter:
+    def __init__(self, poll_interval_seconds: float = 1.0):
+        self.poll_interval_seconds = poll_interval_seconds
+
+    def run(
+        self, *, spec, stdout_path, stderr_path,
+        telemetry_callback, status_checker, container_name,
+    ):
+        del status_checker, container_name
+        stdout_path.write_text("epoch 1\n", encoding="utf-8")
+        stderr_path.write_text("", encoding="utf-8")
+        artifact_root = Path(spec.artifact_output_path)
+        artifact_root.mkdir(parents=True, exist_ok=True)
+        metrics = {"accuracy": 0.9, "loss": 0.1}
+        (artifact_root / "metrics.json").write_text(
+            json.dumps(metrics), encoding="utf-8",
+        )
+        (artifact_root / "predictions.json").write_text(
+            json.dumps([{"id": "row-1", "prediction": 1}]),
+            encoding="utf-8",
+        )
+        checkpoint_path = artifact_root / "model_checkpoint.json"
+        checkpoint_path.write_text(
+            json.dumps({"checkpoint": "ok"}), encoding="utf-8",
+        )
+        manifest = {
+            "run_public_id": "placeholder",
+            "manifest_path": str(
+                artifact_root / "artifact_manifest.json",
+            ),
+            "metrics_path": str(artifact_root / "metrics.json"),
+            "checkpoint_path": str(checkpoint_path),
+            "predictions_path": str(
+                artifact_root / "predictions.json",
+            ),
+            "artifacts": [
+                {
+                    "name": "metrics",
+                    "path": str(artifact_root / "metrics.json"),
+                },
+            ],
+        }
+        (artifact_root / "artifact_manifest.json").write_text(
+            json.dumps(manifest), encoding="utf-8",
+        )
+        telemetry_callback(
+            "log", {"line": "epoch 1"}, "stdout", "epoch 1",
+        )
+        return ContainerExecutionResult(
+            exit_code=0,
+            interrupted_status=None,
+            latest_resource_snapshot={"cpu": "12%", "memory": "32MiB"},
+        )
+
+
+class FakeDockerFailAdapter(FakeDockerContainerAdapter):
+    """Simulates a failed run."""
+
+    def run(self, *, spec, stdout_path, stderr_path,
+            telemetry_callback, status_checker, container_name):
+        del status_checker, container_name
+        stdout_path.write_text("", encoding="utf-8")
+        stderr_path.write_text(
+            "Traceback...\nRuntimeError: out of memory\n",
+            encoding="utf-8",
+        )
+        artifact_root = Path(spec.artifact_output_path)
+        artifact_root.mkdir(parents=True, exist_ok=True)
+        return ContainerExecutionResult(
+            exit_code=137,
+            interrupted_status=None,
+            latest_resource_snapshot={},
+        )
+
+
+@pytest.fixture()
+def tmp_config(tmp_path: Path):
+    execution_dir = tmp_path / "execution"
+    execution_dir.mkdir()
+    (execution_dir / "images.yaml").write_text(
+        "approved_images:\n"
+        "  offline-baseline:\n"
+        "    image: python:3.12-slim\n",
+        encoding="utf-8",
+    )
+    (execution_dir / "profiles.yaml").write_text(
+        "\n".join([
+            "profiles:",
+            "  cpu-small:",
+            "    hardware_profile: cpu-small",
+            "    cpu_limit: '2'",
+            "    memory_limit_mb: 1024",
+            "    timeout_seconds: 60",
+            "    gpu_enabled: false",
+            "    network_mode: disabled",
+            "    image_key: offline-baseline",
+        ]),
+        encoding="utf-8",
+    )
+    (execution_dir / "settings.yaml").write_text(
+        "telemetry:\n  poll_interval_seconds: 0.01\n",
+        encoding="utf-8",
+    )
+    policy_path = tmp_path / "policy.yaml"
+    policy_path.write_text(
+        "\n".join([
+            "allowed_command_scopes:",
+            "  create_cycle:",
+            "    - cycles.write",
+            "approval_rules:",
+            "  network_enabled_run: human_only",
+            "execution:",
+            "  auto_run_profiles:",
+            "    - cpu-small",
+            "  deny_without_force_start:",
+            "    network_mode:",
+            "      - enabled",
+            "    image_keys:",
+            "      - custom",
+            "verification:",
+            "  require_baseline_comparison: true",
+            "  auto_postmortem_on_failure: true",
+        ]),
+        encoding="utf-8",
+    )
+    cfg = AppConfig(
+        env="test",
+        db_url=f"sqlite:///{tmp_path / 'test.db'}",
+        data_root=tmp_path / "data",
+        model_config_path=Path("configs/models/routes.yaml"),
+        policy_config_path=policy_path,
+        execution_images_path=execution_dir / "images.yaml",
+        execution_profiles_path=execution_dir / "profiles.yaml",
+        execution_settings_path=execution_dir / "settings.yaml",
+        skill_paths=[Path("skills")],
+        auto_init_db=False,
+    )
+    cfg.ensure_data_dirs()
+    return cfg
+
+
+@pytest.fixture()
+def test_session(tmp_config: AppConfig):
+    engine = create_engine(tmp_config.db_url)
+    Base.metadata.create_all(engine)
+    factory = sessionmaker(bind=engine)
+    return factory
+
+
+@pytest.fixture()
+def client(tmp_config: AppConfig, test_session):
+    def override_db():
+        session = test_session()
+        try:
+            yield session
+        finally:
+            session.close()
+
+    app.dependency_overrides[get_db] = override_db
+    with patch("libs.core.config.get_config", return_value=tmp_config):
+        with patch("apps.api.main.get_config", return_value=tmp_config):
+            with test_session() as session:
+                services.seed_dev_client_and_token(session, tmp_config)
+                services.sync_skill_catalog(session, tmp_config)
+            yield TestClient(app, raise_server_exceptions=True)
+    app.dependency_overrides.clear()
+
+
+def _create_valid_spec(
+    session,
+    *,
+    suffix: str = "p4",
+    charter: ResearchCharterModel | None = None,
+) -> tuple[str, str]:
+    if charter is None:
+        charter = ResearchCharterModel(
+            public_id=f"charter-{suffix}",
+            title="Phase 4 Test Cycle",
+            problem_statement="Test verification pipeline.",
+            success_criteria={"summary": "Verify runs"},
+            budget_envelope={},
+            source_scope={},
+            stop_conditions={"summary": "Stop after verify"},
+            constraints={},
+        )
+        session.add(charter)
+        session.flush()
+    cycle = ResearchCycleModel(
+        public_id=f"cycle-{suffix}",
+        charter_id=charter.id,
+        current_status="ready",
+    )
+    session.add(cycle)
+    session.flush()
+    hypothesis = HypothesisCardModel(
+        public_id=f"hyp-{suffix}",
+        cycle_id=cycle.id,
+        title="Test hypothesis",
+        statement="Test classification baseline.",
+        rationale="Needed for Phase 4 testing.",
+        approach_summary="Tiny model on fixture data.",
+        supporting_evidence=[],
+        counter_evidence=[],
+        status="approved",
+        model_route_id="protocol_drafter",
+        prompt_id="prompts/ideation/v1/protocol_compilation.md",
+    )
+    session.add(hypothesis)
+    session.flush()
+    spec = ExperimentSpecModel(
+        public_id=f"spec-{suffix}",
+        cycle_id=cycle.id,
+        hypothesis_card_id=hypothesis.id,
+        title="Test Spec",
+        objective="Train a test model.",
+        baseline_description="Rule-based baseline.",
+        method_description="Tiny local training loop.",
+        controls=[],
+        metrics=[
+            {
+                "name": "accuracy",
+                "baseline_value": 0.8,
+                "higher_is_better": True,
+            },
+        ],
+        datasets=[{"name": "fixture", "role": "validation"}],
+        artifacts=[{"name": "metrics.json"}],
+        stop_conditions=[{"type": "epochs", "value": 5}],
+        expected_outputs=[{"name": "metrics.json"}],
+        status="valid",
+        validation_issues=[],
+        rejection_reason=None,
+        estimated_runtime_minutes=1,
+        gpu_required=False,
+        resource_requirements={},
+        model_route_id="protocol_drafter",
+        prompt_id="prompts/ideation/v1/protocol_compilation.md",
+    )
+    session.add(spec)
+    session.commit()
+    return cycle.public_id, spec.public_id
+
+
+def _run_worker(client: TestClient) -> str:
+    response = client.post(
+        "/api/v1/admin/worker/run-once", headers=AUTH_HEADERS,
+    )
+    assert response.status_code == 200
+    return response.json()["result"]
+
+
+def _run_full_pipeline(client, test_session, docker_adapter_cls):
+    """Run prepare → execute → finalize → verify → (postmortem) → report."""
+    with test_session() as session:
+        cycle_id, spec_id = _create_valid_spec(session)
+
+    with patch(
+        "libs.orchestration.operators.GitWorktreeAdapter",
+        FakeGitWorktreeAdapter,
+    ), patch(
+        "libs.orchestration.operators.DockerContainerAdapter",
+        docker_adapter_cls,
+    ):
+        response = client.post(
+            f"/api/v1/experiment-specs/{spec_id}/runs",
+            json={"execution_profile": "cpu-small"},
+            headers=AUTH_HEADERS,
+        )
+        assert response.status_code == 200
+        run_id = response.json()["run"]["public_id"]
+
+        # run_prepare, run_execute, run_finalize
+        for _ in range(3):
+            assert _run_worker(client) == "job_succeeded"
+
+        # run_verify
+        assert _run_worker(client) == "job_succeeded"
+
+        # failure_postmortem or verification_report (or both)
+        result = _run_worker(client)
+        assert result == "job_succeeded"
+
+        # Possibly one more (verification_report after postmortem)
+        _run_worker(client)
+
+    return cycle_id, run_id
+
+
+def test_successful_run_verification(
+    client: TestClient, test_session,
+):
+    cycle_id, run_id = _run_full_pipeline(
+        client, test_session, FakeDockerContainerAdapter,
+    )
+
+    # Check run detail includes verification
+    detail = client.get(
+        f"/api/v1/runs/{run_id}", headers=AUTH_HEADERS,
+    ).json()
+    assert detail["run"]["status"] == "succeeded"
+    assert detail["run"]["verification_outcome"] is not None
+    assert detail["verification_report"] is not None
+    assert detail["verification_report"]["outcome"] in (
+        "robust", "tentative",
+    )
+
+    # Check verification summary endpoint
+    summary = client.get(
+        f"/api/v1/cycles/{cycle_id}/verification",
+        headers=AUTH_HEADERS,
+    ).json()
+    assert summary["total_runs"] >= 1
+    assert summary["robust_count"] + summary["tentative_count"] >= 1
+    assert summary["next_step_recommendations"]
+    assert summary["latest_cycle_summary_report_public_id"] is not None
+
+    # Check verification reports list endpoint
+    reports = client.get(
+        f"/api/v1/cycles/{cycle_id}/verification-reports",
+        headers=AUTH_HEADERS,
+    ).json()
+    assert reports["total"] >= 1
+    vr_id = reports["items"][0]["public_id"]
+
+    # Check verification report detail
+    detail_resp = client.get(
+        f"/api/v1/verification-reports/{vr_id}",
+        headers=AUTH_HEADERS,
+    ).json()
+    assert detail_resp["outcome"] in ("robust", "tentative")
+    assert detail_resp["reviewer_summary"]
+    assert detail_resp["output_contract_checks"]
+    assert detail_resp["rerun_note"]
+
+    # Check historical comparison endpoint
+    hist = client.get(
+        f"/api/v1/runs/{run_id}/historical-comparison",
+        headers=AUTH_HEADERS,
+    ).json()
+    assert hist["run_public_id"] == run_id
+    assert hist["comparison_scope"] == "same_charter"
+
+    cycle_summary_report = client.get(
+        f"/api/v1/reports/{summary['latest_cycle_summary_report_public_id']}",
+        headers=AUTH_HEADERS,
+    ).json()
+    assert "Cycle Verification Summary" in cycle_summary_report["title"]
+
+
+def test_failed_run_generates_postmortem(
+    client: TestClient, test_session,
+):
+    cycle_id, run_id = _run_full_pipeline(
+        client, test_session, FakeDockerFailAdapter,
+    )
+
+    detail = client.get(
+        f"/api/v1/runs/{run_id}", headers=AUTH_HEADERS,
+    ).json()
+    assert detail["run"]["status"] == "failed"
+    assert detail["run"]["verification_outcome"] == "invalid"
+    assert detail["postmortem"] is not None
+
+    # Check postmortems list
+    postmortems = client.get(
+        f"/api/v1/cycles/{cycle_id}/postmortems",
+        headers=AUTH_HEADERS,
+    ).json()
+    assert postmortems["total"] >= 1
+    pm_id = postmortems["items"][0]["public_id"]
+
+    # Check postmortem detail
+    pm_detail = client.get(
+        f"/api/v1/postmortems/{pm_id}", headers=AUTH_HEADERS,
+    ).json()
+    assert pm_detail["failure_class"]
+    assert pm_detail["root_cause_summary"]
+
+    # Summary should show the postmortem count
+    summary = client.get(
+        f"/api/v1/cycles/{cycle_id}/verification",
+        headers=AUTH_HEADERS,
+    ).json()
+    assert summary["postmortem_count"] >= 1
+    assert summary["invalid_count"] >= 1
+
+
+def test_verification_chain_from_finalize(
+    client: TestClient, test_session,
+):
+    """Verify that run_finalize chains into run_verify automatically."""
+    with test_session() as session:
+        _, spec_id = _create_valid_spec(session)
+
+    with patch(
+        "libs.orchestration.operators.GitWorktreeAdapter",
+        FakeGitWorktreeAdapter,
+    ), patch(
+        "libs.orchestration.operators.DockerContainerAdapter",
+        FakeDockerContainerAdapter,
+    ):
+        client.post(
+            f"/api/v1/experiment-specs/{spec_id}/runs",
+            json={"execution_profile": "cpu-small"},
+            headers=AUTH_HEADERS,
+        )
+
+        # run_prepare
+        assert _run_worker(client) == "job_succeeded"
+        # run_execute
+        assert _run_worker(client) == "job_succeeded"
+        # run_finalize — should enqueue run_verify
+        assert _run_worker(client) == "job_succeeded"
+
+        # Check that run_verify job was enqueued
+        jobs = client.get(
+            "/api/v1/jobs", headers=AUTH_HEADERS,
+        ).json()["items"]
+        verify_jobs = [
+            j for j in jobs if j["operator_name"] == "run_verify"
+        ]
+        assert len(verify_jobs) >= 1
+
+
+def test_same_charter_history_cross_cycle(
+    client: TestClient, test_session,
+):
+    with test_session() as session:
+        charter = ResearchCharterModel(
+            public_id="charter-shared",
+            title="Shared Charter",
+            problem_statement="Cross-cycle verification test.",
+            success_criteria={"summary": "Verify runs across cycles"},
+            budget_envelope={},
+            source_scope={},
+            stop_conditions={"summary": "Stop after verify"},
+            constraints={},
+        )
+        session.add(charter)
+        session.flush()
+        _, spec_one = _create_valid_spec(session, suffix="p4a", charter=charter)
+        _, spec_two = _create_valid_spec(session, suffix="p4b", charter=charter)
+
+    with patch(
+        "libs.orchestration.operators.GitWorktreeAdapter",
+        FakeGitWorktreeAdapter,
+    ), patch(
+        "libs.orchestration.operators.DockerContainerAdapter",
+        FakeDockerContainerAdapter,
+    ):
+        run_ids: list[str] = []
+        for spec_id in (spec_one, spec_two):
+            response = client.post(
+                f"/api/v1/experiment-specs/{spec_id}/runs",
+                json={"execution_profile": "cpu-small"},
+                headers=AUTH_HEADERS,
+            )
+            run_ids.append(response.json()["run"]["public_id"])
+            for _ in range(6):
+                _run_worker(client)
+
+    hist = client.get(
+        f"/api/v1/runs/{run_ids[-1]}/historical-comparison",
+        headers=AUTH_HEADERS,
+    ).json()
+    assert hist["total_prior_runs"] >= 1
+    assert hist["comparison_scope"] == "same_charter"
+    assert hist["memory_references"]
+
+
+def test_failed_run_can_skip_postmortem_when_policy_disabled(
+    client: TestClient, test_session, tmp_config: AppConfig,
+):
+    tmp_config.policy_config_path.write_text(
+        "\n".join([
+            "allowed_command_scopes:",
+            "  create_cycle:",
+            "    - cycles.write",
+            "approval_rules:",
+            "  network_enabled_run: human_only",
+            "execution:",
+            "  auto_run_profiles:",
+            "    - cpu-small",
+            "verification:",
+            "  require_baseline_comparison: true",
+            "  auto_postmortem_on_failure: false",
+        ]),
+        encoding="utf-8",
+    )
+    cycle_id, run_id = _run_full_pipeline(
+        client, test_session, FakeDockerFailAdapter,
+    )
+
+    detail = client.get(
+        f"/api/v1/runs/{run_id}", headers=AUTH_HEADERS,
+    ).json()
+    assert detail["run"]["verification_outcome"] == "invalid"
+    assert detail["postmortem"] is None
+
+    summary = client.get(
+        f"/api/v1/cycles/{cycle_id}/verification",
+        headers=AUTH_HEADERS,
+    ).json()
+    recommendation_types = {
+        item["recommendation_type"] for item in summary["next_step_recommendations"]
+    }
+    assert "retry_run" in recommendation_types

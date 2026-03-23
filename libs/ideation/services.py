@@ -331,11 +331,14 @@ def compute_portfolio_ranking(
     session: Session,
     cycle_id: int,
     auto_approve_top_n: int = 3,
+    charter_id: int | None = None,
 ) -> list[HypothesisCardModel]:
     """Rank hypotheses by composite score = novelty * feasibility * impact.
 
     Auto-approve top N hypotheses (status → 'approved').
     """
+    from libs.verification.failure_memory import get_hypothesis_failure_caution
+
     hypotheses = list(
         session.scalars(
             select(HypothesisCardModel).where(
@@ -350,16 +353,32 @@ def compute_portfolio_ranking(
         f = h.feasibility_score or 0.0
         i = h.impact_score or 0.0
         h.portfolio_score = round(n * f * i, 6)
+        caution = (
+            get_hypothesis_failure_caution(
+                session,
+                charter_id=charter_id,
+                hypothesis_title=h.title,
+            )
+            if charter_id is not None
+            else None
+        )
+        if caution is not None:
+            h.portfolio_score = round((h.portfolio_score or 0.0) * (1 - caution["penalty"]), 6)
+            h.ranking_rationale = caution["detail"]
 
     hypotheses.sort(key=lambda h: h.portfolio_score or 0.0, reverse=True)
 
     for rank, h in enumerate(hypotheses, start=1):
         h.portfolio_rank = rank
-        h.ranking_rationale = (
+        base_rationale = (
             f"Composite score {h.portfolio_score:.4f} "
             f"(novelty={h.novelty_score}, feasibility={h.feasibility_score}, "
             f"impact={h.impact_score})"
         )
+        if h.ranking_rationale:
+            h.ranking_rationale = f"{base_rationale}. {h.ranking_rationale}"
+        else:
+            h.ranking_rationale = base_rationale
         if rank <= auto_approve_top_n:
             h.status = "approved"
 

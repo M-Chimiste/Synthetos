@@ -326,11 +326,63 @@ class RunRecord(BaseModel):
     metrics_summary: dict[str, Any] = Field(default_factory=dict)
     artifact_manifest: dict[str, Any] = Field(default_factory=dict)
     failure_classification: str | None = None
+    verification_outcome: str | None = None
     last_error: str | None = None
     exit_code: int | None = None
     attempt_count: int
     started_at: datetime | None = None
     completed_at: datetime | None = None
+    created_at: datetime
+    updated_at: datetime
+
+
+# ---------------------------------------------------------------------------
+# Phase 4 — Verification & Postmortems
+# ---------------------------------------------------------------------------
+
+
+class VerificationReport(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+
+    public_id: str
+    cycle_public_id: str
+    run_public_id: str
+    experiment_spec_public_id: str
+    hypothesis_public_id: str | None = None
+    outcome: str
+    outcome_rationale: str
+    baseline_comparison: dict[str, Any] = Field(default_factory=dict)
+    historical_comparisons: list[dict[str, Any]] = Field(default_factory=list)
+    metric_sanity_checks: list[dict[str, Any]] = Field(default_factory=list)
+    artifact_checks: list[dict[str, Any]] = Field(default_factory=list)
+    output_contract_checks: list[dict[str, Any]] = Field(default_factory=list)
+    leakage_signals: list[dict[str, Any]] = Field(default_factory=list)
+    split_validation: dict[str, Any] = Field(default_factory=dict)
+    rerun_note: str | None = None
+    reviewer_summary: str
+    model_route_id: str
+    prompt_id: str
+    created_at: datetime
+    updated_at: datetime
+
+
+class FailurePostmortem(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+
+    public_id: str
+    cycle_public_id: str
+    run_public_id: str
+    verification_report_public_id: str | None = None
+    failure_class: str
+    failure_stage: str
+    root_cause_summary: str
+    contributing_factors: list[dict[str, Any]] = Field(default_factory=list)
+    remediation_suggestions: list[dict[str, Any]] = Field(default_factory=list)
+    retrieval_hints: list[dict[str, Any]] = Field(default_factory=list)
+    protocol_update_hints: list[dict[str, Any]] = Field(default_factory=list)
+    similar_prior_failures: list[dict[str, Any]] = Field(default_factory=list)
+    model_route_id: str
+    prompt_id: str
     created_at: datetime
     updated_at: datetime
 

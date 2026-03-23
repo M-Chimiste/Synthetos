@@ -11,10 +11,14 @@ import {
   eventSource,
   getCycle,
   getEvidenceSummary,
+  getHistoricalComparison,
   getLiteratureTriage,
+  getPostmortem,
   getPortfolio,
   getReport,
   getRun,
+  getVerificationReport,
+  getVerificationSummary,
   listCycles,
   listEvidence,
   listExperimentSpecs,
@@ -33,6 +37,8 @@ import type {
   EvidenceSummaryResponse,
   ExperimentSpecListResponse,
   ExperimentSpecSummary,
+  FailurePostmortemDetail,
+  HistoricalComparisonResponse,
   HypothesisCardSummary,
   LiteratureTriageResponse,
   PaperCardSummary,
@@ -42,6 +48,8 @@ import type {
   RunListResponse,
   RunSummary,
   SkillSummaryResponse,
+  VerificationReportDetail,
+  VerificationSummaryResponse,
 } from "./lib/types";
 
 const defaultForm = {
@@ -116,6 +124,32 @@ export default function App() {
     enabled: Boolean(selectedRunId),
   });
 
+  const verificationSummaryQuery = useQuery({
+    queryKey: ["verificationSummary", selectedCycleId],
+    queryFn: () => getVerificationSummary(selectedCycleId!),
+    enabled: Boolean(selectedCycleId),
+    refetchInterval: 5000,
+  });
+
+  const verificationReportQuery = useQuery({
+    queryKey: ["verificationReport", runDetailQuery.data?.verification_report?.public_id],
+    queryFn: () => getVerificationReport(runDetailQuery.data!.verification_report!.public_id),
+    enabled: Boolean(runDetailQuery.data?.verification_report?.public_id),
+  });
+
+  const postmortemQuery = useQuery({
+    queryKey: ["postmortem", runDetailQuery.data?.postmortem?.public_id],
+    queryFn: () => getPostmortem(runDetailQuery.data!.postmortem!.public_id),
+    enabled: Boolean(runDetailQuery.data?.postmortem?.public_id),
+  });
+
+  const historicalComparisonQuery = useQuery({
+    queryKey: ["historicalComparison", selectedRunId],
+    queryFn: () => getHistoricalComparison(selectedRunId!),
+    enabled: Boolean(selectedRunId),
+    refetchInterval: 5000,
+  });
+
   useEffect(() => {
     if (!selectedCycleId && cyclesQuery.data?.items?.[0]) {
       setSelectedCycleId(cyclesQuery.data.items[0].cycle.public_id);
@@ -136,6 +170,7 @@ export default function App() {
     source.onmessage = () => {
       client.invalidateQueries({ queryKey: ["cycle", selectedCycleId] });
       client.invalidateQueries({ queryKey: ["cycles"] });
+      client.invalidateQueries({ queryKey: ["verificationSummary", selectedCycleId] });
     };
     source.onerror = () => {
       source.close();
@@ -152,12 +187,22 @@ export default function App() {
       client.invalidateQueries({ queryKey: ["run", selectedRunId] });
       client.invalidateQueries({ queryKey: ["runs", selectedCycleId] });
       client.invalidateQueries({ queryKey: ["cycle", selectedCycleId] });
+      client.invalidateQueries({ queryKey: ["verificationSummary", selectedCycleId] });
+      client.invalidateQueries({ queryKey: ["historicalComparison", selectedRunId] });
+      const verificationReportId = runDetailQuery.data?.verification_report?.public_id;
+      if (verificationReportId) {
+        client.invalidateQueries({ queryKey: ["verificationReport", verificationReportId] });
+      }
+      const postmortemId = runDetailQuery.data?.postmortem?.public_id;
+      if (postmortemId) {
+        client.invalidateQueries({ queryKey: ["postmortem", postmortemId] });
+      }
     };
     source.onerror = () => {
       source.close();
     };
     return () => source.close();
-  }, [client, selectedCycleId, selectedRunId]);
+  }, [client, runDetailQuery.data?.postmortem?.public_id, runDetailQuery.data?.verification_report?.public_id, selectedCycleId, selectedRunId]);
 
   const createMutation = useMutation({
     mutationFn: async () =>
@@ -277,10 +322,11 @@ export default function App() {
           <div className="flex flex-col gap-3 md:flex-row md:items-end md:justify-between">
             <div>
               <p className="text-xs uppercase tracking-[0.3em] text-slate-500">Synthetos</p>
-              <h1 className="text-3xl font-semibold">Phase 3 Control Tower</h1>
+              <h1 className="text-3xl font-semibold">Phase 4 Verification Tower</h1>
               <p className="mt-2 max-w-2xl text-sm text-slate-600">
                 Create a cycle, drive it through ideation, launch bounded experiment runs,
-                and watch live execution telemetry with the same local-first control plane.
+                and inspect verification outcomes, postmortems, and same-charter research memory
+                from the same local-first control plane.
               </p>
             </div>
             <div className="rounded-2xl bg-slate-900 px-4 py-3 text-xs text-slate-100">
@@ -395,6 +441,7 @@ export default function App() {
             onStartEvidence={() => evidenceMutation.mutate()}
             evidencePending={evidenceMutation.isPending}
             onSelectReport={setSelectedReportId}
+            verificationSummary={verificationSummaryQuery.data}
           />
           <aside className="space-y-6">
             <LiteraturePanel triage={literatureQuery.data} />
@@ -412,12 +459,16 @@ export default function App() {
             />
             <RunTelemetryPanel
               detail={runDetailQuery.data}
+              verificationReport={verificationReportQuery.data}
+              postmortem={postmortemQuery.data}
+              historicalComparison={historicalComparisonQuery.data}
               onRunCommand={(command) => {
                 if (selectedRunId) {
                   runCommandMutation.mutate({ runId: selectedRunId, command });
                 }
               }}
               commandPending={runCommandMutation.isPending}
+              onSelectReport={setSelectedReportId}
             />
             <SkillsPanel skills={skillsQuery.data?.items ?? []} />
             <ReportPanel report={reportQuery.data} />
@@ -437,6 +488,7 @@ function CycleDetailPanel({
   onStartEvidence,
   evidencePending,
   onSelectReport,
+  verificationSummary,
 }: {
   detail?: CycleDetailResponse;
   currentRun?: RunSummary;
@@ -446,6 +498,7 @@ function CycleDetailPanel({
   onStartEvidence: () => void;
   evidencePending: boolean;
   onSelectReport: (reportId: string) => void;
+  verificationSummary?: VerificationSummaryResponse;
 }) {
   if (!detail) {
     return <section className="panel p-6">Select a cycle to inspect Phase 0 state.</section>;
@@ -489,12 +542,48 @@ function CycleDetailPanel({
         <InfoCard label="Current Status" value={detail.cycle.current_status} />
         <InfoCard
           label="Current Run"
-          value={currentRun ? `${currentRun.status} (${currentRun.execution_profile})` : "none"}
+          value={
+            currentRun
+              ? `${currentRun.status} (${currentRun.execution_profile})${
+                  currentRun.verification_outcome ? ` · ${currentRun.verification_outcome}` : ""
+                }`
+              : "none"
+          }
         />
       </div>
 
       <div className="mt-6 grid gap-6 lg:grid-cols-2">
         <div className="space-y-4">
+          {verificationSummary ? (
+            <Subsection title="Verification Summary">
+              <div className="grid gap-3 md:grid-cols-2">
+                <InfoCard label="Robust" value={String(verificationSummary.robust_count)} />
+                <InfoCard label="Tentative" value={String(verificationSummary.tentative_count)} />
+                <InfoCard label="Rejected" value={String(verificationSummary.rejected_count)} />
+                <InfoCard label="Invalid" value={String(verificationSummary.invalid_count)} />
+              </div>
+              {verificationSummary.latest_cycle_summary_report_public_id ? (
+                <button
+                  className="button-secondary"
+                  onClick={() =>
+                    onSelectReport(verificationSummary.latest_cycle_summary_report_public_id!)
+                  }
+                >
+                  Open Cycle Verification Summary
+                </button>
+              ) : null}
+              {verificationSummary.next_step_recommendations.length > 0 ? (
+                <div className="space-y-2">
+                  {verificationSummary.next_step_recommendations.map((item) => (
+                    <div key={`${item.recommendation_type}-${item.rationale}`} className="rounded-xl border border-slate-200 p-3">
+                      <div className="font-medium">{item.recommendation_type}</div>
+                      <div className="text-sm text-slate-600">{item.rationale}</div>
+                    </div>
+                  ))}
+                </div>
+              ) : null}
+            </Subsection>
+          ) : null}
           <Subsection title="Recent Jobs">
             {detail.recent_jobs.map((job) => (
               <div key={job.public_id} className="rounded-xl border border-slate-200 p-3">
@@ -810,6 +899,7 @@ function RunQueuePanel({
             <div className="font-medium">{run.public_id}</div>
             <div className="text-xs text-slate-500">
               {run.status} · {run.execution_profile}
+              {run.verification_outcome ? ` · ${run.verification_outcome}` : ""}
               {run.failure_classification ? ` · ${run.failure_classification}` : ""}
             </div>
           </button>
@@ -821,12 +911,20 @@ function RunQueuePanel({
 
 function RunTelemetryPanel({
   detail,
+  verificationReport,
+  postmortem,
+  historicalComparison,
   onRunCommand,
   commandPending,
+  onSelectReport,
 }: {
   detail?: RunDetailResponse;
+  verificationReport?: VerificationReportDetail;
+  postmortem?: FailurePostmortemDetail;
+  historicalComparison?: HistoricalComparisonResponse;
   onRunCommand: (command: "pause" | "cancel" | "retry") => void;
   commandPending: boolean;
+  onSelectReport: (reportId: string) => void;
 }) {
   if (!detail) {
     return null;
@@ -835,10 +933,11 @@ function RunTelemetryPanel({
     <section className="panel p-5">
       <div className="mb-4 flex items-start justify-between gap-3">
         <div>
-          <p className="text-xs uppercase tracking-[0.25em] text-slate-500">Live Run</p>
+          <p className="text-xs uppercase tracking-[0.25em] text-slate-500">Run Verification</p>
           <h2 className="text-xl font-semibold">{detail.run.public_id}</h2>
           <p className="text-xs text-slate-500">
             {detail.run.status} · {detail.run.execution_profile}
+            {detail.run.verification_outcome ? ` · ${detail.run.verification_outcome}` : ""}
           </p>
         </div>
         <div className="flex gap-2">
@@ -852,6 +951,85 @@ function RunTelemetryPanel({
         <InfoCard label="Patch Archive" value={detail.run.patch_archive_path ?? "none"} />
       </div>
       <div className="space-y-3">
+        {verificationReport ? (
+          <Subsection title="Verification">
+            <div className="rounded-xl border border-slate-200 p-3">
+              <div className="font-medium">{verificationReport.outcome}</div>
+              <div className="mt-1 text-sm text-slate-600">{verificationReport.reviewer_summary}</div>
+              {verificationReport.rerun_note ? (
+                <div className="mt-2 text-sm text-slate-600">
+                  <strong>Replay guidance:</strong> {verificationReport.rerun_note}
+                </div>
+              ) : null}
+              <pre className="mt-2 overflow-auto rounded-lg bg-slate-50 p-2 text-xs text-slate-700">
+                {JSON.stringify(verificationReport.baseline_comparison, null, 2)}
+              </pre>
+            </div>
+          </Subsection>
+        ) : null}
+        {historicalComparison ? (
+          <Subsection title="Same-Charter History">
+            <div className="rounded-xl border border-slate-200 p-3 text-sm text-slate-700">
+              Compared against {historicalComparison.total_prior_runs} prior runs using
+              the <strong> {historicalComparison.comparison_scope.split("_").join(" ")} </strong>
+              scope.
+            </div>
+            {(historicalComparison.comparisons ?? []).slice(0, 6).map((item, index) => (
+              <div key={`${item.prior_run_public_id}-${item.metric}-${index}`} className="rounded-xl border border-slate-200 p-3">
+                <div className="font-medium">
+                  {String(item.metric ?? "metric")} · prior {String(item.prior_run_public_id ?? "unknown")}
+                </div>
+                <div className="text-sm text-slate-600">
+                  {String(item.prior_value ?? "n/a")} → {String(item.current_value ?? "n/a")}
+                  {" "}({String(item.delta ?? "n/a")})
+                </div>
+              </div>
+            ))}
+            {(historicalComparison.memory_references ?? []).slice(0, 4).map((item, index) => (
+              <div key={`${item.prior_run_public_id}-${index}`} className="rounded-xl border border-slate-200 p-3">
+                <div className="font-medium">
+                  Memory from {String(item.prior_run_public_id ?? "prior run")}
+                </div>
+                <div className="text-sm text-slate-600">
+                  {String(item.verification_summary ?? item.root_cause_summary ?? "No summary available")}
+                </div>
+              </div>
+            ))}
+          </Subsection>
+        ) : null}
+        {postmortem ? (
+          <Subsection title="Postmortem">
+            <div className="rounded-xl border border-slate-200 p-3">
+              <div className="font-medium">
+                {postmortem.failure_class} · {postmortem.failure_stage}
+              </div>
+              <div className="mt-1 text-sm text-slate-600">{postmortem.root_cause_summary}</div>
+              {(postmortem.remediation_suggestions ?? []).length > 0 ? (
+                <div className="mt-2 space-y-2">
+                  {(postmortem.remediation_suggestions ?? []).map((item, index) => (
+                    <div key={`${item.category}-${index}`} className="rounded-lg bg-slate-50 p-2 text-xs text-slate-700">
+                      <strong>{String(item.category ?? "general")}:</strong> {String(item.suggestion ?? "")}
+                    </div>
+                  ))}
+                </div>
+              ) : null}
+            </div>
+          </Subsection>
+        ) : null}
+        {detail.reports.length > 0 ? (
+          <Subsection title="Report Links">
+            {detail.reports.map((report) => (
+              <button
+                key={report.public_id}
+                className="w-full rounded-xl border border-slate-200 p-3 text-left hover:bg-slate-50"
+                onClick={() => onSelectReport(report.public_id)}
+              >
+                <div className="font-medium">{report.title}</div>
+                <div className="text-xs text-slate-500">{report.report_type}</div>
+              </button>
+            ))}
+          </Subsection>
+        ) : null}
         <Subsection title="Telemetry">
           {(detail.telemetry_events ?? []).slice(-12).reverse().map((event) => (
             <div key={event.public_id} className="rounded-xl border border-slate-200 p-3">

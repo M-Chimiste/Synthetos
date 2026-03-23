@@ -244,6 +244,7 @@ export interface RunSummary {
   status: string;
   execution_profile: string;
   failure_classification?: string | null;
+  verification_outcome?: string | null;
   started_at?: string | null;
   completed_at?: string | null;
   created_at: string;
@@ -287,6 +288,7 @@ export interface RunRecord {
   metrics_summary: Dictionary;
   artifact_manifest: Dictionary;
   failure_classification?: string | null;
+  verification_outcome?: string | null;
   last_error?: string | null;
   exit_code?: number | null;
   attempt_count: number;
@@ -321,10 +323,90 @@ export interface RunListResponse {
   total: number;
 }
 
+export interface VerificationReportSummary {
+  public_id: string;
+  run_public_id: string;
+  experiment_spec_public_id: string;
+  outcome: string;
+  reviewer_summary: string;
+  created_at: string;
+}
+
+export interface VerificationReportDetail extends VerificationReportSummary {
+  cycle_public_id: string;
+  hypothesis_public_id?: string | null;
+  outcome_rationale: string;
+  baseline_comparison: Dictionary;
+  historical_comparisons: Dictionary[];
+  metric_sanity_checks: Dictionary[];
+  artifact_checks: Dictionary[];
+  output_contract_checks: Dictionary[];
+  leakage_signals: Dictionary[];
+  split_validation: Dictionary;
+  rerun_note?: string | null;
+  model_route_id: string;
+  prompt_id: string;
+  updated_at: string;
+}
+
+export interface FailurePostmortemSummary {
+  public_id: string;
+  run_public_id: string;
+  failure_class: string;
+  failure_stage: string;
+  root_cause_summary: string;
+  created_at: string;
+}
+
+export interface FailurePostmortemDetail extends FailurePostmortemSummary {
+  cycle_public_id: string;
+  verification_report_public_id?: string | null;
+  contributing_factors: Dictionary[];
+  remediation_suggestions: Dictionary[];
+  retrieval_hints: Dictionary[];
+  protocol_update_hints: Dictionary[];
+  similar_prior_failures: Dictionary[];
+  model_route_id: string;
+  prompt_id: string;
+  updated_at: string;
+}
+
+export interface NextStepRecommendation {
+  recommendation_type: string;
+  rationale: string;
+  payload: Dictionary;
+}
+
+export interface VerificationSummaryResponse {
+  cycle_public_id: string;
+  total_runs: number;
+  robust_count: number;
+  tentative_count: number;
+  rejected_count: number;
+  invalid_count: number;
+  pending_count: number;
+  postmortem_count: number;
+  latest_cycle_summary_report_public_id?: string | null;
+  next_step_recommendations: NextStepRecommendation[];
+}
+
+export interface HistoricalComparisonResponse {
+  run_public_id: string;
+  experiment_spec_public_id: string;
+  hypothesis_public_id?: string | null;
+  charter_public_id?: string | null;
+  comparison_scope: string;
+  comparisons: Dictionary[];
+  memory_references: Dictionary[];
+  total_prior_runs: number;
+}
+
 export interface RunDetailResponse {
   run: RunRecord;
   artifact_manifest?: RunArtifactManifest | null;
   telemetry_events: RunTelemetryEvent[];
   skill_execution_records: SkillExecutionRecord[];
   reports: ReportSummary[];
+  verification_report?: VerificationReportSummary | null;
+  postmortem?: FailurePostmortemSummary | null;
 }

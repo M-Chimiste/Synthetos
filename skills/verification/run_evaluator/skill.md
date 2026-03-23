@@ -4,6 +4,7 @@ version: 1.0.0
 phase: phase3
 allowed_operators:
   - run_finalize
+  - run_verify
 outputs:
   - run_summary
   - artifact_review

@@ -27,7 +27,10 @@ from libs.schemas.api import (
     EvidenceSummaryResponse,
     ExperimentSpecDetail,
     ExperimentSpecListResponse,
+    FailurePostmortemDetail,
+    FailurePostmortemListResponse,
     HealthResponse,
+    HistoricalComparisonResponse,
     HypothesisCardDetail,
     HypothesisListResponse,
     JobDetailResponse,
@@ -45,6 +48,9 @@ from libs.schemas.api import (
     RunListResponse,
     SkillDetailResponse,
     SkillListResponse,
+    VerificationReportDetail,
+    VerificationReportListResponse,
+    VerificationSummaryResponse,
 )
 from libs.storage import services
 from libs.storage.session import get_session_factory, initialize_database
@@ -526,3 +532,80 @@ def admin_probe_models(
 ) -> dict[str, object]:
     gateway = ModelGateway.from_config(get_config())
     return {"routes": [route.model_dump(mode="json") for route in gateway.probe_all()]}
+
+
+# ---------------------------------------------------------------------------
+# Phase 4 — Verification & Postmortems
+# ---------------------------------------------------------------------------
+
+
+@app.get(
+    "/api/v1/cycles/{cycle_id}/verification",
+    response_model=VerificationSummaryResponse,
+)
+def get_verification_summary(
+    cycle_id: str,
+    actor: Actor = Depends(require_scopes(TokenScope.REPORTS_READ)),
+    session: Session = Depends(get_db),
+) -> VerificationSummaryResponse:
+    return services.get_verification_summary_for_cycle(session, cycle_id)
+
+
+@app.get(
+    "/api/v1/cycles/{cycle_id}/verification-reports",
+    response_model=VerificationReportListResponse,
+)
+def list_verification_reports(
+    cycle_id: str,
+    actor: Actor = Depends(require_scopes(TokenScope.REPORTS_READ)),
+    session: Session = Depends(get_db),
+) -> VerificationReportListResponse:
+    return services.list_verification_reports_for_cycle(session, cycle_id)
+
+
+@app.get(
+    "/api/v1/verification-reports/{report_id}",
+    response_model=VerificationReportDetail,
+)
+def get_verification_report(
+    report_id: str,
+    actor: Actor = Depends(require_scopes(TokenScope.REPORTS_READ)),
+    session: Session = Depends(get_db),
+) -> VerificationReportDetail:
+    return services.get_verification_report_detail(session, report_id)
+
+
+@app.get(
+    "/api/v1/cycles/{cycle_id}/postmortems",
+    response_model=FailurePostmortemListResponse,
+)
+def list_postmortems(
+    cycle_id: str,
+    actor: Actor = Depends(require_scopes(TokenScope.REPORTS_READ)),
+    session: Session = Depends(get_db),
+) -> FailurePostmortemListResponse:
+    return services.list_postmortems_for_cycle(session, cycle_id)
+
+
+@app.get(
+    "/api/v1/postmortems/{postmortem_id}",
+    response_model=FailurePostmortemDetail,
+)
+def get_postmortem(
+    postmortem_id: str,
+    actor: Actor = Depends(require_scopes(TokenScope.REPORTS_READ)),
+    session: Session = Depends(get_db),
+) -> FailurePostmortemDetail:
+    return services.get_postmortem_detail(session, postmortem_id)
+
+
+@app.get(
+    "/api/v1/runs/{run_id}/historical-comparison",
+    response_model=HistoricalComparisonResponse,
+)
+def get_historical_comparison(
+    run_id: str,
+    actor: Actor = Depends(require_scopes(TokenScope.REPORTS_READ)),
+    session: Session = Depends(get_db),
+) -> HistoricalComparisonResponse:
+    return services.get_historical_comparison_api(session, run_id)

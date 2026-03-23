@@ -22,3 +22,10 @@ execution:
       - enabled
     image_keys:
       - custom
+verification:
+  require_baseline_comparison: true
+  require_historical_comparison: true
+  auto_postmortem_on_failure: true
+  leakage_check_enabled: true
+  split_validation_enabled: true
+  min_outcome_for_promotion: tentative

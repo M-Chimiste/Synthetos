@@ -23,9 +23,12 @@ from libs.ideation.services import (
 )
 from libs.storage.base import Base
 from libs.storage.models import (
+    ExperimentSpecModel,
+    FailurePostmortemModel,
     PaperCardModel,
     ResearchCharterModel,
     ResearchCycleModel,
+    RunRecordModel,
     SourceRetrievalSessionModel,
 )
 
@@ -376,6 +379,142 @@ def test_auto_approve_top_n(db_session, cycle):
     approved = get_approved_hypotheses(db_session, cycle.id)
     assert len(approved) == 3
     assert all(h.status == "approved" for h in approved)
+
+
+def test_compute_portfolio_ranking_applies_failure_memory_penalty(db_session, cycle):
+    low_risk = create_hypothesis_card(
+        db_session, cycle.id,
+        title="Stable idea",
+        statement="S1",
+        rationale="R1",
+        approach_summary="A1",
+        supporting_evidence=[],
+        counter_evidence=[],
+        model_route_id="ideation",
+        prompt_id="p",
+    )
+    penalized = create_hypothesis_card(
+        db_session, cycle.id,
+        title="Penalty target",
+        statement="S2",
+        rationale="R2",
+        approach_summary="A2",
+        supporting_evidence=[],
+        counter_evidence=[],
+        model_route_id="ideation",
+        prompt_id="p",
+    )
+    record_hypothesis_critique(db_session, low_risk, {
+        "novelty_score": 0.7,
+        "feasibility_score": 0.7,
+        "impact_score": 0.7,
+        "critique_summary": "OK",
+        "issues": [],
+    })
+    record_hypothesis_critique(db_session, penalized, {
+        "novelty_score": 0.9,
+        "feasibility_score": 0.9,
+        "impact_score": 0.9,
+        "critique_summary": "OK",
+        "issues": [],
+    })
+
+    charter_id = cycle.charter_id
+    prior_cycle = ResearchCycleModel(
+        public_id=generate_public_id("cycle"),
+        charter_id=charter_id,
+        current_status="ready",
+    )
+    db_session.add(prior_cycle)
+    db_session.flush()
+    prior_hyp = create_hypothesis_card(
+        db_session, prior_cycle.id,
+        title="Penalty target",
+        statement="Prior",
+        rationale="Prior",
+        approach_summary="Prior",
+        supporting_evidence=[],
+        counter_evidence=[],
+        model_route_id="ideation",
+        prompt_id="p",
+    )
+    spec = ExperimentSpecModel(
+        public_id=generate_public_id("expspec"),
+        cycle_id=prior_cycle.id,
+        hypothesis_card_id=prior_hyp.id,
+        title="Penalty target",
+        objective="Obj",
+        baseline_description="Baseline",
+        method_description="Method",
+        status="valid",
+        model_route_id="route",
+        prompt_id="prompt",
+    )
+    db_session.add(spec)
+    db_session.flush()
+    for index in range(2):
+        run = RunRecordModel(
+            public_id=generate_public_id("run"),
+            cycle_id=prior_cycle.id,
+            experiment_spec_id=spec.id,
+            status="failed",
+            execution_profile="cpu-small",
+            workspace_path="/tmp/workspace",
+            artifact_root="/tmp/artifacts",
+            image="python:3.12",
+            build_recipe={},
+            command=["python", "train.py"],
+            env_vars={},
+            mounts=[],
+            hardware_profile="cpu-small",
+            timeout_seconds=60,
+            memory_limit_mb=1024,
+            cpu_limit="2",
+            gpu_enabled=False,
+            network_mode="disabled",
+            bound_skill_keys=[],
+            prompt_lineage=[],
+            model_lineage=[],
+            latest_resource_snapshot={},
+            metrics_summary={},
+            artifact_manifest={},
+            failure_classification="resource_limit",
+            verification_outcome="invalid",
+            attempt_count=1,
+        )
+        db_session.add(run)
+        db_session.flush()
+        db_session.add(
+            FailurePostmortemModel(
+                public_id=generate_public_id("pm"),
+                cycle_id=prior_cycle.id,
+                run_record_id=run.id,
+                verification_report_id=None,
+                failure_class="resource_limit",
+                failure_stage="execution",
+                root_cause_summary=f"Run {index} exhausted memory.",
+                contributing_factors=[],
+                remediation_suggestions=[],
+                retrieval_hints=[],
+                protocol_update_hints=[],
+                similar_prior_failures=[],
+                model_route_id="route",
+                prompt_id="prompt",
+            )
+        )
+    db_session.flush()
+
+    ranked = compute_portfolio_ranking(
+        db_session,
+        cycle.id,
+        auto_approve_top_n=2,
+        charter_id=charter_id,
+    )
+    ranked_by_title = {item.title: item for item in ranked}
+    assert (ranked_by_title["Penalty target"].portfolio_score or 0.0) < 0.729
+    assert "portfolio penalty" in (
+        ranked_by_title["Penalty target"].ranking_rationale or ""
+    ).lower()
 
 
 # ---------------------------------------------------------------------------

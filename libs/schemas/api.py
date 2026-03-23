@@ -9,6 +9,7 @@ from libs.schemas.domain import (
     DomainEventEnvelope,
     EvidenceCard,
     ExperimentSpec,
+    FailurePostmortem,
     HypothesisCard,
     JobRecord,
     PaperCard,
@@ -24,6 +25,7 @@ from libs.schemas.domain import (
     SkillExecutionRecord,
     SkillVersion,
     SourceRetrievalSession,
+    VerificationReport,
 )
 
 
@@ -246,9 +248,55 @@ class RunSummary(BaseModel):
     status: str
     execution_profile: str
     failure_classification: str | None = None
+    verification_outcome: str | None = None
     started_at: datetime | None = None
     completed_at: datetime | None = None
     created_at: datetime
+
+
+# ---------------------------------------------------------------------------
+# Phase 4 — Verification & Postmortems
+# ---------------------------------------------------------------------------
+
+
+class VerificationReportSummary(BaseModel):
+    public_id: str
+    run_public_id: str
+    experiment_spec_public_id: str
+    outcome: str
+    reviewer_summary: str
+    created_at: datetime
+
+
+class VerificationReportDetail(VerificationReport):
+    """Full verification report including all check results."""
+
+    pass
+
+
+class VerificationReportListResponse(BaseModel):
+    items: list[VerificationReportSummary]
+    total: int
+
+
+class FailurePostmortemSummary(BaseModel):
+    public_id: str
+    run_public_id: str
+    failure_class: str
+    failure_stage: str
+    root_cause_summary: str
+    created_at: datetime
+
+
+class FailurePostmortemDetail(FailurePostmortem):
+    """Full postmortem with remediation hints."""
+
+    pass
+
+
+class FailurePostmortemListResponse(BaseModel):
+    items: list[FailurePostmortemSummary]
+    total: int
 
 
 class RunDetailResponse(BaseModel):
@@ -257,6 +305,8 @@ class RunDetailResponse(BaseModel):
     telemetry_events: list[RunTelemetryEvent] = Field(default_factory=list)
     skill_execution_records: list[SkillExecutionRecord] = Field(default_factory=list)
     reports: list[ReportSummary] = Field(default_factory=list)
+    verification_report: VerificationReportSummary | None = None
+    postmortem: FailurePostmortemSummary | None = None
 
 
 class RunListResponse(BaseModel):
@@ -267,3 +317,33 @@ class RunListResponse(BaseModel):
 class HealthResponse(BaseModel):
     status: str
     timestamp: datetime
+
+
+class HistoricalComparisonResponse(BaseModel):
+    run_public_id: str
+    experiment_spec_public_id: str
+    hypothesis_public_id: str | None = None
+    charter_public_id: str | None = None
+    comparison_scope: str = "same_charter"
+    comparisons: list[dict[str, Any]] = Field(default_factory=list)
+    memory_references: list[dict[str, Any]] = Field(default_factory=list)
+    total_prior_runs: int
+
+
+class NextStepRecommendation(BaseModel):
+    recommendation_type: str
+    rationale: str
+    payload: dict[str, Any] = Field(default_factory=dict)
+
+
+class VerificationSummaryResponse(BaseModel):
+    cycle_public_id: str
+    total_runs: int
+    robust_count: int
+    tentative_count: int
+    rejected_count: int
+    invalid_count: int
+    pending_count: int
+    postmortem_count: int
+    latest_cycle_summary_report_public_id: str | None = None
+    next_step_recommendations: list[NextStepRecommendation] = Field(default_factory=list)

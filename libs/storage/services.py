@@ -7,6 +7,7 @@ from pathlib import Path
 from typing import Any
 
 from fastapi import HTTPException
+from sqlalchemy import func as sa_func
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
@@ -28,6 +29,10 @@ from libs.schemas.api import (
     ExperimentSpecDetail,
     ExperimentSpecListResponse,
     ExperimentSpecSummary,
+    FailurePostmortemDetail,
+    FailurePostmortemListResponse,
+    FailurePostmortemSummary,
+    HistoricalComparisonResponse,
     HypothesisCardDetail,
     HypothesisCardSummary,
     HypothesisListResponse,
@@ -46,6 +51,10 @@ from libs.schemas.api import (
     RunTelemetryEvent,
     SkillDetailResponse,
     SkillSummaryResponse,
+    VerificationReportDetail,
+    VerificationReportListResponse,
+    VerificationReportSummary,
+    VerificationSummaryResponse,
 )
 from libs.schemas.domain import (
     DomainEventEnvelope,
@@ -64,6 +73,7 @@ from libs.skills.loader import load_all_skills
 from libs.storage.models import (
     DomainEventModel,
     ExperimentSpecModel,
+    FailurePostmortemModel,
     JobModel,
     ModelInvocationRecordModel,
     OrchestratorClientModel,
@@ -80,7 +90,10 @@ from libs.storage.models import (
     SkillExecutionRecordModel,
     SkillValidationIssueModel,
     SkillVersionModel,
+    VerificationReportModel,
 )
+from libs.verification.historical import collect_historical_memory_refs, find_comparable_runs
+from libs.verification.recommendations import build_next_step_recommendations
 
 DEFAULT_SOURCE_SCOPE: dict[str, Any] = {
     "mode": "internal+arxiv",
@@ -1038,6 +1051,7 @@ def _build_run_record_response(
         metrics_summary=run.metrics_summary or {},
         artifact_manifest=run.artifact_manifest or {},
         failure_classification=run.failure_classification,
+        verification_outcome=run.verification_outcome,
         last_error=run.last_error,
         exit_code=run.exit_code,
         attempt_count=run.attempt_count,
@@ -1187,6 +1201,7 @@ def list_runs_for_cycle_api(session: Session, cycle_public_id: str) -> RunListRe
             status=run.status,
             execution_profile=run.execution_profile,
             failure_classification=run.failure_classification,
+            verification_outcome=run.verification_outcome,
             started_at=run.started_at,
             completed_at=run.completed_at,
             created_at=run.created_at,
@@ -1284,6 +1299,39 @@ def get_run_detail_api(session: Session, run_public_id: str) -> RunDetailRespons
             predictions_path=run.artifact_manifest.get("predictions_path"),
             artifacts=run.artifact_manifest.get("artifacts", []),
         )
+    # Phase 4 — verification and postmortem
+    vr = session.scalar(
+        select(VerificationReportModel).where(
+            VerificationReportModel.run_record_id == run.id
+        )
+    )
+    vr_summary = None
+    if vr is not None:
+        spec_obj = session.get(ExperimentSpecModel, vr.experiment_spec_id)
+        vr_summary = VerificationReportSummary(
+            public_id=vr.public_id,
+            run_public_id=run.public_id,
+            experiment_spec_public_id=spec_obj.public_id if spec_obj else "",
+            outcome=vr.outcome,
+            reviewer_summary=vr.reviewer_summary,
+            created_at=vr.created_at,
+        )
+    pm = session.scalar(
+        select(FailurePostmortemModel).where(
+            FailurePostmortemModel.run_record_id == run.id
+        )
+    )
+    pm_summary = None
+    if pm is not None:
+        pm_summary = FailurePostmortemSummary(
+            public_id=pm.public_id,
+            run_public_id=run.public_id,
+            failure_class=pm.failure_class,
+            failure_stage=pm.failure_stage,
+            root_cause_summary=pm.root_cause_summary,
+            created_at=pm.created_at,
+        )
+
     return RunDetailResponse(
         run=_build_run_record_response(session, run),
         artifact_manifest=artifact_manifest,
@@ -1301,6 +1349,8 @@ def get_run_detail_api(session: Session, run_public_id: str) -> RunDetailRespons
             for item in skill_records
         ],
         reports=run_reports,
+        verification_report=vr_summary,
+        postmortem=pm_summary,
     )
 
 
@@ -1785,3 +1835,361 @@ def get_experiment_spec_detail_api(
         updated_at=spec.updated_at,
     )
     return ExperimentSpecDetail(**schema.model_dump(), hypothesis=hyp_summary)
+
+
+# ---------------------------------------------------------------------------
+# Phase 4 — Verification & Postmortems
+# ---------------------------------------------------------------------------
+
+
+def create_verification_report(
+    session: Session,
+    *,
+    cycle: ResearchCycleModel,
+    run: RunRecordModel,
+    experiment_spec: ExperimentSpecModel,
+    hypothesis_card_id: int | None,
+    outcome: str,
+    outcome_rationale: str,
+    baseline_comparison: dict[str, Any],
+    historical_comparisons: list[dict[str, Any]],
+    metric_sanity_checks: list[dict[str, Any]],
+    artifact_checks: list[dict[str, Any]],
+    leakage_signals: list[dict[str, Any]],
+    output_contract_checks: list[dict[str, Any]],
+    split_validation: dict[str, Any],
+    rerun_note: str | None,
+    reviewer_summary: str,
+    model_route_id: str,
+    prompt_id: str,
+) -> VerificationReportModel:
+    record = VerificationReportModel(
+        public_id=generate_public_id("vr"),
+        cycle_id=cycle.id,
+        run_record_id=run.id,
+        experiment_spec_id=experiment_spec.id,
+        hypothesis_card_id=hypothesis_card_id,
+        outcome=outcome,
+        outcome_rationale=outcome_rationale,
+        baseline_comparison=baseline_comparison,
+        historical_comparisons=historical_comparisons,
+        metric_sanity_checks=metric_sanity_checks,
+        artifact_checks=artifact_checks,
+        output_contract_checks=output_contract_checks,
+        leakage_signals=leakage_signals,
+        split_validation=split_validation,
+        rerun_note=rerun_note,
+        reviewer_summary=reviewer_summary,
+        model_route_id=model_route_id,
+        prompt_id=prompt_id,
+    )
+    session.add(record)
+    session.flush()
+    return record
+
+
+def create_failure_postmortem(
+    session: Session,
+    *,
+    cycle: ResearchCycleModel,
+    run: RunRecordModel,
+    verification_report_id: int | None,
+    failure_class: str,
+    failure_stage: str,
+    root_cause_summary: str,
+    contributing_factors: list[dict[str, Any]],
+    remediation_suggestions: list[dict[str, Any]],
+    retrieval_hints: list[dict[str, Any]],
+    protocol_update_hints: list[dict[str, Any]],
+    similar_prior_failures: list[dict[str, Any]],
+    model_route_id: str,
+    prompt_id: str,
+) -> FailurePostmortemModel:
+    record = FailurePostmortemModel(
+        public_id=generate_public_id("pm"),
+        cycle_id=cycle.id,
+        run_record_id=run.id,
+        verification_report_id=verification_report_id,
+        failure_class=failure_class,
+        failure_stage=failure_stage,
+        root_cause_summary=root_cause_summary,
+        contributing_factors=contributing_factors,
+        remediation_suggestions=remediation_suggestions,
+        retrieval_hints=retrieval_hints,
+        protocol_update_hints=protocol_update_hints,
+        similar_prior_failures=similar_prior_failures,
+        model_route_id=model_route_id,
+        prompt_id=prompt_id,
+    )
+    session.add(record)
+    session.flush()
+    return record
+
+
+def get_verification_report_for_run(
+    session: Session, run_public_id: str,
+) -> VerificationReportModel | None:
+    run = get_run_by_public_id(session, run_public_id)
+    return session.scalar(
+        select(VerificationReportModel).where(
+            VerificationReportModel.run_record_id == run.id
+        )
+    )
+
+
+def get_postmortem_for_run(
+    session: Session, run_public_id: str,
+) -> FailurePostmortemModel | None:
+    run = get_run_by_public_id(session, run_public_id)
+    return session.scalar(
+        select(FailurePostmortemModel).where(
+            FailurePostmortemModel.run_record_id == run.id
+        )
+    )
+
+
+def list_verification_reports_for_cycle(
+    session: Session, cycle_public_id: str,
+) -> VerificationReportListResponse:
+    cycle = get_cycle_by_public_id(session, cycle_public_id)
+    reports = session.scalars(
+        select(VerificationReportModel)
+        .where(VerificationReportModel.cycle_id == cycle.id)
+        .order_by(VerificationReportModel.created_at.desc())
+    ).all()
+    items = []
+    for vr in reports:
+        run = session.get(RunRecordModel, vr.run_record_id)
+        spec = session.get(ExperimentSpecModel, vr.experiment_spec_id)
+        items.append(
+            VerificationReportSummary(
+                public_id=vr.public_id,
+                run_public_id=run.public_id if run else "",
+                experiment_spec_public_id=spec.public_id if spec else "",
+                outcome=vr.outcome,
+                reviewer_summary=vr.reviewer_summary,
+                created_at=vr.created_at,
+            )
+        )
+    return VerificationReportListResponse(items=items, total=len(items))
+
+
+def list_postmortems_for_cycle(
+    session: Session, cycle_public_id: str,
+) -> FailurePostmortemListResponse:
+    cycle = get_cycle_by_public_id(session, cycle_public_id)
+    postmortems = session.scalars(
+        select(FailurePostmortemModel)
+        .where(FailurePostmortemModel.cycle_id == cycle.id)
+        .order_by(FailurePostmortemModel.created_at.desc())
+    ).all()
+    items = []
+    for pm in postmortems:
+        run = session.get(RunRecordModel, pm.run_record_id)
+        items.append(
+            FailurePostmortemSummary(
+                public_id=pm.public_id,
+                run_public_id=run.public_id if run else "",
+                failure_class=pm.failure_class,
+                failure_stage=pm.failure_stage,
+                root_cause_summary=pm.root_cause_summary,
+                created_at=pm.created_at,
+            )
+        )
+    return FailurePostmortemListResponse(items=items, total=len(items))
+
+
+def _build_verification_report_detail(
+    session: Session, vr: VerificationReportModel,
+) -> VerificationReportDetail:
+    run = session.get(RunRecordModel, vr.run_record_id)
+    spec = session.get(ExperimentSpecModel, vr.experiment_spec_id)
+    cycle = session.get(ResearchCycleModel, vr.cycle_id)
+    hyp_pub_id = None
+    if vr.hypothesis_card_id:
+        from libs.storage.models import HypothesisCardModel
+
+        hyp = session.get(HypothesisCardModel, vr.hypothesis_card_id)
+        hyp_pub_id = hyp.public_id if hyp else None
+    return VerificationReportDetail(
+        public_id=vr.public_id,
+        cycle_public_id=cycle.public_id if cycle else "",
+        run_public_id=run.public_id if run else "",
+        experiment_spec_public_id=spec.public_id if spec else "",
+        hypothesis_public_id=hyp_pub_id,
+        outcome=vr.outcome,
+        outcome_rationale=vr.outcome_rationale,
+        baseline_comparison=vr.baseline_comparison or {},
+        historical_comparisons=vr.historical_comparisons or [],
+        metric_sanity_checks=vr.metric_sanity_checks or [],
+        artifact_checks=vr.artifact_checks or [],
+        output_contract_checks=vr.output_contract_checks or [],
+        leakage_signals=vr.leakage_signals or [],
+        split_validation=vr.split_validation or {},
+        rerun_note=vr.rerun_note,
+        reviewer_summary=vr.reviewer_summary,
+        model_route_id=vr.model_route_id,
+        prompt_id=vr.prompt_id,
+        created_at=vr.created_at,
+        updated_at=vr.updated_at,
+    )
+
+
+def get_verification_report_detail(
+    session: Session, report_public_id: str,
+) -> VerificationReportDetail:
+    vr = session.scalar(
+        select(VerificationReportModel).where(
+            VerificationReportModel.public_id == report_public_id
+        )
+    )
+    if vr is None:
+        raise HTTPException(status_code=404, detail="Verification report not found")
+    return _build_verification_report_detail(session, vr)
+
+
+def get_postmortem_detail(
+    session: Session, postmortem_public_id: str,
+) -> FailurePostmortemDetail:
+    pm = session.scalar(
+        select(FailurePostmortemModel).where(
+            FailurePostmortemModel.public_id == postmortem_public_id
+        )
+    )
+    if pm is None:
+        raise HTTPException(status_code=404, detail="Postmortem not found")
+    run = session.get(RunRecordModel, pm.run_record_id)
+    cycle = session.get(ResearchCycleModel, pm.cycle_id)
+    vr_pub_id = None
+    if pm.verification_report_id:
+        vr = session.get(VerificationReportModel, pm.verification_report_id)
+        vr_pub_id = vr.public_id if vr else None
+    return FailurePostmortemDetail(
+        public_id=pm.public_id,
+        cycle_public_id=cycle.public_id if cycle else "",
+        run_public_id=run.public_id if run else "",
+        verification_report_public_id=vr_pub_id,
+        failure_class=pm.failure_class,
+        failure_stage=pm.failure_stage,
+        root_cause_summary=pm.root_cause_summary,
+        contributing_factors=pm.contributing_factors or [],
+        remediation_suggestions=pm.remediation_suggestions or [],
+        retrieval_hints=pm.retrieval_hints or [],
+        protocol_update_hints=pm.protocol_update_hints or [],
+        similar_prior_failures=pm.similar_prior_failures or [],
+        model_route_id=pm.model_route_id,
+        prompt_id=pm.prompt_id,
+        created_at=pm.created_at,
+        updated_at=pm.updated_at,
+    )
+
+
+def get_verification_summary_for_cycle(
+    session: Session, cycle_public_id: str,
+) -> VerificationSummaryResponse:
+    from libs.core.config import get_config
+
+    cycle = get_cycle_by_public_id(session, cycle_public_id)
+    runs = session.scalars(
+        select(RunRecordModel).where(RunRecordModel.cycle_id == cycle.id)
+    ).all()
+    total = len(runs)
+    robust = sum(1 for r in runs if r.verification_outcome == "robust")
+    tentative = sum(1 for r in runs if r.verification_outcome == "tentative")
+    rejected = sum(1 for r in runs if r.verification_outcome == "rejected")
+    invalid = sum(1 for r in runs if r.verification_outcome == "invalid")
+    pending = sum(1 for r in runs if r.verification_outcome is None)
+    pm_count = session.scalar(
+        select(sa_func.count())
+        .select_from(FailurePostmortemModel)
+        .where(FailurePostmortemModel.cycle_id == cycle.id)
+    ) or 0
+    latest_verification_report = session.scalar(
+        select(VerificationReportModel)
+        .where(VerificationReportModel.cycle_id == cycle.id)
+        .order_by(VerificationReportModel.created_at.desc())
+    )
+    latest_postmortem = session.scalar(
+        select(FailurePostmortemModel)
+        .where(FailurePostmortemModel.cycle_id == cycle.id)
+        .order_by(FailurePostmortemModel.created_at.desc())
+    )
+    latest_cycle_summary_report = session.scalar(
+        select(ReportBundleModel)
+        .where(
+            ReportBundleModel.cycle_id == cycle.id,
+            ReportBundleModel.report_type == "verification_cycle_summary",
+        )
+        .order_by(ReportBundleModel.created_at.desc())
+    )
+    verification_policy = get_config().load_yaml(get_config().policy_config_path).get(
+        "verification", {}
+    )
+    recommendations = build_next_step_recommendations(
+        outcome=latest_verification_report.outcome if latest_verification_report else "tentative",
+        min_outcome_for_promotion=str(
+            verification_policy.get("min_outcome_for_promotion", "tentative")
+        ),
+        rerun_note=latest_verification_report.rerun_note if latest_verification_report else None,
+        retrieval_hints=latest_postmortem.retrieval_hints if latest_postmortem else [],
+        protocol_update_hints=(
+            latest_postmortem.protocol_update_hints if latest_postmortem else []
+        ),
+        reviewer_summary=(
+            latest_verification_report.reviewer_summary if latest_verification_report else None
+        ),
+    )
+    return VerificationSummaryResponse(
+        cycle_public_id=cycle.public_id,
+        total_runs=total,
+        robust_count=robust,
+        tentative_count=tentative,
+        rejected_count=rejected,
+        invalid_count=invalid,
+        pending_count=pending,
+        postmortem_count=pm_count,
+        latest_cycle_summary_report_public_id=(
+            latest_cycle_summary_report.public_id if latest_cycle_summary_report else None
+        ),
+        next_step_recommendations=recommendations,
+    )
+
+
+def get_historical_comparison_api(
+    session: Session, run_public_id: str,
+) -> HistoricalComparisonResponse:
+    vr = get_verification_report_for_run(session, run_public_id)
+    run = get_run_by_public_id(session, run_public_id)
+    spec = session.get(ExperimentSpecModel, run.experiment_spec_id)
+    cycle = session.get(ResearchCycleModel, run.cycle_id)
+    hyp_pub_id = None
+    if spec and spec.hypothesis_card_id:
+        from libs.storage.models import HypothesisCardModel
+
+        hyp = session.get(HypothesisCardModel, spec.hypothesis_card_id)
+        hyp_pub_id = hyp.public_id if hyp else None
+    comparisons = vr.historical_comparisons if vr else []
+    prior_runs = []
+    memory_references: list[dict[str, Any]] = []
+    if cycle and spec:
+        prior_runs = find_comparable_runs(
+            session,
+            run,
+            spec,
+            charter_id=cycle.charter_id,
+        )
+        memory_references = collect_historical_memory_refs(session, prior_runs)
+    total_prior = len(prior_runs) if prior_runs else (
+        len({c.get("prior_run_public_id") for c in comparisons}) if comparisons else 0
+    )
+    charter = session.get(ResearchCharterModel, cycle.charter_id) if cycle else None
+    return HistoricalComparisonResponse(
+        run_public_id=run.public_id,
+        experiment_spec_public_id=spec.public_id if spec else "",
+        hypothesis_public_id=hyp_pub_id,
+        charter_public_id=charter.public_id if charter else None,
+        comparison_scope="same_charter",
+        comparisons=comparisons,
+        memory_references=memory_references,
+        total_prior_runs=total_prior,
+    )

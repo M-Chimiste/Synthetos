@@ -4,6 +4,8 @@ import type {
   EvidenceListResponse,
   EvidenceSummaryResponse,
   ExperimentSpecListResponse,
+  FailurePostmortemDetail,
+  HistoricalComparisonResponse,
   HypothesisListResponse,
   LiteratureTriageResponse,
   PaperCardSummary,
@@ -13,6 +15,8 @@ import type {
   RunListResponse,
   SkillDetailResponse,
   SkillSummaryResponse,
+  VerificationReportDetail,
+  VerificationSummaryResponse,
 } from "./types";
 
 const API_BASE = import.meta.env.VITE_LAB_API_BASE ?? "http://127.0.0.1:8000";
@@ -123,6 +127,22 @@ export function listRuns(cycleId: string) {
 
 export function getRun(runId: string) {
   return request<RunDetailResponse>(`/api/v1/runs/${runId}`);
+}
+
+export function getVerificationSummary(cycleId: string) {
+  return request<VerificationSummaryResponse>(`/api/v1/cycles/${cycleId}/verification`);
+}
+
+export function getVerificationReport(reportId: string) {
+  return request<VerificationReportDetail>(`/api/v1/verification-reports/${reportId}`);
+}
+
+export function getPostmortem(postmortemId: string) {
+  return request<FailurePostmortemDetail>(`/api/v1/postmortems/${postmortemId}`);
+}
+
+export function getHistoricalComparison(runId: string) {
+  return request<HistoricalComparisonResponse>(`/api/v1/runs/${runId}/historical-comparison`);
 }
 
 export function createRun(specId: string, executionProfile = "cpu-small", forceStart = false) {
