@@ -1,23 +1,93 @@
 # Project Status
 
-**Project:** ML Laboratory Co-Scientist  
-**Repository:** `Synthetos`  
-**Status Date:** 2026-03-22  
-**Overall Status:** Phase 3 MVP implemented and verified in mocked end-to-end form
+**Product:** ML Laboratory Co-Scientist
+**Repository:** `Synthetos`
+**Last Updated:** 2026-03-23
+**Overall Status:** Phase 4 complete, Phase 5 not started
 
-## Current Summary
+---
 
-The repository now includes a real Phase 3 execution slice on top of the completed Phase 2 ideation pipeline. A valid `ExperimentSpec` can become a durable `RunRecord`, pass policy evaluation, receive a generated execution patch inside an isolated git worktree, execute through a Docker-backed adapter, emit durable telemetry, and produce run reports plus artifact lineage.
+## Phase Status
 
-The implemented execution pipeline is:
+| Phase | Status | Notes |
+|-------|--------|-------|
+| Phase 0 — Foundation | Complete | Repo skeleton, Postgres schemas, state machine, operator contract, model gateway, skill loader, event stream, API spine |
+| Phase 1 — Literature Intake | Complete | Research charter, arXiv metadata adapter, internal corpus adapter, title+abstract triage, shortlist ranking, fulltext escalation, literature reports |
+| Phase 2 — Evidence & Hypotheses | Complete | Evidence extraction, hypothesis generation/critique, protocol compilation, experiment specs |
+| Phase 3 — Execution Lab MVP | Complete | Git worktree isolation, Docker container execution with GPU support, run telemetry streaming (SSE), pause/cancel/retry controls, automation policy, artifact collection, failure classification, 3 Phase 3 skills, run API endpoints |
+| Phase 4 — Verification | Complete | Verification repaired to plan: same-charter history, policy-driven checks, output-contract validation, next-step recommendations, cycle verification summaries, failure-memory feedback loops, and web UI visibility |
+| Phase 5 — Pilot Hardening | Not started | |
 
-`create_run -> run_prepare -> run_execute -> run_finalize`
+---
 
-with `run_retry_repair` available for bounded retry flows after repairable failures.
+## What Was Done (Phase 4)
 
-## What Was Completed In This Session
+- `verification_reports` and `failure_postmortems` database tables (migration `20260323_000006`)
+- `output_contract_checks` column added to `verification_reports` (migration `20260323_000007`)
+- `verification_outcome` column added to `run_records` for denormalized fast queries
+- `VERIFYING` cycle status added to state machine with proper transitions
+- 3-operator verification pipeline: `run_verify` → `failure_postmortem` (conditional) → `verification_report`
+- `run_finalize` now auto-chains into `run_verify` via `next_actions`
+- Deterministic verification checks module (`libs/verification/`):
+  - Artifact presence and parseability checks
+  - Metric sanity checks (NaN, bounds, presence)
+  - Baseline comparison against declared metrics
+  - Leakage signal detection (perfect metrics, suspicious train/val gaps)
+  - Split validation (intended vs actual evaluation split)
+  - Output-contract validation against declared `ExperimentSpec.expected_outputs`
+  - Historical comparison against prior same-charter runs plus related verification/postmortem memory
+  - Outcome determination: robust / tentative / rejected / invalid
+- Verification is now policy-driven:
+  - baseline/history requirements can block `robust`
+  - leakage and split checks can be toggled by policy
+  - auto-postmortem behavior respects policy
+  - rerun / replay notes are generated deterministically
+- LLM-enhanced review summaries via `verifier` model role
+- Structured `FailurePostmortem` generation with root cause analysis, remediation suggestions, retrieval hints, and protocol update hints
+- Similar prior failure matching now spans same-charter history
+- Verification summary reports via `reporter` model role
+- Cycle-level verification summary report bundles are generated after verification completion
+- Failure-memory guidance now feeds back into:
+  - literature source retrieval context
+  - hypothesis portfolio ranking penalties/rationales
+  - structured next-step recommendations
+- 3 Jinja2 prompt templates in `prompts/verification/v1/`
+- 2 new skills: `postmortem_reflection`, `verification_summary`
+- Updated `run_evaluator` skill to support `run_verify` operator
+- 6 new API endpoints:
+  - `GET /api/v1/cycles/{id}/verification` — aggregate verification summary
+  - `GET /api/v1/cycles/{id}/verification-reports` — list verification reports
+  - `GET /api/v1/verification-reports/{id}` — verification report detail
+  - `GET /api/v1/cycles/{id}/postmortems` — list postmortems
+  - `GET /api/v1/postmortems/{id}` — postmortem detail
+  - `GET /api/v1/runs/{id}/historical-comparison` — historical comparison
+- `RunDetailResponse` includes `verification_report` and `postmortem` summaries
+- Verification summary responses now include:
+  - next-step recommendations
+  - latest cycle summary report bundle ID
+- Historical comparison responses now include:
+  - same-charter comparison scope metadata
+  - memory references used from prior verification reports and postmortems
+- Verification policy section in `configs/policies/default.yaml`
+- Web UI now shows:
+  - cycle-level verification counts and recommendations
+  - run-level verification outcome, baseline/history context, postmortem details, and report links
+  - Phase 4-aware control tower copy and API bindings
+- Pydantic / TypeScript schemas updated for verification summaries, historical comparison memory refs, output-contract checks, and run verification state
+- Test coverage added for:
+  - output-contract validation
+  - same-charter historical comparison
+  - recommendation generation
+  - failure-memory portfolio penalties
+  - cross-cycle verification history
+  - policy-driven postmortem skipping
+- Full test suite passing: 156 tests
 
-### Phase 3 domain, storage, and config
+---
+
+## What Was Done (Phase 3)
+
+### Domain, storage, and config
 
 - Added Phase 3 domain and API schemas for `RunSpec`, `RunRecord`, `RunTelemetryEvent`, `RunArtifactManifest`, and run control requests/responses
 - Added `run_records` and `run_telemetry_events` storage models plus Alembic migration `20260322_000005_phase3_runs.py`
@@ -76,43 +146,23 @@ with `run_retry_repair` available for bounded retry flows after repairable failu
 - Run preparation/finalization now records run-bound skill lineage
 - Run reports are now associated back to the originating run for inspection through the API/UI
 
-### Testing and verification coverage
+### Phase 3 verification status
 
-- Added unit coverage for execution policy, Docker command construction, and git worktree patch capture
-- Added integration coverage for:
-  - policy-blocked runs
-  - full mocked run pipeline execution
-  - telemetry persistence
-  - run skill lineage
-  - run queue visibility through API
+- 118/118 tests passed at Phase 3 completion
+- Real Docker-backed and live GPU smoke runs not yet executed (deferred to Phase 5 pilot)
 
-## Verification Status
+---
 
-### Confirmed this session
+## What Needs To Be Done Next (Phase 5)
 
-- `uv run pytest tests` — **118/118 tests passed**
-- `uv run ruff check /Users/c/software_projects/Synthetos` — **passed**
-
-### Not yet live-verified
-
-- No real Docker-backed Phase 3 smoke run was executed in this session
-- No live GPU run was executed in this session
-- No live end-to-end coding-model patch generation path was exercised; the shipped Phase 3 patch authoring path is deterministic/template-driven for the MVP slice
-
-## Phase 3 MVP Status
-
-1. ✅ A valid `ExperimentSpec` can be turned into a durable `RunRecord`
-2. ✅ Per-run isolated workspaces and patch archives are created
-3. ✅ Container execution is adapterized and policy-gated
-4. ✅ Runs emit durable telemetry and surface through API/UI
-5. ✅ Run skill lineage is visible on the completed run
-6. ⚠️ Real Docker/GPU smoke validation still needs to be performed outside mocked tests
-7. ⚠️ Approval UX remains minimal (`force_start`) rather than a richer review flow
-
-## Recommended Next Steps
-
-1. Run a real local Docker smoke test for the offline benchmark on `cpu-small`
-2. Validate optional `gpu-small` behavior on a machine with GPU runtime support
-3. Decide whether Phase 3 should keep deterministic patch authoring or graduate to an LLM-backed coder route in Phase 4
-4. Add richer pause/resume/approval ergonomics if the execution loop becomes a daily workflow
-5. Start Phase 4 verification work on top of the new `RunRecord` / artifact / telemetry lineage
+- Pilot exercises on public ML benchmark tasks and internal research problems
+- Improve recovery behavior and resume flows
+- Improve report quality and timeline views
+- Tighten policy defaults and skill validation
+- Add API contract and compatibility tests
+- Add dedicated frontend interaction tests for Phase 4 views (current coverage is build/type + backend/integration heavy)
+- Publish first-party skill library with documentation
+- Simple orchestrator client SDK
+- End-to-end usage validation from external orchestrator harness
+- Run a real local Docker smoke test for the offline benchmark on `cpu-small`
+- Validate optional `gpu-small` behavior on a machine with GPU runtime support
