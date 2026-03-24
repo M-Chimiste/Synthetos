@@ -517,6 +517,54 @@ def test_compute_portfolio_ranking_applies_failure_memory_penalty(db_session, cy
     ).lower()
 
 
+def test_compute_portfolio_ranking_preserves_active_and_promising_statuses(db_session, cycle):
+    active = create_hypothesis_card(
+        db_session, cycle.id,
+        title="Active hypothesis",
+        statement="S",
+        rationale="R",
+        approach_summary="A",
+        supporting_evidence=[],
+        counter_evidence=[],
+        model_route_id="ideation",
+        prompt_id="p",
+    )
+    record_hypothesis_critique(db_session, active, {
+        "novelty_score": 0.9,
+        "feasibility_score": 0.9,
+        "impact_score": 0.9,
+        "critique_summary": "OK",
+        "issues": [],
+    })
+    active.status = "active"
+
+    promising = create_hypothesis_card(
+        db_session, cycle.id,
+        title="Promising hypothesis",
+        statement="S",
+        rationale="R",
+        approach_summary="A",
+        supporting_evidence=[],
+        counter_evidence=[],
+        model_route_id="ideation",
+        prompt_id="p",
+    )
+    record_hypothesis_critique(db_session, promising, {
+        "novelty_score": 0.8,
+        "feasibility_score": 0.8,
+        "impact_score": 0.8,
+        "critique_summary": "OK",
+        "issues": [],
+    })
+    promising.status = "promising"
+
+    ranked = compute_portfolio_ranking(db_session, cycle.id, auto_approve_top_n=3)
+    ranked_by_title = {item.title: item for item in ranked}
+
+    assert ranked_by_title["Active hypothesis"].status == "active"
+    assert ranked_by_title["Promising hypothesis"].status == "promising"
+
+
 # ---------------------------------------------------------------------------
 # ExperimentSpec tests
 # ---------------------------------------------------------------------------

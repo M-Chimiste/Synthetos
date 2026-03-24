@@ -6,7 +6,7 @@ from pathlib import Path
 from typing import Any
 
 import structlog
-from sqlalchemy import select
+from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
 from libs.adapters.container import DockerContainerAdapter
@@ -37,6 +37,10 @@ from libs.execution import (
 )
 from libs.literature import services as lit_svc
 from libs.literature.triage import TriageRequest, triage_batch
+from libs.orchestration.autonomous_payload import (
+    AUTONOMOUS_PAYLOAD_KEYS,
+    merge_autonomous_payload,
+)
 from libs.storage.models import (
     ExperimentSpecModel,
     JobModel,
@@ -101,6 +105,17 @@ def _assign_run_public_id(
     for outcome in outcomes:
         outcome.run_public_id = run_public_id
     return outcomes
+
+
+def _merge_next_payload(
+    base_payload: dict[str, Any] | None,
+    **updates: Any,
+) -> dict[str, Any]:
+    merged = dict(base_payload or {})
+    merged.update(updates)
+    if AUTONOMOUS_PAYLOAD_KEYS & set(merged.keys()):
+        return merge_autonomous_payload(merged)
+    return merged
 
 
 def _experiment_spec_schema(spec: ExperimentSpecModel):
@@ -294,6 +309,32 @@ def source_retrieval_operator(
     failure_guidance = aggregate_failure_guidance(session, charter_id=charter.id)
     retrieval_guidance = failure_guidance["retrieval_guidance"][:3]
 
+    # Phase D: augment queries with canonical pattern trigger conditions
+    pattern_augmented_queries: list[str] = []
+    try:
+        from libs.core.policy import load_memory_policy
+        mem_policy = load_memory_policy(config.load_yaml(config.policy_config_path))
+        if mem_policy.enabled:
+            from libs.adapters.embeddings.sentence_transformers import (
+                SentenceTransformerEmbeddingAdapter,
+            )
+            from libs.memory.retrieval import PatternRetrievalService
+            _embedder = SentenceTransformerEmbeddingAdapter(config)
+            _pattern_svc = PatternRetrievalService(_embedder)
+            _pattern_hits = _pattern_svc.search(
+                session,
+                query_text=charter.problem_statement,
+                pattern_types=["method_pattern", "signal_pattern"],
+                polarity="positive",
+                limit=3,
+            )
+            for _hit in _pattern_hits:
+                for _cond in (_hit.pattern.trigger_conditions or []):
+                    if _cond.strip():
+                        pattern_augmented_queries.append(_cond.strip())
+    except Exception:
+        log.debug("pattern_retrieval_skipped_in_source_retrieval", exc_info=True)
+
     all_papers = []
     events: list[dict] = [
         {
@@ -340,6 +381,21 @@ def source_retrieval_operator(
         ingested = lit_svc.ingest_papers(session, cycle, arxiv_session, arxiv_papers)
         all_papers.extend(ingested)
         log.info("arxiv_retrieval_complete", count=len(ingested))
+
+        # Phase D: supplementary searches from canonical pattern trigger conditions
+        for _paq in pattern_augmented_queries[:3]:
+            try:
+                _extra_hits = warehouse.search(
+                    session, query_text=_paq, limit=5,
+                    categories=categories, date_from=parsed_from, date_until=parsed_until,
+                )
+                _extra_papers = [warehouse.paper_to_raw_record(h) for h in _extra_hits]
+                _extra_ingested = lit_svc.ingest_papers(
+                    session, cycle, arxiv_session, _extra_papers,
+                )
+                all_papers.extend(_extra_ingested)
+            except Exception:
+                log.debug("pattern_augmented_search_failed", query=_paq, exc_info=True)
     except Exception as exc:
         arxiv_session.status = "failed"
         arxiv_session.error_message = str(exc)
@@ -781,6 +837,20 @@ def literature_report_operator(
 
     markdown = lit_svc.build_screening_report_markdown(session, cycle, charter_title)
 
+    # If this was triggered by autonomous regeneration, chain back
+    # through ideation to refresh hypotheses, then back to loop.
+    next_actions: list[NextAction] = []
+    job_payload = job.payload or {}
+    if job_payload.get("autonomous_regeneration"):
+        next_actions.append(NextAction(
+            action="evidence_extraction",
+            payload=_merge_next_payload(
+                job_payload,
+                cycle_public_id=cycle.public_id,
+                autonomous_regeneration=True,
+            ),
+        ))
+
     return OperatorResult(
         state_patch=StatePatch(
             target_state=CycleStatus.READY,
@@ -791,6 +861,7 @@ def literature_report_operator(
             "event_type": "literature_report_generated",
             "payload": {"cycle_public_id": cycle.public_id},
         }],
+        next_actions=next_actions,
         operator_report=OperatorReport(
             title=f"Literature Screening Report: {charter_title}",
             prompt_id="prompts/literature/v1/screening_report.md",
@@ -1002,7 +1073,10 @@ def evidence_extraction_operator(
         next_actions=[
             NextAction(
                 action="hypothesis_generation",
-                payload={"cycle_public_id": cycle.public_id},
+                payload=_merge_next_payload(
+                    job.payload,
+                    cycle_public_id=cycle.public_id,
+                ),
             ),
         ],
     )
@@ -1076,12 +1150,57 @@ def hypothesis_generation_operator(
         for e in evidence_cards
     ]
 
+    # Phase D: inject canonical pattern hints into hypothesis generation
+    method_hints: list[dict[str, Any]] = []
+    failure_warnings: list[dict[str, Any]] = []
+    try:
+        from libs.core.policy import load_memory_policy
+        _mem_policy = load_memory_policy(config.load_yaml(config.policy_config_path))
+        if _mem_policy.enabled:
+            from libs.adapters.embeddings.sentence_transformers import (
+                SentenceTransformerEmbeddingAdapter,
+            )
+            from libs.memory.retrieval import PatternRetrievalService
+            _embedder = SentenceTransformerEmbeddingAdapter(config)
+            _pat_svc = PatternRetrievalService(_embedder)
+            _method_hits = _pat_svc.get_method_patterns(
+                session,
+                query_text=charter.problem_statement,
+                limit=_mem_policy.max_patterns_per_query,
+            )
+            method_hints = [
+                {
+                    "title": h.pattern.title,
+                    "description": h.pattern.description,
+                    "proven_actions": h.pattern.proven_actions,
+                }
+                for h in _method_hits
+            ]
+            _fail_hits = _pat_svc.search(
+                session,
+                query_text=charter.problem_statement,
+                polarity="negative",
+                limit=_mem_policy.max_patterns_per_query,
+            )
+            failure_warnings = [
+                {
+                    "title": h.pattern.title,
+                    "description": h.pattern.description,
+                    "disproven_actions": h.pattern.disproven_actions,
+                }
+                for h in _fail_hits
+            ]
+    except Exception:
+        log.debug("pattern_injection_skipped_in_hypothesis_gen", exc_info=True)
+
     gateway = ModelGateway.from_config(config)
     request = HypothesisGenRequest(
         charter_problem=charter.problem_statement,
         charter_criteria=charter.success_criteria or {},
         evidence_summary=evidence_summary,
         num_hypotheses=5,
+        method_hints=method_hints,
+        failure_warnings=failure_warnings,
     )
     response = generate_hypotheses(
         gateway,
@@ -1093,6 +1212,8 @@ def hypothesis_generation_operator(
             "operator_name": job.operator_name,
             "bound_skills": skill_keys,
             "benchmark_context_injected": benchmark_context_injected,
+            "canonical_method_hints": len(method_hints),
+            "canonical_failure_warnings": len(failure_warnings),
         },
     )
 
@@ -1178,7 +1299,10 @@ def hypothesis_generation_operator(
         next_actions=[
             NextAction(
                 action="hypothesis_critique",
-                payload={"cycle_public_id": cycle.public_id},
+                payload=_merge_next_payload(
+                    job.payload,
+                    cycle_public_id=cycle.public_id,
+                ),
             ),
         ],
     )
@@ -1396,7 +1520,10 @@ def hypothesis_critique_operator(
         next_actions=[
             NextAction(
                 action="protocol_compilation",
-                payload={"cycle_public_id": cycle.public_id},
+                payload=_merge_next_payload(
+                    job.payload,
+                    cycle_public_id=cycle.public_id,
+                ),
             ),
         ],
     )
@@ -1409,14 +1536,27 @@ def protocol_compilation_operator(
     cycle: ResearchCycleModel,
     job: JobModel,
 ) -> OperatorResult:
-    """Compile an experiment spec from the top-ranked approved hypothesis."""
+    """Compile an experiment spec from the selected or top-ranked hypothesis."""
     from libs.ideation import services as ideation_svc
-    from libs.ideation.protocol_compiler import ProtocolCompileRequest, compile_protocol
-    from libs.storage.models import EvidenceCardModel
+    from libs.ideation.protocol_compiler import (
+        ParameterVariationRequest,
+        ProtocolCompileRequest,
+        compile_parameter_variation,
+        compile_protocol,
+    )
+    from libs.storage.models import (
+        EvidenceCardModel,
+        HypothesisCardModel,
+        RunRecordModel,
+        VerificationReportModel,
+    )
 
     charter = session.get(ResearchCharterModel, cycle.charter_id)
     if charter is None:
         raise ValueError("Cycle is missing a charter")
+    job_payload = _merge_next_payload(job.payload, cycle_public_id=cycle.public_id)
+    selected_hypothesis_public_id = job_payload.get("selected_hypothesis_public_id")
+    variation_mode = bool(job_payload.get("variation_mode"))
 
     skill_keys, skill_outcomes = _bound_skill_context(
         session,
@@ -1434,8 +1574,20 @@ def protocol_compilation_operator(
         outcome.payload["benchmark_context_injected"] = benchmark_context_injected
         outcome.payload["protocol_drafting_active"] = protocol_drafting_active
 
+    hyp = None
+    if selected_hypothesis_public_id:
+        hyp = session.scalar(
+            select(HypothesisCardModel).where(
+                HypothesisCardModel.cycle_id == cycle.id,
+                HypothesisCardModel.public_id == selected_hypothesis_public_id,
+            )
+        )
+
     approved = ideation_svc.get_approved_hypotheses(session, cycle.id)
-    if not approved:
+    if hyp is None and approved:
+        hyp = approved[0]
+
+    if hyp is None:
         return OperatorResult(
             state_patch=StatePatch(
                 target_state=CycleStatus.READY,
@@ -1461,7 +1613,6 @@ def protocol_compilation_operator(
             skill_execution_records=skill_outcomes,
         )
 
-    hyp = approved[0]
     sup_ids = hyp.supporting_evidence or []
     evidence_data: list[dict] = []
     if sup_ids:
@@ -1482,38 +1633,172 @@ def protocol_compilation_operator(
     }]
 
     gateway = ModelGateway.from_config(config)
-    compile_req = ProtocolCompileRequest(
-        hypothesis={
-            "title": hyp.title,
-            "statement": hyp.statement,
-            "rationale": hyp.rationale,
-            "approach_summary": hyp.approach_summary,
-        },
-        evidence=evidence_data,
-        charter_problem=charter.problem_statement,
-        charter_criteria=charter.success_criteria or {},
-        constraints=charter.constraints or {},
-    )
-    response = compile_protocol(
-        gateway,
-        compile_req,
-        session=session,
-        cycle_id=cycle.id,
-        job_id=job.id,
-        invocation_parameters={
-            "operator_name": job.operator_name,
-            "bound_skills": skill_keys,
-            "hypothesis_public_id": hyp.public_id,
-            "benchmark_context_injected": benchmark_context_injected,
-            "protocol_drafting_active": protocol_drafting_active,
-        },
-    )
+    prompt_id = "prompts/ideation/v1/protocol_compilation.md"
+    spec_data: dict[str, Any]
+    if variation_mode:
+        latest_spec = session.scalar(
+            select(ExperimentSpecModel)
+            .where(
+                ExperimentSpecModel.cycle_id == cycle.id,
+                ExperimentSpecModel.hypothesis_card_id == hyp.id,
+                ExperimentSpecModel.status != "rejected",
+            )
+            .order_by(ExperimentSpecModel.created_at.desc())
+        )
+        if latest_spec is None:
+            raise ValueError(
+                f"Variation requested for hypothesis {hyp.public_id} without an existing spec"
+            )
+
+        hypothesis_specs = list(
+            session.scalars(
+                select(ExperimentSpecModel.id).where(
+                    ExperimentSpecModel.cycle_id == cycle.id,
+                    ExperimentSpecModel.hypothesis_card_id == hyp.id,
+                )
+            ).all()
+        )
+        recent_runs = []
+        latest_signal = None
+        if hypothesis_specs:
+            run_models = list(
+                session.scalars(
+                    select(RunRecordModel)
+                    .where(RunRecordModel.experiment_spec_id.in_(hypothesis_specs))
+                    .order_by(RunRecordModel.created_at.desc())
+                    .limit(5)
+                ).all()
+            )
+            for run_model in run_models:
+                verification = session.scalar(
+                    select(VerificationReportModel)
+                    .where(VerificationReportModel.run_record_id == run_model.id)
+                    .order_by(VerificationReportModel.created_at.desc())
+                )
+                signal = verification.directional_signal if verification else None
+                if latest_signal is None:
+                    latest_signal = signal
+                recent_runs.append({
+                    "public_id": run_model.public_id,
+                    "metrics": run_model.metrics_summary or {},
+                    "signal": signal,
+                    "verification_outcome": run_model.verification_outcome,
+                })
+
+        variation_request = ParameterVariationRequest(
+            hypothesis_title=hyp.title,
+            objective=latest_spec.objective,
+            method_description=latest_spec.method_description,
+            current_controls=list(latest_spec.controls or []),
+            recent_runs=recent_runs,
+            directional_signal=latest_signal,
+            hypothesis_run_count=(cycle.budget_runs_per_hypothesis or {}).get(hyp.public_id, 0),
+            variation_hints=list(job_payload.get("parameter_variation_hints") or []),
+        )
+        variation = compile_parameter_variation(
+            gateway,
+            variation_request,
+            session=session,
+            cycle_id=cycle.id,
+            job_id=job.id,
+            invocation_parameters={
+                "operator_name": job.operator_name,
+                "bound_skills": skill_keys,
+                "hypothesis_public_id": hyp.public_id,
+                "variation_mode": True,
+                "benchmark_context_injected": benchmark_context_injected,
+                "protocol_drafting_active": protocol_drafting_active,
+            },
+        )
+
+        existing_controls = [dict(control) for control in (latest_spec.controls or [])]
+        control_index = {
+            str(control.get("name")): idx
+            for idx, control in enumerate(existing_controls)
+            if control.get("name")
+        }
+        for varied in variation.varied_controls:
+            control = dict(varied)
+            name = str(control.get("name", "")).strip()
+            if not name:
+                existing_controls.append(control)
+                continue
+            if name in control_index:
+                existing_controls[control_index[name]] = {
+                    **existing_controls[control_index[name]],
+                    **control,
+                }
+            else:
+                control_index[name] = len(existing_controls)
+                existing_controls.append(control)
+
+        prior_variations = session.scalar(
+            select(func.count(ExperimentSpecModel.id)).where(
+                ExperimentSpecModel.cycle_id == cycle.id,
+                ExperimentSpecModel.hypothesis_card_id == hyp.id,
+            )
+        ) or 0
+
+        method_description = latest_spec.method_description or ""
+        if variation.method_modification:
+            method_description = (
+                f"{method_description}\n\nVariation note: {variation.method_modification}".strip()
+            )
+        if variation.expected_impact:
+            method_description = (
+                f"{method_description}\nExpected impact: {variation.expected_impact}".strip()
+            )
+
+        spec_data = {
+            "title": f"{latest_spec.title} - Variation {prior_variations}",
+            "objective": latest_spec.objective,
+            "baseline_description": latest_spec.baseline_description,
+            "method_description": method_description,
+            "controls": existing_controls,
+            "metrics": list(latest_spec.metrics or []),
+            "datasets": list(latest_spec.datasets or []),
+            "artifacts": list(latest_spec.artifacts or []),
+            "stop_conditions": list(latest_spec.stop_conditions or []),
+            "expected_outputs": list(latest_spec.expected_outputs or []),
+            "estimated_runtime_minutes": latest_spec.estimated_runtime_minutes,
+            "gpu_required": latest_spec.gpu_required,
+            "resource_requirements": dict(latest_spec.resource_requirements or {}),
+        }
+        prompt_id = "prompts/ideation/v1/parameter_variation.md"
+    else:
+        compile_req = ProtocolCompileRequest(
+            hypothesis={
+                "title": hyp.title,
+                "statement": hyp.statement,
+                "rationale": hyp.rationale,
+                "approach_summary": hyp.approach_summary,
+            },
+            evidence=evidence_data,
+            charter_problem=charter.problem_statement,
+            charter_criteria=charter.success_criteria or {},
+            constraints=charter.constraints or {},
+        )
+        response = compile_protocol(
+            gateway,
+            compile_req,
+            session=session,
+            cycle_id=cycle.id,
+            job_id=job.id,
+            invocation_parameters={
+                "operator_name": job.operator_name,
+                "bound_skills": skill_keys,
+                "hypothesis_public_id": hyp.public_id,
+                "benchmark_context_injected": benchmark_context_injected,
+                "protocol_drafting_active": protocol_drafting_active,
+            },
+        )
+        spec_data = response.model_dump()
 
     spec = ideation_svc.create_experiment_spec(
         session, cycle.id, hyp.id,
-        spec_data=response.model_dump(),
+        spec_data=spec_data,
         model_route_id="protocol_drafter",
-        prompt_id="prompts/ideation/v1/protocol_compilation.md",
+        prompt_id=prompt_id,
     )
 
     events.append({
@@ -1561,6 +1846,27 @@ def protocol_compilation_operator(
         "payload": {"cycle_public_id": cycle.public_id},
     })
 
+    # If triggered by autonomous loop, chain back to loop step
+    next_actions_pc: list[NextAction] = []
+    if job_payload.get("autonomous_loop_iteration"):
+        next_actions_pc.append(NextAction(
+            action="autonomous_loop_step",
+            payload=_merge_next_payload(
+                job_payload,
+                cycle_public_id=cycle.public_id,
+                autonomous_loop_iteration=job_payload["autonomous_loop_iteration"],
+                last_run_public_id=None,
+                last_hypothesis_public_id=hyp.public_id,
+                selected_hypothesis_public_id=hyp.public_id,
+                regeneration_attempted=(
+                    bool(job_payload.get("regeneration_attempted", False))
+                    or bool(job_payload.get("autonomous_regeneration", False))
+                ),
+                autonomous_regeneration=False,
+                variation_mode=False,
+            ),
+        ))
+
     return OperatorResult(
         state_patch=StatePatch(
             target_state=CycleStatus.READY,
@@ -1568,15 +1874,17 @@ def protocol_compilation_operator(
             context={"phase": "phase2_complete", "spec_status": spec.status},
         ),
         emitted_events=events,
+        next_actions=next_actions_pc,
         operator_report=OperatorReport(
             title=f"Protocol Compilation: {spec.title}",
-            prompt_id="prompts/ideation/v1/protocol_compilation.md",
+            prompt_id=prompt_id,
             body_markdown="\n".join([
                 "# Protocol Compilation Report",
                 "",
                 f"- Hypothesis: **{hyp.title}**",
                 f"- Spec: **{spec.title}**",
                 f"- Status: **{spec.status}**",
+                f"- Mode: **{'variation' if variation_mode else 'draft'}**",
                 f"- Validation issues: **{len(issues)}**",
                 f"- GPU required: **{spec.gpu_required}**",
                 f"- Bound skills: **{_format_skill_line(skill_keys)}**",
@@ -1938,6 +2246,17 @@ def run_finalize_operator(
         except Exception:
             log.warning("worktree_cleanup_failed", workspace_path=run.workspace_path)
 
+    # Record budget usage for this run
+    from libs.core.budget import record_run_usage
+    from libs.storage.models import HypothesisCardModel as _HCM
+    spec = session.get(ExperimentSpecModel, run.experiment_spec_id)
+    hyp_pid = ""
+    if spec and spec.hypothesis_card_id:
+        hyp_obj = session.get(_HCM, spec.hypothesis_card_id)
+        if hyp_obj:
+            hyp_pid = hyp_obj.public_id
+    record_run_usage(session, cycle, run, hyp_pid)
+
     events = [
         {
             "event_type": "run_finalized",
@@ -1974,7 +2293,13 @@ def run_finalize_operator(
             ),
         ),
         skill_execution_records=skill_outcomes,
-        next_actions=[NextAction(action="run_verify", payload={"run_public_id": run.public_id})],
+        next_actions=[NextAction(
+            action="run_verify",
+            payload=_merge_next_payload(
+                job.payload,
+                run_public_id=run.public_id,
+            ),
+        )],
     )
 
 
@@ -2428,6 +2753,34 @@ def run_verify_operator(
         )
 
     if run.status not in ("failed", "cancelled") and not self_critic_result.get("blocking"):
+        # Phase D: retrieve signal patterns for verification context
+        signal_pattern_context: list[dict[str, Any]] = []
+        try:
+            from libs.core.policy import load_memory_policy
+            _vmp = load_memory_policy(config.load_yaml(config.policy_config_path))
+            if _vmp.enabled:
+                from libs.adapters.embeddings.sentence_transformers import (
+                    SentenceTransformerEmbeddingAdapter,
+                )
+                from libs.memory.retrieval import PatternRetrievalService
+                _vemb = SentenceTransformerEmbeddingAdapter(config)
+                _vpat = PatternRetrievalService(_vemb)
+                _sig_hits = _vpat.get_signal_patterns(
+                    session,
+                    query_text=f"{spec.title} {spec.method_description or ''}",
+                    limit=3,
+                )
+                signal_pattern_context = [
+                    {
+                        "title": h.pattern.title,
+                        "description": h.pattern.description,
+                        "proven_actions": h.pattern.proven_actions,
+                    }
+                    for h in _sig_hits
+                ]
+        except Exception:
+            log.debug("signal_pattern_retrieval_skipped_in_verify", exc_info=True)
+
         try:
             gateway = ModelGateway.from_config(config)
             prompt_context = {
@@ -2450,6 +2803,7 @@ def run_verify_operator(
                 "directional_signal": directional_signal or "N/A",
                 "directional_signal_detail": directional_signal_detail,
                 "self_critic_result": self_critic_result,
+                "signal_patterns": signal_pattern_context,
             }
             from jinja2 import Template
 
@@ -2565,7 +2919,10 @@ def run_verify_operator(
         ),
         skill_execution_records=skill_outcomes,
         next_actions=[NextAction(action=next_op, payload={
-            "run_public_id": run.public_id,
+            **_merge_next_payload(
+                job.payload,
+                run_public_id=run.public_id,
+            ),
             "verification_report_public_id": vr.public_id,
             "postmortem_skipped_by_policy": (
                 not needs_postmortem and outcome.value in ("rejected", "invalid")
@@ -2665,6 +3022,36 @@ def auto_remediate_operator(
         run.workspace_path or "", run.public_id, policy.max_code_chars,
     )
 
+    # Phase D: inject canonical failure patterns as prior knowledge
+    canonical_fix_hints: list[dict[str, Any]] = []
+    try:
+        from libs.core.policy import load_memory_policy
+        _mem_policy = load_memory_policy(raw_policy)
+        if _mem_policy.enabled:
+            from libs.adapters.embeddings.sentence_transformers import (
+                SentenceTransformerEmbeddingAdapter,
+            )
+            from libs.memory.consolidation import check_staleness_context
+            from libs.memory.retrieval import PatternRetrievalService
+            _embedder = SentenceTransformerEmbeddingAdapter(config)
+            _pat_svc = PatternRetrievalService(_embedder)
+            _failure_pats = _pat_svc.get_failure_patterns(
+                session, failure_class=failure_class, min_confidence=0.5,
+            )
+            for _fp in _failure_pats[:3]:
+                if check_staleness_context(_fp, {}):
+                    canonical_fix_hints.append({
+                        "title": _fp.title,
+                        "description": _fp.description,
+                        "proven_actions": [
+                            a.get("action", a) if isinstance(a, dict) else a
+                            for a in (_fp.proven_actions or [])
+                        ],
+                        "disproven_actions": _fp.disproven_actions or [],
+                    })
+    except Exception:
+        log.debug("pattern_injection_skipped_in_auto_remediate", exc_info=True)
+
     mode = determine_prompt_mode(failure_class, attempt_number, policy)
     rendered_prompt, prompt_id = build_remediation_prompt(
         mode=mode,
@@ -2688,6 +3075,7 @@ def auto_remediate_operator(
         run_status=run.status,
         attempt_count=run.attempt_count or 0,
         policy=policy,
+        canonical_fix_hints=canonical_fix_hints,
     )
 
     # Call LLM debugger — fall through to postmortem on any failure
@@ -2824,7 +3212,10 @@ def auto_remediate_operator(
         skill_execution_records=skill_outcomes,
         next_actions=[NextAction(
             action=next_operator,
-            payload={"run_public_id": run.public_id},
+            payload=_merge_next_payload(
+                job.payload,
+                run_public_id=run.public_id,
+            ),
         )],
     )
 
@@ -3007,7 +3398,10 @@ def failure_postmortem_operator(
         ),
         skill_execution_records=skill_outcomes,
         next_actions=[NextAction(action="verification_report", payload={
-            "run_public_id": run.public_id,
+            **_merge_next_payload(
+                job.payload,
+                run_public_id=run.public_id,
+            ),
             "verification_report_public_id": job.payload.get("verification_report_public_id"),
             "postmortem_public_id": pm.public_id,
         })],
@@ -3332,6 +3726,25 @@ def verification_report_operator(
         }
     ]
 
+    # If autonomous mode, chain back to loop coordinator
+    next_actions: list[NextAction] = []
+    if getattr(cycle, "autonomy_mode", "supervised") == "autonomous":
+        loop_payload = merge_autonomous_payload(job.payload)
+        next_actions.append(NextAction(
+            action="autonomous_loop_step",
+            payload=_merge_next_payload(
+                loop_payload,
+                cycle_public_id=cycle.public_id,
+                autonomous_loop_iteration=loop_payload.get(
+                    "autonomous_loop_iteration", 0,
+                ) + 1,
+                last_run_public_id=run.public_id,
+                last_hypothesis_public_id=(hyp.public_id if hyp else None),
+                selected_hypothesis_public_id=(hyp.public_id if hyp else None),
+                variation_mode=False,
+            ),
+        ))
+
     return OperatorResult(
         state_patch=StatePatch(
             target_state=CycleStatus.READY,
@@ -3343,6 +3756,7 @@ def verification_report_operator(
             },
         ),
         emitted_events=events,
+        next_actions=next_actions,
         operator_report=OperatorReport(
             title=f"Verification Report: {run.public_id} — {outcome}",
             prompt_id=prompt_id,
@@ -3387,6 +3801,207 @@ def arxiv_warehouse_sync_operator(
     )
 
 
+# ---------------------------------------------------------------------------
+# Phase D — Cross-Charter Procedural Memory
+# ---------------------------------------------------------------------------
+
+
+def pattern_consolidation_operator(
+    session: Session,
+    config: AppConfig,
+    actor: Actor,
+    cycle: ResearchCycleModel,
+    job: JobModel,
+) -> OperatorResult:
+    """Consolidate cross-charter observations into canonical patterns."""
+    from libs.adapters.embeddings.sentence_transformers import (
+        SentenceTransformerEmbeddingAdapter,
+    )
+    from libs.core.policy import load_memory_policy
+    from libs.memory.consolidation import (
+        apply_staleness_decay,
+        cluster_postmortems_by_failure,
+        cluster_successful_runs_by_method,
+        extract_pattern_from_failure_cluster,
+        extract_pattern_from_success_cluster,
+        gather_cross_charter_postmortems,
+        gather_cross_charter_successful_runs,
+        get_existing_categories,
+        upsert_canonical_pattern,
+    )
+    from libs.storage.models import (
+        PatternConsolidationRunModel,
+        ResearchCharterModel as CharterModel,
+        VerificationReportModel,
+    )
+
+    raw_policy = config.load_yaml(config.policy_config_path)
+    memory_policy = load_memory_policy(raw_policy)
+
+    if not memory_policy.enabled:
+        return OperatorResult(
+            operator_report=OperatorReport(
+                title="Pattern Consolidation (disabled)",
+                prompt_id="system:pattern_consolidation_disabled",
+                body_markdown="Memory policy is disabled; consolidation skipped.",
+            ),
+        )
+
+    # Prevent concurrent consolidation runs
+    from libs.storage.models import PatternConsolidationRunModel as ConsolidationModel
+    running = session.scalar(
+        select(ConsolidationModel)
+        .where(ConsolidationModel.status == "running")
+        .limit(1)
+    )
+    if running is not None:
+        return OperatorResult(
+            operator_report=OperatorReport(
+                title="Pattern Consolidation (skipped — already running)",
+                prompt_id="system:pattern_consolidation_concurrent",
+                body_markdown=f"Consolidation run {running.public_id} is already in progress.",
+            ),
+        )
+
+    # Create tracking record
+    consolidation_run = PatternConsolidationRunModel(
+        public_id=generate_public_id("consrun"),
+        status="running",
+        trigger=job.payload.get("trigger", "on_demand"),
+    )
+    session.add(consolidation_run)
+    session.flush()
+
+    try:
+        embedder = SentenceTransformerEmbeddingAdapter(config)
+        gateway = ModelGateway.from_config(config)
+
+        # Build charter public_id lookup
+        charters = session.scalars(select(CharterModel)).all()
+        charter_public_ids = {c.id: c.public_id for c in charters}
+        existing_categories = get_existing_categories(session)
+
+        # Gather observations
+        postmortems = gather_cross_charter_postmortems(session)
+        successful_runs = gather_cross_charter_successful_runs(session)
+        consolidation_run.postmortems_scanned = len(postmortems)
+        consolidation_run.runs_scanned = len(successful_runs)
+
+        # Build spec lookup for successful runs
+        spec_ids = {r.experiment_spec_id for r in successful_runs if r.experiment_spec_id}
+        specs_list = session.scalars(
+            select(ExperimentSpecModel).where(ExperimentSpecModel.id.in_(spec_ids))
+        ).all() if spec_ids else []
+        specs = {s.id: s for s in specs_list}
+
+        # Build verification outcome/signal lookups
+        run_ids = [r.id for r in successful_runs]
+        vr_rows = session.scalars(
+            select(VerificationReportModel).where(
+                VerificationReportModel.run_record_id.in_(run_ids)
+            )
+        ).all() if run_ids else []
+        verification_outcomes = {vr.run_record_id: vr.verification_outcome for vr in vr_rows}
+        directional_signals = {
+            vr.run_record_id: (vr.directional_signal or "unknown") for vr in vr_rows
+        }
+
+        # Cluster and extract failure patterns
+        failure_clusters = cluster_postmortems_by_failure(postmortems, embedder, memory_policy)
+        for cluster in failure_clusters:
+            extracted = extract_pattern_from_failure_cluster(
+                cluster, gateway, existing_categories, charter_public_ids,
+            )
+            from libs.memory.consolidation import _build_evidence_refs
+            refs = _build_evidence_refs(cluster.members, "postmortem", charter_public_ids)
+            pattern = upsert_canonical_pattern(session, extracted, refs, embedder)
+            if pattern.evidence_count == len(refs):
+                consolidation_run.patterns_created += 1
+            else:
+                consolidation_run.patterns_updated += 1
+            existing_categories = get_existing_categories(session)
+
+        # Cluster and extract method patterns
+        success_clusters = cluster_successful_runs_by_method(
+            successful_runs, specs, embedder, memory_policy,
+        )
+        for cluster in success_clusters:
+            extracted = extract_pattern_from_success_cluster(
+                cluster, gateway, existing_categories, charter_public_ids,
+                verification_outcomes, directional_signals,
+            )
+            refs = _build_evidence_refs(cluster.members, "run", charter_public_ids)
+            pattern = upsert_canonical_pattern(session, extracted, refs, embedder)
+            if pattern.evidence_count == len(refs):
+                consolidation_run.patterns_created += 1
+            else:
+                consolidation_run.patterns_updated += 1
+            existing_categories = get_existing_categories(session)
+
+        # Staleness decay
+        decayed = apply_staleness_decay(session, memory_policy)
+        consolidation_run.patterns_decayed = decayed
+        consolidation_run.status = "completed"
+
+    except Exception as exc:
+        consolidation_run.status = "failed"
+        consolidation_run.error_message = str(exc)[:2000]
+        log.exception("pattern_consolidation_failed", error=str(exc))
+        raise
+
+    summary_lines = [
+        "# Pattern Consolidation Report",
+        "",
+        f"- Postmortems scanned: **{consolidation_run.postmortems_scanned}**",
+        f"- Successful runs scanned: **{consolidation_run.runs_scanned}**",
+        f"- Failure clusters found: **{len(failure_clusters)}**",
+        f"- Success clusters found: **{len(success_clusters)}**",
+        f"- Patterns created: **{consolidation_run.patterns_created}**",
+        f"- Patterns updated: **{consolidation_run.patterns_updated}**",
+        f"- Patterns decayed: **{consolidation_run.patterns_decayed}**",
+    ]
+
+    return OperatorResult(
+        emitted_events=[{
+            "event_type": "pattern_consolidation_completed",
+            "payload": {
+                "consolidation_run_public_id": consolidation_run.public_id,
+                "patterns_created": consolidation_run.patterns_created,
+                "patterns_updated": consolidation_run.patterns_updated,
+                "patterns_decayed": consolidation_run.patterns_decayed,
+            },
+        }],
+        operator_report=OperatorReport(
+            title=f"Pattern Consolidation ({consolidation_run.patterns_created} new, "
+                  f"{consolidation_run.patterns_updated} updated)",
+            prompt_id="system:pattern_consolidation",
+            body_markdown="\n".join(summary_lines),
+        ),
+    )
+
+
+def _lazy_autonomous_loop_step(
+    session: Session, config: AppConfig, actor: Actor,
+    cycle: Any, job: Any,
+) -> OperatorResult:
+    from libs.orchestration.autonomous_loop import (
+        autonomous_loop_step_operator,
+    )
+    return autonomous_loop_step_operator(session, config, actor, cycle, job)
+
+
+def _lazy_autonomous_loop_completion(
+    session: Session, config: AppConfig, actor: Actor,
+    cycle: Any, job: Any,
+) -> OperatorResult:
+    from libs.orchestration.autonomous_loop import (
+        autonomous_loop_completion_operator,
+    )
+    return autonomous_loop_completion_operator(
+        session, config, actor, cycle, job,
+    )
+
+
 OPERATOR_REGISTRY = {
     # Phase 0
     "initialize_cycle": initialize_cycle_operator,
@@ -3413,4 +4028,9 @@ OPERATOR_REGISTRY = {
     "verification_report": verification_report_operator,
     # Cycle-independent
     "arxiv_warehouse_sync": arxiv_warehouse_sync_operator,
+    # Phase C — Autonomous Loop
+    "autonomous_loop_step": _lazy_autonomous_loop_step,
+    "autonomous_loop_completion": _lazy_autonomous_loop_completion,
+    # Phase D — Cross-Charter Memory
+    "pattern_consolidation": pattern_consolidation_operator,
 }

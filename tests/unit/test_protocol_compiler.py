@@ -6,8 +6,11 @@ from pathlib import Path
 from unittest.mock import MagicMock
 
 from libs.ideation.protocol_compiler import (
+    ParameterVariationRequest,
     ProtocolCompileRequest,
     _parse_protocol_json,
+    _parse_variation_json,
+    compile_parameter_variation,
     compile_protocol,
 )
 
@@ -68,3 +71,48 @@ def test_parse_protocol_json_malformed():
     result = _parse_protocol_json("Not valid JSON")
     assert result.title == "Untitled Experiment"
     assert result.metrics == []
+
+
+def test_parse_parameter_variation_json():
+    result = _parse_variation_json(
+        """
+        {
+          "varied_controls": [
+            {"name": "learning_rate", "value": 0.001, "rationale": "reduce oscillation"}
+          ],
+          "method_modification": "Use a smaller learning rate with warmup.",
+          "expected_impact": "Stabilize validation accuracy."
+        }
+        """
+    )
+    assert result.varied_controls[0]["name"] == "learning_rate"
+    assert "smaller learning rate" in result.method_modification.lower()
+
+
+def test_compile_parameter_variation_with_mock():
+    gateway = MagicMock()
+    gateway.call_chat_completion.return_value = """
+    {
+      "varied_controls": [
+        {"name": "batch_size", "value": 64, "rationale": "more stable gradients"}
+      ],
+      "method_modification": "Increase batch size and shorten warmup.",
+      "expected_impact": "Reduce noise."
+    }
+    """
+
+    request = ParameterVariationRequest(
+        hypothesis_title="NAS",
+        objective="Improve validation accuracy",
+        method_description="Train a baseline model.",
+        current_controls=[{"name": "batch_size", "value": 32}],
+        recent_runs=[{"public_id": "run-1", "metrics": {"accuracy": 0.8}, "signal": "stalled"}],
+        directional_signal="stalled",
+        hypothesis_run_count=3,
+        variation_hints=[{"reason": "stall_break"}],
+    )
+    result = compile_parameter_variation(gateway, request)
+
+    assert result.varied_controls[0]["value"] == 64
+    assert "noise" in result.expected_impact.lower()
+    gateway.call_chat_completion.assert_called_once()

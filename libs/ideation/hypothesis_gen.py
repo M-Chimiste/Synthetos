@@ -33,6 +33,9 @@ class HypothesisGenRequest(BaseModel):
     charter_criteria: dict[str, Any]
     evidence_summary: list[dict[str, Any]]
     num_hypotheses: int = 5
+    # Phase D: canonical pattern injection
+    method_hints: list[dict[str, Any]] = []
+    failure_warnings: list[dict[str, Any]] = []
 
 
 class HypothesisGenResponse(BaseModel):
@@ -67,6 +70,8 @@ def _render_prompt(template_text: str, request: HypothesisGenRequest) -> str:
             charter_criteria=request.charter_criteria,
             evidence_summary=request.evidence_summary,
             num_hypotheses=request.num_hypotheses,
+            method_hints=request.method_hints,
+            failure_warnings=request.failure_warnings,
         )
     except Exception:
         return template_text

@@ -54,3 +54,37 @@ def load_remediation_policy(raw_policy: dict[str, Any]) -> RemediationPolicyConf
     section = raw_policy.get("remediation", {})
     return RemediationPolicyConfig.model_validate(section)
 
+
+class AutonomyPolicyConfig(BaseModel):
+    mode: str = "supervised"  # "supervised" | "autonomous"
+    auto_pivot_on_stall: bool = True
+    auto_pivot_on_regression: bool = True
+    auto_continue_on_advancing: bool = True
+    auto_regenerate_hypotheses: bool = True
+    escalate_on_portfolio_exhausted: bool = True
+
+
+def load_autonomy_policy(raw_policy: dict[str, Any]) -> AutonomyPolicyConfig:
+    """Parse the 'autonomy' section from policy YAML."""
+    section = raw_policy.get("autonomy", {})
+    return AutonomyPolicyConfig.model_validate(section)
+
+
+class MemoryPolicyConfig(BaseModel):
+    enabled: bool = True
+    consolidation_interval_cycles: int = 10
+    min_cluster_size: int = 3
+    min_charters_for_pattern: int = 2
+    similarity_threshold: float = 0.75
+    decay_factor: float = 0.9
+    decay_interval_days: int = 30
+    revalidation_threshold: float = 0.3
+    min_confidence_for_injection: float = 0.5
+    max_patterns_per_query: int = 5
+
+
+def load_memory_policy(raw_policy: dict[str, Any]) -> MemoryPolicyConfig:
+    """Parse the 'memory' section from policy YAML."""
+    section = raw_policy.get("memory", {})
+    return MemoryPolicyConfig.model_validate(section)
+

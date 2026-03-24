@@ -76,6 +76,20 @@ The following fixes were already tried and FAILED. You MUST try a fundamentally 
 {% endfor %}
 {% endif %}
 
+{% if canonical_fix_hints %}
+## Known Canonical Patterns for This Failure Type
+
+These patterns have been learned from prior research runs across different projects:
+
+{% for hint in canonical_fix_hints %}
+- **{{ hint.title }}**: {{ hint.description }}
+  - Proven fixes: {{ hint.proven_actions | join(', ') }}
+{% if hint.disproven_actions %}  - Approaches that did NOT work: {{ hint.disproven_actions | join(', ') }}{% endif %}
+{% endfor %}
+
+Consider applying these known fixes first before attempting a novel diagnosis.
+{% endif %}
+
 ## Instructions
 
 Analyze all available evidence and produce a fix. Consider:

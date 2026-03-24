@@ -544,6 +544,12 @@ function CycleDetailPanel({
               >
                 {evidencePending ? "Starting..." : "Start Evidence Extraction"}
               </button>
+              <button
+                className="button-primary"
+                onClick={() => onCommand("start_autonomous")}
+              >
+                Start Autonomous Loop
+              </button>
             </>
           )}
           <button className="button-secondary" onClick={() => onCommand("pause")}>Pause</button>
@@ -563,6 +569,26 @@ function CycleDetailPanel({
                   currentRun.verification_outcome ? ` · ${currentRun.verification_outcome}` : ""
                 }`
               : "none"
+          }
+        />
+      </div>
+
+      <div className="mt-4 grid gap-4 md:grid-cols-3">
+        <InfoCard label="Autonomy Mode" value={detail.cycle.autonomy_mode} />
+        <InfoCard
+          label="Run Budget"
+          value={
+            detail.cycle.budget_max_total_runs != null
+              ? `${detail.cycle.budget_used_run_count} / ${detail.cycle.budget_max_total_runs}`
+              : `${detail.cycle.budget_used_run_count} used`
+          }
+        />
+        <InfoCard
+          label="Compute Budget"
+          value={
+            detail.cycle.budget_max_compute_minutes != null
+              ? `${detail.cycle.budget_used_compute_minutes.toFixed(1)} / ${detail.cycle.budget_max_compute_minutes} min`
+              : `${detail.cycle.budget_used_compute_minutes.toFixed(1)} min used`
           }
         />
       </div>

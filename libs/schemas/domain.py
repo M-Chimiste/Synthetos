@@ -43,6 +43,14 @@ class ResearchCycle(BaseModel):
     public_id: str
     current_status: CycleStatus
     last_error: str | None = None
+    budget_max_compute_minutes: int | None = None
+    budget_max_total_runs: int | None = None
+    budget_max_wall_clock_hours: float | None = None
+    budget_max_runs_per_hypothesis: int | None = None
+    budget_used_compute_minutes: float = 0.0
+    budget_used_run_count: int = 0
+    budget_runs_per_hypothesis: dict[str, int] = Field(default_factory=dict)
+    autonomy_mode: str = "supervised"
     created_at: datetime
     updated_at: datetime
 
@@ -507,6 +515,7 @@ class SuccessCriteria(BaseModel):
 
     primary_metric: str
     primary_higher_is_better: bool = True
+    target_value: float | None = None
     significance_threshold: float = 0.01
     stall_window: int = 3
     constraint_metrics: list[ConstraintMetric] = Field(default_factory=list)
@@ -608,3 +617,60 @@ class ModelInvocationRecord(BaseModel):
 
 class TokenScopeList(BaseModel):
     scopes: list[TokenScope]
+
+
+# ---------------------------------------------------------------------------
+# Phase D — Cross-Charter Procedural Memory
+# ---------------------------------------------------------------------------
+
+
+class ProvenAction(BaseModel):
+    """A proven or disproven action within a canonical pattern."""
+
+    action: str
+    success_rate: float
+    evidence_count: int
+
+
+class CanonicalPattern(BaseModel):
+    """Distilled cross-charter pattern extracted from operational observations."""
+
+    model_config = ConfigDict(from_attributes=True)
+
+    public_id: str
+    pattern_type: Literal["failure_pattern", "method_pattern", "signal_pattern"]
+    polarity: Literal["positive", "negative"]
+    title: str
+    description: str
+    category: str = ""  # LLM-assigned hierarchical label, e.g. "resource/oom"
+    trigger_conditions: list[str] = Field(default_factory=list)
+    proven_actions: list[ProvenAction] = Field(default_factory=list)
+    disproven_actions: list[str] = Field(default_factory=list)
+    evidence_refs: list[dict[str, Any]] = Field(default_factory=list)
+    evidence_count: int = 0
+    confidence_score: float = 1.0
+    staleness_context: dict[str, Any] = Field(default_factory=dict)
+    status: Literal[
+        "active", "needs_revalidation", "dismissed", "confirmed"
+    ] = "active"
+    last_validated_at: datetime | None = None
+    created_at: datetime
+    updated_at: datetime
+
+
+class PatternConsolidationRun(BaseModel):
+    """Tracks a single consolidation run over cross-charter observations."""
+
+    model_config = ConfigDict(from_attributes=True)
+
+    public_id: str
+    status: Literal["running", "completed", "failed"] = "running"
+    trigger: Literal["scheduled", "on_demand"]
+    postmortems_scanned: int = 0
+    runs_scanned: int = 0
+    patterns_created: int = 0
+    patterns_updated: int = 0
+    patterns_decayed: int = 0
+    error_message: str | None = None
+    created_at: datetime
+    updated_at: datetime

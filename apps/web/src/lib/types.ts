@@ -18,6 +18,14 @@ export interface ResearchCycle {
   public_id: string;
   current_status: string;
   last_error?: string | null;
+  budget_max_compute_minutes?: number | null;
+  budget_max_total_runs?: number | null;
+  budget_max_wall_clock_hours?: number | null;
+  budget_max_runs_per_hypothesis?: number | null;
+  budget_used_compute_minutes: number;
+  budget_used_run_count: number;
+  budget_runs_per_hypothesis: Record<string, number>;
+  autonomy_mode: string;
   created_at: string;
   updated_at: string;
 }

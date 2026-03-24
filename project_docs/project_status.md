@@ -3,7 +3,7 @@
 **Product:** ML Laboratory Co-Scientist
 **Repository:** `Synthetos`
 **Last Updated:** 2026-03-24
-**Overall Status:** Phase B (Directional Signal) complete, Phase 5.2 not started
+**Overall Status:** Phase D (Cross-Charter Procedural Memory) implementation complete. Phases A-C shipped. Phase 5.2 not started.
 
 ---
 
@@ -17,7 +17,50 @@
 | Phase 3 — Execution Lab MVP | Complete | Git worktree isolation, Docker container execution with GPU support, run telemetry streaming (SSE), pause/cancel/retry controls, automation policy, artifact collection, failure classification, 3 Phase 3 skills, run API endpoints |
 | Phase 4 — Verification | Complete | Same-charter history, policy-driven checks, output-contract validation, next-step recommendations, cycle verification summaries, failure-memory feedback loops, web UI visibility |
 | Phase 5.1 — Hardening | Complete | Policy/skill validation, recovery/resume flows, report quality/timeline, API contract tests, frontend tests, skill library, orchestrator SDK |
+| Phase D — Cross-Charter Procedural Memory | Complete | Canonical patterns, consolidation, retrieval, operator integrations, API, emergent ontology |
 | Phase 5.2 — Pilot Exercises | Not started | |
+
+---
+
+## What Was Done (Phase D — Cross-Charter Procedural Memory)
+
+### Schema & Storage
+- `CanonicalPattern` and `PatternConsolidationRun` Pydantic domain models in `libs/schemas/domain.py`
+- `CanonicalPatternModel` and `PatternConsolidationRunModel` SQLAlchemy models with hybrid search columns (FTS + pgvector) in `libs/storage/models.py`
+- Alembic migration `20260324_000015` creating `canonical_patterns` and `pattern_consolidation_runs` tables with GIN FTS and HNSW vector indexes
+
+### Policy & Configuration
+- `MemoryPolicyConfig` in `libs/core/policy.py` with 10 configurable parameters (interval, cluster size, decay, thresholds)
+- `memory:` section in `configs/policies/default.yaml`
+
+### Core Memory Package (`libs/memory/`)
+- **consolidation.py**: Cross-charter observation gathering, greedy single-linkage clustering (numpy cosine + union-find), LLM pattern extraction, upsert with evidence merge, staleness decay, emergent ontology via LLM-assigned categories
+- **retrieval.py**: Hybrid search service (lexical + vector) mirroring arXiv warehouse pattern, with category-prefix filtering and category listing
+
+### Prompt Templates (`prompts/memory/v1/`)
+- `consolidate_failure_pattern.md`, `consolidate_method_pattern.md`, `consolidate_signal_pattern.md` — each with existing-category injection for ontology consistency
+
+### Operator & Integrations
+- `pattern_consolidation_operator` in `libs/orchestration/operators.py` — full consolidation pipeline with tracking model, decay, and reporting
+- **auto_remediate_operator**: injects canonical failure patterns as "known fixes" into remediation prompts
+- **hypothesis_generation_operator**: injects positive method hints and negative failure warnings into hypothesis generation
+- **source_retrieval_operator**: augments literature queries with pattern trigger conditions
+- **run_verify_operator**: injects signal patterns into verification LLM review context
+- All integrations guarded by `memory.enabled` policy flag with graceful degradation
+
+### Failure Memory Extension
+- `aggregate_failure_guidance_with_patterns()` in `libs/verification/failure_memory.py` — extends charter-scoped guidance with cross-charter canonical patterns
+
+### API Endpoints
+- `GET /api/v1/patterns` — list with filtering (type, polarity, status, category_prefix, min_confidence)
+- `GET /api/v1/patterns/categories` — emergent ontology tree
+- `GET /api/v1/patterns/{id}` — detail
+- `POST /api/v1/patterns/{id}/curate` — confirm/dismiss/refine with category reassignment
+- `POST /api/v1/patterns/consolidate` — trigger on-demand consolidation
+
+### Tests
+- 25 new unit tests across 4 test files, all passing
+- Full regression: 389 tests passing, 0 lint errors
 
 ---
 
@@ -103,6 +146,68 @@
 ---
 
 ## What Was Done (Current Session)
+
+### Phase C — Autonomous Experiment Loop
+- New `autonomous_loop_step` operator: re-entrant loop coordinator that runs one iteration per job invocation, commits state to DB, then enqueues execution pipeline + continuation job. Resume-safe by design.
+- New `autonomous_loop_completion` operator: generates structured completion report (hypotheses tried, metric frontiers, budget utilization, recommendations) as `ReportBundle(report_type="autonomous_completion_report")`
+- `AutonomyPolicyConfig` in `libs/core/policy.py`: configurable mode (supervised/autonomous), auto-pivot flags, auto-regeneration toggle
+- Autonomy policy section added to `configs/policies/default.yaml`
+- Budget tracking on `ResearchCycleModel`: 4 user-defined limit columns + 3 tracking columns + `autonomy_mode` column (migration `20260324_000014`)
+- `libs/core/budget.py`: `check_budget()` validates all dimensions (total runs, compute minutes, wall clock hours, per-hypothesis runs), `record_run_usage()` updates counters, `copy_budget_from_charter()` copies `budget_envelope` at cycle creation
+- `libs/ideation/hypothesis_lifecycle.py`: validated hypothesis status transitions (`active`, `stalled`, `deprioritized`, `promising`, `validated`), `pick_next_hypothesis()` selects top-ranked selectable hypothesis
+- `compute_portfolio_ranking()` updated to include `active`/`promising` hypotheses alongside `critiqued`/`generated`
+- `libs/orchestration/repetition.py`: trace-level detection (same spec hash) and result-level detection (N consecutive runs within noise threshold)
+- `libs/orchestration/loop_decision.py`: pure `decide_next_step()` function — decision cascade: budget → success criteria → repetition → signal-based (advancing/stalled/regressing/noisy/breakthrough) → pivot/regenerate/escalate
+- Autonomous chaining wired through existing operators:
+  - `verification_report_operator` enqueues `autonomous_loop_step` when cycle is in autonomous mode
+  - `literature_report_operator` chains to `evidence_extraction` when triggered by autonomous regeneration
+  - `protocol_compilation_operator` chains back to `autonomous_loop_step` when triggered by autonomous loop
+- `start_autonomous` cycle command added to `apply_cycle_command()` with budget validation
+- Budget recording in `run_finalize_operator` — updates counters after every run regardless of mode
+- New prompt templates: `autonomous_completion.md` (completion report), `parameter_variation.md` (stall-breaking variations)
+- 44 new tests across `test_budget.py` (11), `test_hypothesis_lifecycle.py` (8), `test_repetition.py` (4), `test_loop_decision.py` (12), `test_autonomous_loop.py` (7), `test_completion_report.py` (2)
+- OperatorRAG (C.6) and Context Summarization (C.7) deferred — not needed until operator count > 20 and loops > 20 iterations
+
+### Phase C — Gap closure (Codex)
+- `start_autonomous` is now reachable from the public API:
+  - calling the command on a `READY` cycle flips `cycle.autonomy_mode` to `autonomous`
+  - any configured budget dimension can start the loop (`max_total_runs`, `max_compute_minutes`, `max_wall_clock_hours`, or `max_runs_per_hypothesis`)
+- Public cycle detail/list responses now expose autonomy and budget state:
+  - `autonomy_mode`
+  - configured budget limits
+  - used run/compute counters
+  - per-hypothesis run counters
+- Added a canonical autonomous payload contract (`autonomous_loop_iteration`, selected/last hypothesis, regeneration state, variation hints) and preserved it across:
+  - regeneration sub-loop (`source_retrieval -> literature_report -> evidence_extraction -> hypothesis_generation -> hypothesis_critique -> protocol_compilation`)
+  - run execution / verification / remediation / postmortem / verification summary chain-back into the loop
+- Loop decisions now incorporate real Phase A/B outputs:
+  - `verification_outcome`
+  - directional signal
+  - verifier tradeoff resolution for conflicting metrics
+  - `invalid` / `rejected` runs no longer default to blind continuation
+- Hypothesis lifecycle is now applied in the loop instead of only modeled in enums:
+  - `active -> stalled` when a stalled line hits the per-hypothesis cap
+  - `active -> deprioritized` on regression or rejected tradeoff
+  - `active -> promising` on breakthrough
+  - `promising -> validated` when success criteria are actually met
+- `compute_portfolio_ranking()` no longer resets `active` / `promising` hypotheses back to `approved`.
+- `VARY_PARAMETERS` is now a real protocol-generation branch:
+  - `parameter_variation.md` is used at runtime
+  - protocol compilation honors `selected_hypothesis_public_id`
+  - variation mode creates a new experiment spec rather than rerunning the same spec
+- Success criteria are now functional for autonomy:
+  - `SuccessCriteria` gained optional `target_value`
+  - auto-validation requires outcome threshold, primary target hit in the correct direction, and constraint bounds satisfied
+- `autonomous_loop_completion_operator` now renders from `prompts/reporting/v1/autonomous_completion.md` with a deterministic fallback and summarizes linked per-run `experiment_writeup` artifacts.
+- Documentation alignment:
+  - roadmap `experiment_result` is implemented in code as `experiment_writeup`
+  - C.6 OperatorRAG and C.7 context summarization remain intentionally deferred
+- Verification performed for this gap-closure pass:
+  - `uv run pytest tests/unit/test_loop_decision.py tests/unit/test_autonomous_loop.py tests/unit/test_protocol_compiler.py tests/unit/test_ideation_services.py tests/integration/test_phase_c_api.py -q`
+  - `uv run pytest tests/unit/test_completion_report.py tests/unit/test_phase2_operators.py tests/integration/test_phase2_api.py -q`
+  - `uv run pytest tests/integration/test_api_contract.py -q`
+  - `uv run ruff check libs apps tests`
+  - `npm run --prefix apps/web build`
 
 ### Phase B — Directional Signal gap closure (Codex)
 - Closed the behavioral gaps between the roadmap and the shipped Phase B scaffolding.
@@ -221,9 +326,7 @@
 - 57 targeted Phase A correction tests passing across unit and integration coverage
 
 ### Test summary
-- Targeted backend verification: 86 tests passing
-- Targeted frontend verification: 7 timeline tests passing
-- Web build: passing
+- Backend: 398 tests passing (up from 347 after Phase C additions)
 - Ruff: clean
 - Postgres integration tests: ready to run when Docker is available
 
@@ -256,13 +359,22 @@
 
 ---
 
-## What Needs To Be Done Next (Phase 5.2)
+## What Needs To Be Done Next
 
+### Phase D — Cross-Charter Procedural Memory (next autonomy phase)
+- `CanonicalPattern` entity: failure, method, and signal patterns distilled from operational data
+- Pattern consolidation operator: clusters postmortems/runs, generates cross-charter patterns
+- Pattern retrieval: feed canonical patterns into remediation, hypothesis generation, and verification
+- Staleness and decay: environment-aware confidence scoring
+
+### Phase C deferred items
+- OperatorRAG (C.6): embed operator/skill descriptions, retrieve top-K by cosine similarity — activate when operator count exceeds 20
+- Context Summarization (C.7): compress older context when ContextPack budget exceeded — needed for loops > 20 iterations
+- Full worker-driven autonomous smoke test: seed a cycle with approved hypotheses/specs, let the loop iterate through completion under worker control, and assert the final completion report end-to-end
+
+### Phase 5.2 — Pilot Exercises
 - Pilot exercises on public ML benchmark tasks and internal research problems
 - Run `uv sync` in a network-enabled environment so the new `sentence-transformers` / `kaggle` dependencies are locked and installed consistently
 - Execute the first real Postgres-backed full Kaggle bootstrap and incremental OAI sync against a local database
-- Pull `pgvector/pgvector:pg16` Docker image and run Postgres integration tests (`uv run pytest tests/integration/test_arxiv_warehouse_pg.py -v -m integration`)
-- End-to-end usage validation from external orchestrator harness
+- Pull `pgvector/pgvector:pg16` Docker image and run Postgres integration tests
 - Run a real local Docker smoke test for the offline benchmark on `cpu-small`
-- Validate optional `gpu-small` behavior on a machine with GPU runtime support
-- Run the full backend/frontend test suite after the Phase A remediation correction pass for an updated project-wide count

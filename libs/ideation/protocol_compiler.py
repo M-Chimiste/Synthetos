@@ -16,6 +16,7 @@ from libs.storage.services import record_model_invocation
 log = structlog.get_logger(__name__)
 
 PROMPT_PATH = "prompts/ideation/v1/protocol_compilation.md"
+VARIATION_PROMPT_PATH = "prompts/ideation/v1/parameter_variation.md"
 SYSTEM_PROMPT = "You are a research protocol compiler. Respond only with valid JSON."
 
 
@@ -41,6 +42,23 @@ class ProtocolCompileResponse(BaseModel):
     estimated_runtime_minutes: int | None = None
     gpu_required: bool = False
     resource_requirements: dict[str, Any] = {}
+
+
+class ParameterVariationRequest(BaseModel):
+    hypothesis_title: str
+    objective: str
+    method_description: str
+    current_controls: list[dict[str, Any]]
+    recent_runs: list[dict[str, Any]]
+    directional_signal: str | None = None
+    hypothesis_run_count: int = 0
+    variation_hints: list[dict[str, Any]] = []
+
+
+class ParameterVariationResponse(BaseModel):
+    varied_controls: list[dict[str, Any]] = []
+    method_modification: str = ""
+    expected_impact: str = ""
 
 
 def _load_prompt_template(prompt_path: str) -> str:
@@ -80,6 +98,28 @@ def _render_prompt(template_text: str, request: ProtocolCompileRequest) -> str:
         return template_text
 
 
+def _render_variation_prompt(
+    template_text: str,
+    request: ParameterVariationRequest,
+) -> str:
+    try:
+        from jinja2 import Template
+
+        tmpl = Template(template_text)
+        return tmpl.render(
+            hypothesis_title=request.hypothesis_title,
+            objective=request.objective,
+            method_description=request.method_description,
+            current_controls=request.current_controls,
+            recent_runs=request.recent_runs,
+            directional_signal=request.directional_signal,
+            hypothesis_run_count=request.hypothesis_run_count,
+            variation_hints=request.variation_hints,
+        )
+    except Exception:
+        return template_text
+
+
 def _parse_protocol_json(text: str) -> ProtocolCompileResponse:
     try:
         raw = parse_json_lenient(text)
@@ -88,6 +128,16 @@ def _parse_protocol_json(text: str) -> ProtocolCompileResponse:
     except (ValueError, TypeError) as exc:
         log.warning("protocol_json_parse_failed", error=str(exc))
     return ProtocolCompileResponse()
+
+
+def _parse_variation_json(text: str) -> ParameterVariationResponse:
+    try:
+        raw = parse_json_lenient(text)
+        if isinstance(raw, dict):
+            return ParameterVariationResponse(**raw)
+    except (ValueError, TypeError) as exc:
+        log.warning("parameter_variation_parse_failed", error=str(exc))
+    return ParameterVariationResponse()
 
 
 def compile_protocol(
@@ -136,3 +186,52 @@ def compile_protocol(
     except Exception as exc:
         log.warning("protocol_compilation_failed", error=str(exc))
         return ProtocolCompileResponse()
+
+
+def compile_parameter_variation(
+    gateway: ModelGateway,
+    request: ParameterVariationRequest,
+    prompt_path: str = VARIATION_PROMPT_PATH,
+    model_role: str = "protocol_drafter",
+    session: Session | None = None,
+    cycle_id: int | None = None,
+    job_id: int | None = None,
+    invocation_parameters: dict[str, Any] | None = None,
+) -> ParameterVariationResponse:
+    """Ask the protocol drafter for a concrete parameter variation."""
+
+    template_text = _load_prompt_template(prompt_path)
+    user_content = _render_variation_prompt(template_text, request)
+    route = gateway.resolve_route(model_role)
+
+    try:
+        response_text = gateway.call_chat_completion(
+            role=model_role,
+            preferred_route_id=route.id,
+            messages=[
+                {"role": "system", "content": SYSTEM_PROMPT},
+                {"role": "user", "content": user_content},
+            ],
+            temperature=0.3,
+            max_tokens=1024,
+            json_mode=True,
+        )
+        if session is not None and cycle_id is not None:
+            record_model_invocation(
+                session,
+                cycle_id=cycle_id,
+                job_id=job_id,
+                route_id=route.id,
+                model_id=route.model,
+                prompt_id=prompt_path,
+                parameters={
+                    **(invocation_parameters or {}),
+                    "hypothesis_title": request.hypothesis_title,
+                    "recent_run_count": len(request.recent_runs),
+                },
+                usage={},
+            )
+        return _parse_variation_json(response_text)
+    except Exception as exc:
+        log.warning("parameter_variation_failed", error=str(exc))
+        return ParameterVariationResponse()

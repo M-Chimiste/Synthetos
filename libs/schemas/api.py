@@ -8,6 +8,7 @@ from pydantic import BaseModel, Field
 from libs.schemas.domain import (
     ArxivPaper,
     ArxivSyncRun,
+    CanonicalPattern,
     DomainEventEnvelope,
     EvidenceCard,
     ExperimentSpec,
@@ -47,7 +48,8 @@ class CreateCycleRequest(BaseModel):
 class CycleCommandRequest(BaseModel):
     command: Literal[
         "pause", "cancel", "resume", "start_intake",
-        "start_evidence", "request_hypothesis_review", "request_protocol_compilation",
+        "start_evidence", "request_hypothesis_review",
+        "request_protocol_compilation", "start_autonomous",
     ]
     payload: dict[str, Any] | None = None
 
@@ -383,3 +385,39 @@ class VerificationSummaryResponse(BaseModel):
     postmortem_count: int
     latest_cycle_summary_report_public_id: str | None = None
     next_step_recommendations: list[NextStepRecommendation] = Field(default_factory=list)
+
+
+# ---------------------------------------------------------------------------
+# Phase D — Cross-Charter Procedural Memory
+# ---------------------------------------------------------------------------
+
+
+class CanonicalPatternSummary(BaseModel):
+    public_id: str
+    pattern_type: str
+    polarity: str
+    title: str
+    category: str
+    confidence_score: float
+    evidence_count: int
+    status: str
+    created_at: datetime
+
+
+class CanonicalPatternDetail(CanonicalPattern):
+    pass
+
+
+class CanonicalPatternListResponse(BaseModel):
+    patterns: list[CanonicalPatternSummary]
+    total: int
+
+
+class PatternCurateRequest(BaseModel):
+    action: Literal["confirm", "dismiss", "refine"]
+    category: str | None = None
+    refinement_notes: str | None = None
+
+
+class PatternCategoryListResponse(BaseModel):
+    categories: list[str]

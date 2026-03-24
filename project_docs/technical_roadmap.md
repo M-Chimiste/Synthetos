@@ -358,6 +358,7 @@ Two modes:
 ### C.2 Loop Operator
 
 New operator: `autonomous_loop_operator`. Replaces the current linear operator pipeline when autonomy mode is enabled.
+In the shipped implementation this is a re-entrant pair: `autonomous_loop_step` for one iteration at a time and `autonomous_loop_completion` for the terminal report.
 
 ```
 while budget_remaining:
@@ -446,7 +447,8 @@ Each writeup covers:
 
 These writeups accumulate on the cycle and become the backbone of the completion report. They also provide the signal for measuring co-scientist effectiveness over time: what fraction of experiments produced positive signal vs negative signal? Is the system getting better at picking winners?
 
-Stored as lightweight `ReportBundle` entries (type: `experiment_result`) linked to the run record.
+Stored as lightweight `ReportBundle` entries linked to the run record.
+Implementation note: the current code stores this artifact as `report_type="experiment_writeup"`, which is the Phase C implementation of the roadmap's `experiment_result`.
 
 ### C.6 Embedding-Based Operator & Skill Retrieval (TxAgent-inspired)
 

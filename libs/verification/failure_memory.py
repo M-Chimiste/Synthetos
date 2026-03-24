@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from collections import Counter
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 from sqlalchemy import select
 from sqlalchemy.orm import Session
@@ -14,6 +14,9 @@ from libs.storage.models import (
     ResearchCycleModel,
     RunRecordModel,
 )
+
+if TYPE_CHECKING:
+    from libs.memory.retrieval import PatternRetrievalService
 
 
 def _normalize_label(value: str | None) -> str:
@@ -120,3 +123,47 @@ def get_hypothesis_failure_caution(
             f"lineage has {repeat_count} prior failures ({', '.join(failure_classes)})."
         ),
     }
+
+
+# ---------------------------------------------------------------------------
+# Phase D — Cross-charter pattern-aware guidance
+# ---------------------------------------------------------------------------
+
+
+def aggregate_failure_guidance_with_patterns(
+    session: Session,
+    *,
+    charter_id: int,
+    pattern_svc: PatternRetrievalService | None = None,
+    charter_problem: str = "",
+) -> dict[str, list[dict[str, Any]]]:
+    """Extend aggregate_failure_guidance with cross-charter canonical patterns.
+
+    Returns the same dict structure with an additional ``canonical_patterns`` key.
+    """
+    base = aggregate_failure_guidance(session, charter_id=charter_id)
+    if pattern_svc is None or not charter_problem:
+        base["canonical_patterns"] = []
+        return base
+
+    negative_hits = pattern_svc.search(
+        session,
+        query_text=charter_problem,
+        polarity="negative",
+        min_confidence=0.5,
+        limit=10,
+    )
+    base["canonical_patterns"] = [
+        {
+            "public_id": hit.pattern.public_id,
+            "title": hit.pattern.title,
+            "description": hit.pattern.description,
+            "pattern_type": hit.pattern.pattern_type,
+            "category": hit.pattern.category,
+            "confidence_score": hit.pattern.confidence_score,
+            "proven_actions": hit.pattern.proven_actions,
+            "disproven_actions": hit.pattern.disproven_actions,
+        }
+        for hit in negative_hits
+    ]
+    return base

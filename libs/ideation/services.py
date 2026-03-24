@@ -343,7 +343,9 @@ def compute_portfolio_ranking(
         session.scalars(
             select(HypothesisCardModel).where(
                 HypothesisCardModel.cycle_id == cycle_id,
-                HypothesisCardModel.status.in_(["critiqued", "generated"]),
+                HypothesisCardModel.status.in_(
+                    ["critiqued", "generated", "active", "promising"],
+                ),
             )
         ).all()
     )
@@ -379,7 +381,7 @@ def compute_portfolio_ranking(
             h.ranking_rationale = f"{base_rationale}. {h.ranking_rationale}"
         else:
             h.ranking_rationale = base_rationale
-        if rank <= auto_approve_top_n:
+        if rank <= auto_approve_top_n and h.status in {"generated", "critiqued"}:
             h.status = "approved"
 
     session.flush()

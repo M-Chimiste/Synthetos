@@ -50,6 +50,34 @@ class ResearchCycleModel(TimestampMixin, Base):
     last_completed_job_id: Mapped[int | None] = mapped_column(Integer, nullable=True)
     resume_payload: Mapped[dict[str, Any]] = mapped_column(JSON, default=dict)
 
+    # Budget limits (user-defined, copied from charter.budget_envelope)
+    budget_max_compute_minutes: Mapped[int | None] = mapped_column(
+        Integer, nullable=True,
+    )
+    budget_max_total_runs: Mapped[int | None] = mapped_column(
+        Integer, nullable=True,
+    )
+    budget_max_wall_clock_hours: Mapped[float | None] = mapped_column(
+        Float, nullable=True,
+    )
+    budget_max_runs_per_hypothesis: Mapped[int | None] = mapped_column(
+        Integer, nullable=True,
+    )
+
+    # Budget tracking (system-maintained)
+    budget_used_compute_minutes: Mapped[float] = mapped_column(
+        Float, default=0.0,
+    )
+    budget_used_run_count: Mapped[int] = mapped_column(Integer, default=0)
+    budget_runs_per_hypothesis: Mapped[dict[str, int]] = mapped_column(
+        JSON, default=dict,
+    )
+
+    # Autonomy mode (per-cycle, defaults from policy)
+    autonomy_mode: Mapped[str] = mapped_column(
+        String(32), default="supervised",
+    )
+
     charter = relationship("ResearchCharterModel")
     current_state_snapshot = relationship(
         "ResearchStateSnapshotModel",
@@ -702,3 +730,59 @@ class MetricFrontierModel(TimestampMixin, Base):
     best_run_id: Mapped[int] = mapped_column(ForeignKey("run_records.id"))
     runs_since_improvement: Mapped[int] = mapped_column(Integer, default=0)
     last_updated_run_id: Mapped[int] = mapped_column(ForeignKey("run_records.id"))
+
+
+# ---------------------------------------------------------------------------
+# Phase D — Cross-Charter Procedural Memory
+# ---------------------------------------------------------------------------
+
+
+class CanonicalPatternModel(TimestampMixin, Base):
+    """Distilled cross-charter pattern extracted from operational observations."""
+
+    __tablename__ = "canonical_patterns"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    public_id: Mapped[str] = mapped_column(String(64), unique=True, index=True)
+    pattern_type: Mapped[str] = mapped_column(String(32), index=True)
+    polarity: Mapped[str] = mapped_column(String(16), index=True)
+    title: Mapped[str] = mapped_column(String(512))
+    description: Mapped[str] = mapped_column(Text)
+    category: Mapped[str] = mapped_column(String(256), index=True, default="")
+    trigger_conditions: Mapped[list[str]] = mapped_column(JSON, default=list)
+    proven_actions: Mapped[list[dict[str, Any]]] = mapped_column(JSON, default=list)
+    disproven_actions: Mapped[list[str]] = mapped_column(JSON, default=list)
+    evidence_refs: Mapped[list[dict[str, Any]]] = mapped_column(JSON, default=list)
+    evidence_count: Mapped[int] = mapped_column(Integer, default=0)
+    confidence_score: Mapped[float] = mapped_column(Float, default=1.0, index=True)
+    staleness_context: Mapped[dict[str, Any]] = mapped_column(JSON, default=dict)
+    status: Mapped[str] = mapped_column(String(32), index=True, default="active")
+    last_validated_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True,
+    )
+    # Hybrid search support (mirrors ArxivPaperModel pattern)
+    search_text: Mapped[str] = mapped_column(Text, default="")
+    embedding: Mapped[list[float] | None] = mapped_column(
+        EmbeddingVector(768), nullable=True,
+    )
+    embedding_model_id: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    embedding_updated_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True,
+    )
+
+
+class PatternConsolidationRunModel(TimestampMixin, Base):
+    """Tracks a single consolidation run over cross-charter observations."""
+
+    __tablename__ = "pattern_consolidation_runs"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    public_id: Mapped[str] = mapped_column(String(64), unique=True, index=True)
+    status: Mapped[str] = mapped_column(String(32), index=True, default="running")
+    trigger: Mapped[str] = mapped_column(String(32))
+    postmortems_scanned: Mapped[int] = mapped_column(Integer, default=0)
+    runs_scanned: Mapped[int] = mapped_column(Integer, default=0)
+    patterns_created: Mapped[int] = mapped_column(Integer, default=0)
+    patterns_updated: Mapped[int] = mapped_column(Integer, default=0)
+    patterns_decayed: Mapped[int] = mapped_column(Integer, default=0)
+    error_message: Mapped[str | None] = mapped_column(Text, nullable=True)

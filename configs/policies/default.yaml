@@ -49,5 +49,23 @@ remediation:
   escalate_to_full_debug_after: 1
   max_stderr_chars: 3000
   max_code_chars: 8000
+autonomy:
+  mode: supervised
+  auto_pivot_on_stall: true
+  auto_pivot_on_regression: true
+  auto_continue_on_advancing: true
+  auto_regenerate_hypotheses: true
+  escalate_on_portfolio_exhausted: true
+memory:
+  enabled: true
+  consolidation_interval_cycles: 10
+  min_cluster_size: 3
+  min_charters_for_pattern: 2
+  similarity_threshold: 0.75
+  decay_factor: 0.9
+  decay_interval_days: 30
+  revalidation_threshold: 0.3
+  min_confidence_for_injection: 0.5
+  max_patterns_per_query: 5
 skills:
   validation_mode: strict

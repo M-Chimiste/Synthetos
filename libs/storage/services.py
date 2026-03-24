@@ -18,6 +18,7 @@ from libs.core.policy import Actor, TokenScope
 from libs.core.state_machine import CycleStatus, ensure_transition
 from libs.execution.policy import evaluate_run_policy
 from libs.execution.runner import build_run_spec, determine_run_paths, load_execution_profile
+from libs.orchestration.autonomous_payload import merge_autonomous_payload
 from libs.schemas.api import (
     CreateCycleRequest,
     CycleDetailResponse,
@@ -275,6 +276,10 @@ def create_cycle(session: Session, actor: Actor, payload: CreateCycleRequest) ->
     )
     session.add(cycle)
     session.flush()
+
+    # Copy budget envelope from charter to cycle budget fields.
+    from libs.core.budget import copy_budget_from_charter
+    copy_budget_from_charter(charter, cycle)
 
     created_snapshot = ResearchStateSnapshotModel(
         public_id=generate_public_id("state"),
@@ -1051,6 +1056,36 @@ def apply_cycle_command(
         _enqueue_job(
             session, actor, cycle.id, "protocol_compilation",
             {"cycle_public_id": cycle.public_id},
+        )
+        target = CycleStatus.QUEUED
+    elif command == "start_autonomous":
+        if current != CycleStatus.READY:
+            raise HTTPException(
+                status_code=400,
+                detail="Cycle must be READY to start autonomous loop",
+            )
+        has_budget = any(
+            value is not None
+            for value in (
+                cycle.budget_max_total_runs,
+                cycle.budget_max_compute_minutes,
+                cycle.budget_max_wall_clock_hours,
+                cycle.budget_max_runs_per_hypothesis,
+            )
+        )
+        if not has_budget:
+            raise HTTPException(
+                status_code=400,
+                detail="At least one budget limit must be configured for autonomous mode",
+            )
+        cycle.autonomy_mode = "autonomous"
+        from libs.orchestration.job_queue import enqueue_job as _enqueue_job
+        _enqueue_job(
+            session, actor, cycle.id, "autonomous_loop_step",
+            merge_autonomous_payload(
+                {"cycle_public_id": cycle.public_id},
+                autonomous_loop_iteration=1,
+            ),
         )
         target = CycleStatus.QUEUED
     else:

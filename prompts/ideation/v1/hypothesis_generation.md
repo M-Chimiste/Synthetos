@@ -16,6 +16,28 @@ You are generating candidate research hypotheses based on extracted evidence.
 - **[{{ e.public_id }}]** {{ e.claim }} (type: {{ e.evidence_type }}, strength: {{ e.strength }}, relevance: {{ e.relevance_score }})
 {% endfor %}
 
+{% if method_hints %}
+## Canonical Method Patterns (from prior research)
+
+These methods have proven effective in similar research contexts:
+
+{% for hint in method_hints %}
+- **{{ hint.title }}**: {{ hint.description }}
+{% if hint.proven_actions %}  Proven actions: {% for a in hint.proven_actions %}{{ a.action }}{% if not loop.last %}, {% endif %}{% endfor %}{% endif %}
+{% endfor %}
+{% endif %}
+
+{% if failure_warnings %}
+## Canonical Failure Warnings (from prior research)
+
+These approaches have consistently failed in similar contexts — avoid them or explicitly justify diverging:
+
+{% for warn in failure_warnings %}
+- **{{ warn.title }}**: {{ warn.description }}
+{% if warn.disproven_actions %}  Disproven approaches: {% for a in warn.disproven_actions %}{{ a }}{% if not loop.last %}, {% endif %}{% endfor %}{% endif %}
+{% endfor %}
+{% endif %}
+
 ## Instructions
 
 Generate exactly {{ num_hypotheses }} candidate research hypotheses. Each hypothesis should:

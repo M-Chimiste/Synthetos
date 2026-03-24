@@ -19,6 +19,9 @@ from libs.orchestration.job_queue import enqueue_job
 from libs.orchestration.worker import run_worker_once
 from libs.retrieval.arxiv_warehouse import ArxivWarehouseService
 from libs.schemas.api import (
+    CanonicalPatternDetail,
+    CanonicalPatternListResponse,
+    CanonicalPatternSummary,
     CreateCycleRequest,
     CycleCommandRequest,
     CycleDetailResponse,
@@ -41,6 +44,8 @@ from libs.schemas.api import (
     PaperListResponse,
     PaperSearchHit,
     PaperSearchResponse,
+    PatternCategoryListResponse,
+    PatternCurateRequest,
     PortfolioRankingResponse,
     ReportDetailResponse,
     ReportListResponse,
@@ -672,3 +677,131 @@ def get_historical_comparison(
     session: Session = Depends(get_db),
 ) -> HistoricalComparisonResponse:
     return services.get_historical_comparison_api(session, run_id)
+
+
+# ---------------------------------------------------------------------------
+# Phase D — Canonical Patterns
+# ---------------------------------------------------------------------------
+
+
+@app.get("/api/v1/patterns", response_model=CanonicalPatternListResponse)
+def list_patterns(
+    pattern_type: str | None = None,
+    polarity: str | None = None,
+    status: str | None = None,
+    category_prefix: str | None = None,
+    min_confidence: float = 0.0,
+    actor: Actor = Depends(require_scopes(TokenScope.REPORTS_READ)),
+    session: Session = Depends(get_db),
+) -> CanonicalPatternListResponse:
+    from sqlalchemy import select
+
+    from libs.storage.models import CanonicalPatternModel
+
+    stmt = select(CanonicalPatternModel).order_by(
+        CanonicalPatternModel.confidence_score.desc()
+    )
+    if pattern_type:
+        stmt = stmt.where(CanonicalPatternModel.pattern_type == pattern_type)
+    if polarity:
+        stmt = stmt.where(CanonicalPatternModel.polarity == polarity)
+    if status:
+        stmt = stmt.where(CanonicalPatternModel.status == status)
+    if category_prefix:
+        stmt = stmt.where(CanonicalPatternModel.category.startswith(category_prefix))
+    if min_confidence > 0:
+        stmt = stmt.where(CanonicalPatternModel.confidence_score >= min_confidence)
+
+    patterns = list(session.scalars(stmt).all())
+    summaries = [
+        CanonicalPatternSummary(
+            public_id=p.public_id,
+            pattern_type=p.pattern_type,
+            polarity=p.polarity,
+            title=p.title,
+            category=p.category,
+            confidence_score=p.confidence_score,
+            evidence_count=p.evidence_count,
+            status=p.status,
+            created_at=p.created_at,
+        )
+        for p in patterns
+    ]
+    return CanonicalPatternListResponse(patterns=summaries, total=len(summaries))
+
+
+@app.get("/api/v1/patterns/categories", response_model=PatternCategoryListResponse)
+def list_pattern_categories(
+    actor: Actor = Depends(require_scopes(TokenScope.REPORTS_READ)),
+    session: Session = Depends(get_db),
+) -> PatternCategoryListResponse:
+    from libs.memory.consolidation import get_existing_categories
+
+    return PatternCategoryListResponse(categories=get_existing_categories(session))
+
+
+@app.get("/api/v1/patterns/{pattern_id}", response_model=CanonicalPatternDetail)
+def get_pattern(
+    pattern_id: str,
+    actor: Actor = Depends(require_scopes(TokenScope.REPORTS_READ)),
+    session: Session = Depends(get_db),
+) -> CanonicalPatternDetail:
+    from sqlalchemy import select
+
+    from libs.storage.models import CanonicalPatternModel
+
+    pattern = session.scalar(
+        select(CanonicalPatternModel)
+        .where(CanonicalPatternModel.public_id == pattern_id)
+    )
+    if pattern is None:
+        raise HTTPException(status_code=404, detail="Pattern not found")
+    return CanonicalPatternDetail.model_validate(pattern)
+
+
+@app.post("/api/v1/patterns/{pattern_id}/curate")
+def curate_pattern(
+    pattern_id: str,
+    body: PatternCurateRequest,
+    actor: Actor = Depends(require_scopes(TokenScope.ADMIN_LOCAL)),
+    session: Session = Depends(get_db),
+) -> dict[str, str]:
+    from sqlalchemy import select
+
+    from libs.storage.models import CanonicalPatternModel
+
+    pattern = session.scalar(
+        select(CanonicalPatternModel)
+        .where(CanonicalPatternModel.public_id == pattern_id)
+    )
+    if pattern is None:
+        raise HTTPException(status_code=404, detail="Pattern not found")
+
+    if body.action == "confirm":
+        pattern.status = "confirmed"
+        pattern.last_validated_at = datetime.now(UTC)
+    elif body.action == "dismiss":
+        pattern.status = "dismissed"
+    elif body.action == "refine":
+        pattern.status = "active"
+        pattern.last_validated_at = datetime.now(UTC)
+    if body.category is not None:
+        pattern.category = body.category
+    session.commit()
+    return {"status": "ok", "pattern_public_id": pattern.public_id}
+
+
+@app.post("/api/v1/patterns/consolidate")
+def trigger_consolidation(
+    actor: Actor = Depends(require_scopes(TokenScope.ADMIN_LOCAL)),
+    session: Session = Depends(get_db),
+) -> dict[str, str]:
+    config = get_config()
+    job = enqueue_job(
+        session,
+        operator_name="pattern_consolidation",
+        payload={"trigger": "on_demand"},
+        actor=actor,
+    )
+    session.commit()
+    return {"status": "queued", "job_public_id": job.public_id}

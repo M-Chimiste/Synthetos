@@ -86,6 +86,7 @@ def build_remediation_prompt(
     run_status: str,
     attempt_count: int,
     policy: RemediationPolicyConfig,
+    canonical_fix_hints: list[dict[str, Any]] | None = None,
 ) -> tuple[str, str]:
     """Render the appropriate Jinja2 prompt template.
 
@@ -121,6 +122,7 @@ def build_remediation_prompt(
         run_status=run_status,
         attempt_count=attempt_count,
         max_stderr_chars=policy.max_stderr_chars,
+        canonical_fix_hints=canonical_fix_hints or [],
     )
     return rendered, prompt_id
 
