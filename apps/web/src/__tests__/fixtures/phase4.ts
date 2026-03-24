@@ -32,6 +32,23 @@ export const sampleTimelineEntries: TimelineEntry[] = [
     summary: "Report generated: Verification Report",
     details: { title: "Verification Report" },
   },
+  {
+    timestamp: "2026-03-23T10:12:00Z",
+    event_type: "run_verified",
+    category: "run",
+    summary: "Run verified with frontier progress",
+    details: { outcome: "tentative" },
+    directional_signal: "advancing",
+    verification_outcome: "tentative",
+    frontier_snapshot: {
+      metric_name: "accuracy",
+      current_value: 0.91,
+      best_value: 0.91,
+      best_run_public_id: "run_5",
+      runs_since_improvement: 0,
+      series_tail: [0.82, 0.85, 0.87, 0.91],
+    },
+  },
 ];
 
 export const sampleReport: ReportDetail = {

@@ -27,6 +27,8 @@ def determine_outcome(
     require_historical_comparison: bool = False,
     leakage_check_enabled: bool = True,
     split_validation_enabled: bool = True,
+    self_critic_result: dict[str, Any] | None = None,
+    tradeoff_resolution: dict[str, Any] | None = None,
 ) -> VerificationOutcome:
     """Determine verification outcome from check results.
 
@@ -38,7 +40,12 @@ def determine_outcome(
     """
     # INVALID: run didn't complete successfully
     output_contract_checks = output_contract_checks or []
+    self_critic_result = self_critic_result or {}
+    tradeoff_resolution = tradeoff_resolution or {}
     if run_status in ("failed", "cancelled"):
+        return VerificationOutcome.INVALID
+
+    if self_critic_result.get("blocking"):
         return VerificationOutcome.INVALID
 
     # INVALID: critical artifacts missing
@@ -101,11 +108,16 @@ def determine_outcome(
 
     # If we have both baseline and historical comparisons with decent improvement
     if has_baseline and has_historical:
-        return VerificationOutcome.ROBUST
+        outcome = VerificationOutcome.ROBUST
+    elif has_baseline:
+        outcome = VerificationOutcome.TENTATIVE
+    else:
+        outcome = VerificationOutcome.TENTATIVE
 
-    # Has baseline with good improvement but no history
-    if has_baseline:
+    resolution = tradeoff_resolution.get("resolution")
+    if resolution == "reject_tradeoff":
+        return VerificationOutcome.REJECTED
+    if resolution == "needs_investigation" and outcome == VerificationOutcome.ROBUST:
         return VerificationOutcome.TENTATIVE
 
-    # Has history but no baseline
-    return VerificationOutcome.TENTATIVE
+    return outcome

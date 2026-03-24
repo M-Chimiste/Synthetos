@@ -314,6 +314,24 @@ def test_determine_outcome_invalid_missing_critical_artifact():
     assert outcome == VerificationOutcome.INVALID
 
 
+def test_determine_outcome_invalid_blocking_self_critic():
+    outcome = determine_outcome(
+        run_status="succeeded",
+        baseline_comparison={"metric": "accuracy", "passed": True, "delta_pct": 5.0},
+        metric_sanity_checks=[],
+        artifact_checks=[],
+        leakage_signals=[{"detected": False}],
+        split_validation={"matched": True},
+        historical_comparisons=[{"prior_run_public_id": "run-1"}],
+        self_critic_result={
+            "passed": False,
+            "blocking": True,
+            "flags": [{"issue": "Perfect accuracy suggests leakage", "severity": "critical"}],
+        },
+    )
+    assert outcome == VerificationOutcome.INVALID
+
+
 def test_determine_outcome_rejected_split_mismatch():
     outcome = determine_outcome(
         run_status="succeeded",
@@ -340,6 +358,21 @@ def test_determine_outcome_policy_requires_history_for_robust():
         require_historical_comparison=True,
     )
     assert outcome == VerificationOutcome.TENTATIVE
+
+
+def test_determine_outcome_rejects_tradeoff_resolution():
+    outcome = determine_outcome(
+        run_status="succeeded",
+        baseline_comparison={"metric": "accuracy", "passed": True, "delta_pct": 5.0},
+        metric_sanity_checks=[{"passed": True}],
+        artifact_checks=[],
+        output_contract_checks=[],
+        leakage_signals=[{"detected": False}],
+        split_validation={"matched": True},
+        historical_comparisons=[{"prior_run_public_id": "run_1", "delta": 0.02}],
+        tradeoff_resolution={"resolution": "reject_tradeoff"},
+    )
+    assert outcome == VerificationOutcome.REJECTED
 
 
 def test_build_next_step_recommendations_returns_follow_up_search():
@@ -414,3 +447,19 @@ def test_recommendations_with_noise_signal():
     )
     kinds = {item["recommendation_type"] for item in recommendations}
     assert "noise_alert" in kinds
+
+
+def test_recommendations_with_tradeoff_investigation():
+    recommendations = build_next_step_recommendations(
+        outcome="tentative",
+        min_outcome_for_promotion="robust",
+        rerun_note=None,
+        directional_signal="advancing",
+        tradeoff_resolution={
+            "resolution": "needs_investigation",
+            "rationale": "Latency is moving the wrong way.",
+            "recommendation": "Run a latency-focused follow-up.",
+        },
+    )
+    kinds = {item["recommendation_type"] for item in recommendations}
+    assert "investigate_tradeoff" in kinds

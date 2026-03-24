@@ -10,6 +10,11 @@ Three core loops drive the research process:
 2. **Experiment** — Hypothesis to ExperimentSpec, code generation, containerized local execution with GPU support
 3. **Verify** — Result verification, historical comparison, failure memory, human-readable reports
 
+Two autonomy layers make the loops increasingly self-directed:
+
+4. **Auto-Remediate** — LLM-assisted failure diagnosis and code fixing. Two-mode prompt system (focused for known failure classes, full debug for unknowns) with conversation context across attempts. Fixes are applied and retried automatically within a configurable budget.
+5. **Directional Signal** — Metric trend analysis across runs classifies each hypothesis line as advancing, stalled, regressing, noisy, or breakthrough. A self-critic pre-check catches obvious problems before full verification. Metric frontiers track best-known values per hypothesis. Signal-aware recommendations drive pivot-or-continue decisions.
+
 The system uses **operator-over-shared-state** orchestration: typed operators read/write a shared `ResearchState` through an explicit state machine with append-only audit trail. All external systems (arXiv, models, Docker, git) sit behind adapter interfaces (hexagonal architecture).
 
 Literature search uses a **hybrid semantic search** pipeline: a local arXiv warehouse backed by PostgreSQL pgvector combines full-text search (BM25 via `tsvector`) with dense vector similarity (sentence-transformers embeddings) for ranked retrieval.
@@ -29,8 +34,8 @@ libs/
   storage/      SQLAlchemy models, Alembic migrations, services
   literature/   Literature intake and screening
   ideation/     Evidence extraction, hypothesis generation
-  execution/    Docker execution, artifact collection, failure classification
-  verification/ Result verification, postmortems
+  execution/    Docker execution, artifact collection, failure classification, auto-remediation
+  verification/ Result verification, postmortems, trend analysis, self-critic, frontier tracking
   reporting/    Report quality scoring, templates
   retrieval/    arXiv warehouse, hybrid search, source retrieval
   adapters/     External system adapters (arXiv OAI-PMH, LLM, embeddings, containers)
@@ -155,7 +160,7 @@ See [.env.example](.env.example) for all configuration options. Key variables:
 ### Running Tests
 
 ```bash
-# Backend tests (269 tests)
+# Backend tests (347 tests)
 uv run pytest
 
 # Backend tests with coverage
@@ -178,7 +183,7 @@ uv run ruff check .
 - **Schema changes through migrations** — Every entity has created/updated timestamps, events are append-only
 - **Prompts are versioned assets** in `prompts/`, not strings in Python files
 - **Container defaults** — Network disabled, datasets read-only, resource limits enforced
-- **Model routing is config-driven** via YAML, supporting role-based routing across model backends
+- **Model routing is config-driven** via YAML, supporting role-based routing (planning, triage, evidence_extractor, ideation, critic, protocol_drafter, verifier, debugger) across model backends
 
 ### SDK
 
@@ -191,7 +196,15 @@ with SynthetoClient(base_url="http://localhost:8000") as client:
     result = client.create_cycle({
         "title": "Tabular Classification Baseline",
         "problem_statement": "Establish a baseline on the Iris dataset.",
-        "success_criteria": {"target_metric": "accuracy > 0.95"},
+        "success_criteria": {
+            "primary_metric": "val_accuracy",
+            "primary_higher_is_better": True,
+            "significance_threshold": 0.005,
+            "stall_window": 3,
+            "constraint_metrics": [
+                {"name": "inference_time_ms", "upper_bound": 100}
+            ],
+        },
     })
     print(result["cycle"]["public_id"])
 ```
@@ -212,7 +225,20 @@ The system includes 15 first-party skills across literature, ideation, coding, a
 | Phase 3 — Execution Lab MVP | Complete |
 | Phase 4 — Verification | Complete |
 | Phase 5.1 — Hardening | Complete |
+| Phase A — Auto-Remediation | Complete |
+| Phase B — Directional Signal | Complete |
 | Phase 5.2 — Pilot Exercises | Not started |
+
+## Autonomy Roadmap
+
+Phases A-D extend the co-scientist toward autonomous operation. See [project_docs/technical_roadmap.md](project_docs/technical_roadmap.md) for full details.
+
+| Phase | Goal | Status |
+|-------|------|--------|
+| A — Auto-Remediation | LLM fixes its own failed experiments | Complete |
+| B — Directional Signal | Metric trends answer "is this hypothesis making progress?" | Complete |
+| C — Autonomous Loop | Unattended experiment sequences with budget tracking | Planned |
+| D — Cross-Charter Memory | Reusable patterns learned across research problems | Planned |
 
 ## License
 

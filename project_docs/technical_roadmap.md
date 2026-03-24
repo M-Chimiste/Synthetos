@@ -211,6 +211,8 @@ remediation:
 
 **Goal:** The system can answer "is this hypothesis line making progress?" using metric trends, not just pass/fail against a baseline.
 
+**Implementation note (2026-03-24):** Phase B is now wired through verification end-to-end: the self-critic can block a run before expensive review, directional signal stores explainable diagnostics, constraint conflicts use the verifier route for tradeoff judgments, and frontier snapshots are exposed through the API/timeline UI.
+
 **Why second:** Once mechanical failures are auto-remediated, most runs that reach verification will have valid metrics. The system needs to interpret what those metrics mean for the research direction.
 
 ### B.1 Signal Classification
@@ -229,8 +231,8 @@ Extend `VerificationOutcome` or add a parallel `DirectionalSignal` enum:
 
 New module: `libs/verification/trend.py`
 
-- `compute_metric_series(session, charter_id, hypothesis_id, metric_name)` — ordered list of `(run_public_id, value, timestamp)` for all comparable runs
-- `classify_direction(series, higher_is_better, significance_threshold)` — returns `DirectionalSignal` using:
+- `compute_metric_series(current_metrics, prior_runs, metric_name, current_run_public_id, current_run_created_at)` — ordered list of `(run_public_id, value, timestamp)` for all comparable runs in the current verification context
+- `assess_direction(...)` / `classify_direction(...)` — returns `DirectionalSignal` plus diagnostics using:
   - Linear regression slope over last N runs
   - Mann-Kendall trend test for monotonic trend
   - Coefficient of variation for noise detection
@@ -245,6 +247,8 @@ Research problems often have multiple metrics (accuracy + latency, F1 + inferenc
 - Primary metric direction drives the keep/discard decision for clear-cut cases
 - Constraint violations (latency > 100ms) are flagged regardless of primary metric direction
 - **When metrics conflict (primary advancing but constraint violated):** the full metric picture is sent to the LLM (verifier route) which decides whether to continue refining the current approach or pivot. This avoids brittle rules for tradeoffs that require judgment — e.g., a 3% accuracy gain might justify a 10ms latency increase in one context but not another
+
+Implementation detail: the verifier tradeoff judgment is persisted alongside `directional_signal_detail.reconciliation` so both recommendations and outcome determination can use the same decision.
 
 ### B.4 Significance Thresholds
 
@@ -263,7 +267,7 @@ success_criteria:
       upper_bound: 500
 ```
 
-If no threshold is specified, the system defaults to a conservative relative threshold (1%) and logs a warning suggesting the researcher define one explicitly.
+If no threshold is specified, the system defaults to a conservative relative threshold (1%) and attaches a warning to the verification detail suggesting the researcher define one explicitly.
 
 ### B.5 Self-Critic Pre-Check (Biomni-inspired)
 
@@ -277,9 +281,9 @@ Before running the full deterministic verification pipeline, run a fast LLM crit
 The critic uses a **cheap, fast model route** (e.g., a smaller model or low max_tokens) because it's a pre-filter, not a deep analysis. Its output is a structured list of `{issue, severity, suggestion}`.
 
 **How it integrates:**
-- Runs *before* `verification_evaluator_operator`, not after
+- Runs near the start of `run_verify_operator`, before historical analysis and verifier LLM review
 - If the critic finds `critical` severity issues: the run is marked `INVALID` immediately without running the full check suite, saving compute
-- If the critic finds `warning` severity issues: they're attached to the verification report as `critic_warnings` for the LLM verifier to consider
+- If the critic finds `warning` severity issues: they're attached to `self_critic_result` on the verification report for the verifier and UI to consider
 - If the critic finds nothing: proceed to full verification as normal
 
 This is deliberately lightweight — a single LLM call with a focused prompt, not a multi-step reasoning chain. The goal is to catch the 20% of problems that are obvious at a glance, not to replace the deterministic checks.
@@ -302,7 +306,7 @@ New entity or extension to run records: **metric frontier** per charter + hypoth
 - Updated after each verified run
 - Records: best value, which run achieved it, how many runs since last improvement
 - "Runs since last improvement" is the key stall indicator
-- Visible in the timeline UI as a frontier chart
+- Visible in the timeline UI as a frontier snapshot + sparkline
 
 ### B.8 Acceptance Criteria
 
@@ -682,14 +686,14 @@ Phases A and B can be developed in parallel — they're independent. Phase C dep
 
 ### Phase B
 - `libs/verification/trend.py` — new module: metric series, direction classification, frontier
-- `libs/verification/critic.py` — new module: self-critic pre-check (Biomni-inspired)
-- `libs/verification/outcome.py` — extend with `DirectionalSignal`
-- `libs/verification/checks.py` — `compare_to_baseline()` gains trend awareness
-- `libs/verification/historical.py` — `compare_to_historical()` returns trend data
+- `libs/verification/self_critic.py` — self-critic pre-check (Biomni-inspired)
+- `libs/verification/conflict_resolution.py` — verifier-route tradeoff resolution for conflicting metrics
+- `libs/verification/outcome.py` — outcome gating for self-critic and tradeoff decisions
 - `libs/verification/recommendations.py` — signal-driven recommendations
-- `libs/schemas/domain.py` — `MetricFrontier`, `CriticFinding`, directional signal fields on `VerificationReport`
+- `libs/schemas/domain.py` — `MetricFrontier`, typed self-critic/tradeoff/frontier payloads, directional signal fields on `VerificationReport`
 - `libs/storage/models.py` — new columns/tables for frontier tracking, critic warnings on verification reports
-- `prompts/verification/v1/self_critic.md` — focused critic prompt template
+- `prompts/verification/v1/self_critic_precheck.md` — focused critic prompt template
+- `prompts/verification/v1/metric_conflict_resolution.md` — verifier tradeoff prompt template
 - `configs/models/routes.yaml` — `critic` model route (cheap/fast model)
 
 ### Phase C

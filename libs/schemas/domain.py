@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from datetime import datetime
-from typing import Any
+from typing import Any, Literal
 
 from pydantic import BaseModel, ConfigDict, Field
 
@@ -341,6 +341,81 @@ class RunRecord(BaseModel):
 # ---------------------------------------------------------------------------
 
 
+class SelfCriticFlag(BaseModel):
+    issue: str
+    severity: Literal["critical", "warning"] = "warning"
+
+
+class SelfCriticResult(BaseModel):
+    passed: bool = True
+    flags: list[SelfCriticFlag] = Field(default_factory=list)
+    rationale: str = ""
+    blocking: bool = False
+
+
+class FrontierSnapshot(BaseModel):
+    metric_name: str | None = None
+    current_value: float | None = None
+    best_value: float
+    best_run_public_id: str
+    runs_since_improvement: int
+    series_tail: list[float] = Field(default_factory=list)
+
+
+class TrendDiagnostics(BaseModel):
+    sample_size: int = 0
+    slope: float = 0.0
+    normalized_slope: float = 0.0
+    mann_kendall_tau: float = 0.0
+    coefficient_of_variation: float | None = None
+    frontier_delta: float = 0.0
+    frontier_delta_ratio: float = 0.0
+    recent_change_ratio: float = 0.0
+    runs_since_improvement: int = 0
+    significance_threshold: float = 0.01
+    threshold_source: Literal["charter", "default"] = "default"
+    reasons: list[str] = Field(default_factory=list)
+
+
+class MetricConflict(BaseModel):
+    metric: str
+    signal: str
+    value: float | None = None
+    lower_bound: float | None = None
+    upper_bound: float | None = None
+    violates_bound: bool = False
+    detail: str
+
+
+class TradeoffResolution(BaseModel):
+    resolution: Literal[
+        "accept_tradeoff",
+        "reject_tradeoff",
+        "needs_investigation",
+    ] = "needs_investigation"
+    rationale: str = ""
+    recommendation: str = ""
+    resolved_by: Literal["deterministic", "verifier_llm", "fallback"] = "deterministic"
+
+
+class DirectionalSignalReconciliation(BaseModel):
+    overall: str | None = None
+    conflicts: list[MetricConflict] = Field(default_factory=list)
+    tradeoff_resolution: TradeoffResolution | None = None
+
+
+class DirectionalSignalDetail(BaseModel):
+    primary_metric: str | None = None
+    primary_signal: str | None = None
+    per_metric_signals: dict[str, str] = Field(default_factory=dict)
+    assessments: dict[str, TrendDiagnostics] = Field(default_factory=dict)
+    frontier: FrontierSnapshot | None = None
+    threshold_warning: str | None = None
+    reconciliation: DirectionalSignalReconciliation = Field(
+        default_factory=DirectionalSignalReconciliation
+    )
+
+
 class VerificationReport(BaseModel):
     model_config = ConfigDict(from_attributes=True)
 
@@ -363,8 +438,10 @@ class VerificationReport(BaseModel):
     model_route_id: str
     prompt_id: str
     directional_signal: str | None = None
-    directional_signal_detail: dict[str, Any] = Field(default_factory=dict)
-    self_critic_result: dict[str, Any] = Field(default_factory=dict)
+    directional_signal_detail: DirectionalSignalDetail = Field(
+        default_factory=DirectionalSignalDetail
+    )
+    self_critic_result: SelfCriticResult = Field(default_factory=SelfCriticResult)
     created_at: datetime
     updated_at: datetime
 

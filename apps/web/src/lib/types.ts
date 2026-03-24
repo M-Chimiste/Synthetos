@@ -103,6 +103,9 @@ export interface TimelineEntry {
   category: "state_change" | "operator" | "run" | "report" | "user_action" | "system";
   summary: string;
   details: Dictionary;
+  directional_signal?: string | null;
+  verification_outcome?: string | null;
+  frontier_snapshot?: FrontierSnapshot | null;
 }
 
 export interface TimelineResponse {
@@ -338,6 +341,75 @@ export interface RunArtifactManifest {
   artifacts: Dictionary[];
 }
 
+export interface SelfCriticFlag {
+  issue: string;
+  severity: "critical" | "warning";
+}
+
+export interface SelfCriticResult {
+  passed: boolean;
+  flags: SelfCriticFlag[];
+  rationale: string;
+  blocking: boolean;
+}
+
+export interface FrontierSnapshot {
+  metric_name?: string | null;
+  current_value?: number | null;
+  best_value: number;
+  best_run_public_id: string;
+  runs_since_improvement: number;
+  series_tail: number[];
+}
+
+export interface TrendDiagnostics {
+  sample_size: number;
+  slope: number;
+  normalized_slope: number;
+  mann_kendall_tau: number;
+  coefficient_of_variation?: number | null;
+  frontier_delta: number;
+  frontier_delta_ratio: number;
+  recent_change_ratio: number;
+  runs_since_improvement: number;
+  significance_threshold: number;
+  threshold_source: "charter" | "default";
+  reasons: string[];
+}
+
+export interface MetricConflict {
+  metric: string;
+  signal: string;
+  value?: number | null;
+  lower_bound?: number | null;
+  upper_bound?: number | null;
+  violates_bound: boolean;
+  detail: string;
+}
+
+export interface TradeoffResolution {
+  resolution: "accept_tradeoff" | "reject_tradeoff" | "needs_investigation";
+  rationale: string;
+  recommendation: string;
+  resolved_by: "deterministic" | "verifier_llm" | "fallback";
+}
+
+export interface DirectionalSignalReconciliation {
+  overall?: string | null;
+  conflicts: MetricConflict[];
+  tradeoff_resolution?: TradeoffResolution | null;
+}
+
+export interface DirectionalSignalDetail {
+  primary_metric?: string | null;
+  primary_signal?: string | null;
+  per_metric_signals: Record<string, string>;
+  assessments: Record<string, TrendDiagnostics>;
+  frontier?: FrontierSnapshot | null;
+  threshold_warning?: string | null;
+  reconciliation: DirectionalSignalReconciliation;
+}
+
 export interface RunListResponse {
   items: RunSummary[];
   total: number;
@@ -366,6 +438,9 @@ export interface VerificationReportDetail extends VerificationReportSummary {
   rerun_note?: string | null;
   model_route_id: string;
   prompt_id: string;
+  directional_signal?: string | null;
+  directional_signal_detail: DirectionalSignalDetail;
+  self_critic_result: SelfCriticResult;
   updated_at: string;
 }
 
@@ -446,6 +521,7 @@ export interface RunDetailResponse {
   telemetry_events: RunTelemetryEvent[];
   skill_execution_records: SkillExecutionRecord[];
   remediation_actions: RemediationAction[];
+  frontier_snapshot?: FrontierSnapshot | null;
   reports: ReportSummary[];
   verification_report?: VerificationReportSummary | null;
   postmortem?: FailurePostmortemSummary | null;

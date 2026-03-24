@@ -3,7 +3,7 @@
 **Product:** ML Laboratory Co-Scientist
 **Repository:** `Synthetos`
 **Last Updated:** 2026-03-24
-**Overall Status:** Phase B (Directional Signal) complete, Phase 5.2 in progress
+**Overall Status:** Phase B (Directional Signal) complete, Phase 5.2 not started
 
 ---
 
@@ -104,30 +104,37 @@
 
 ## What Was Done (Current Session)
 
-### Phase B — Directional Signal Evaluation
-- New `DirectionalSignal` enum (advancing/stalled/regressing/noisy/breakthrough) — separate from `VerificationOutcome`, answering "is this hypothesis making progress?" vs "is this run valid?"
-- `libs/verification/trend.py`: pure-function trend analysis module
-  - `compute_metric_series()` — builds time-ordered metric series from prior runs + current
-  - `classify_direction()` — classifies trend using relative deltas, stall detection, noise detection, breakthrough detection
-  - `compute_frontier()` — tracks running best value and runs since last improvement
-  - `reconcile_signals()` — multi-metric reconciliation, detects conflicts between primary and constraint metrics
-- `libs/verification/self_critic.py`: fast LLM pre-check before full verification
-  - Uses `critic` model route with low max_tokens (256)
-  - Catches: random-chance metrics, perfect scores, unconverged training, missing metrics
-  - Fail-open on LLM failure (returns passed=True)
-- `SuccessCriteria` and `ConstraintMetric` Pydantic models for typed access to charter `success_criteria` JSON
-- `MetricFrontierModel` table (migration `20260324_000013`) — one row per (hypothesis, metric) pair tracking best value and stall count
-- New columns on `VerificationReportModel`: `directional_signal`, `directional_signal_detail`, `self_critic_result`
-- New columns on `ReportBundleModel`: `run_record_id`, `hypothesis_card_id` for experiment writeup linkage
-- `upsert_metric_frontier()` service function with proper upsert semantics
-- `run_verify_operator` integration: self-critic → trend analysis → frontier update → outcome determination
-- Signal-aware recommendations: `intensify_approach`, `stall_alert`, `regression_warning`, `noise_alert`, `breakthrough_flag`
-- Per-experiment writeup generated in `verification_report_operator` as `ReportBundle(report_type="experiment_writeup")`
-- Added missing `verifier` model route to `configs/models/routes.yaml`
-- Prompt updates: `verification_review.md` now includes directional signal and self-critic context
-- New prompts: `self_critic_precheck.md`, `metric_conflict_resolution.md`
-- Policy defaults: `self_critic_enabled`, `default_significance_threshold`, `default_stall_window`
-- 40 new tests across `test_trend.py` (22), `test_self_critic.py` (5), `test_frontier.py` (5), `test_verification_checks.py` (5 new signal recommendation tests), plus `MetricFrontier` Pydantic + model tests
+### Phase B — Directional Signal gap closure (Codex)
+- Closed the behavioral gaps between the roadmap and the shipped Phase B scaffolding.
+- `run_verify_operator` now treats the self-critic as a real pre-check:
+  - critical flags mark the run `invalid`
+  - historical/trend/verifier review work is skipped when the critic blocks the run
+  - warning flags stay attached to the verification detail and UI
+- `libs/verification/trend.py` now combines:
+  - linear regression slope
+  - Mann-Kendall-style monotonic trend evidence
+  - coefficient of variation
+  - frontier delta / runs-since-improvement
+  - explainable diagnostics persisted under `directional_signal_detail.assessments`
+- Added `libs/verification/conflict_resolution.py` and wired `metric_conflict_resolution.md` into verification:
+  - primary-metric gains with regressing/violated constraints now call the `verifier` route
+  - the tradeoff judgment is stored under `directional_signal_detail.reconciliation.tradeoff_resolution`
+  - outcome and next-step recommendations now respect that judgment (`tradeoff_pivot`, `investigate_tradeoff`, `continue_with_guardrails`)
+- Threshold defaults are now explicit in verification detail:
+  - inherited `default_significance_threshold` emits a warning when the charter omits one
+- Frontier visibility is now user-facing:
+  - timeline payloads expose `frontier_snapshot`, `directional_signal`, and verification outcome
+  - `Timeline.tsx` renders a compact frontier sparkline/progress card
+  - run detail exposes the latest frontier snapshot
+- Verification report/detail typing was tightened:
+  - typed self-critic payload
+  - typed frontier snapshot
+  - typed reconciliation / tradeoff payload
+- Added regression coverage for:
+  - blocking self-critic invalidation
+  - tradeoff resolution changing outcome/recommendations
+  - frontier snapshot exposure through run detail and timeline
+  - richer trend diagnostics / bound-violation conflicts
 
 ### Phase A remediation correction pass (Codex)
 - Fixed failure classification precedence so dependency/import errors now resolve to `dependency_failure` before generic `runtime_exception`
@@ -214,9 +221,21 @@
 - 57 targeted Phase A correction tests passing across unit and integration coverage
 
 ### Test summary
-- Backend: 347 tests passing (up from 259 after Phase B additions)
+- Targeted backend verification: 86 tests passing
+- Targeted frontend verification: 7 timeline tests passing
+- Web build: passing
 - Ruff: clean
 - Postgres integration tests: ready to run when Docker is available
+
+### Verified this session
+- `uv run pytest tests/unit/test_trend.py tests/unit/test_self_critic.py tests/unit/test_verification_checks.py tests/integration/test_phase4_api.py tests/integration/test_api_contract.py -q`
+- `npm run --prefix apps/web test -- --run Timeline`
+- `npm run --prefix apps/web build`
+- `uv run ruff check libs apps tests`
+
+### What Needs Next
+- Run the broader backend/frontend suites when time permits to refresh the repo-wide pass counts.
+- Start Phase 5.2 pilot exercises now that Phase B behavior matches the roadmap more closely.
 
 ---
 

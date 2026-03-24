@@ -28,6 +28,7 @@ class TestSelfCriticPrecheck:
 
         assert result["passed"] is True
         assert result["flags"] == []
+        assert result["blocking"] is False
 
     def test_flags_issues(self) -> None:
         gateway = MagicMock()
@@ -51,6 +52,7 @@ class TestSelfCriticPrecheck:
         assert result["passed"] is False
         assert len(result["flags"]) == 1
         assert result["flags"][0]["severity"] == "critical"
+        assert result["blocking"] is True
 
     def test_handles_gateway_failure(self) -> None:
         gateway = MagicMock()
@@ -68,6 +70,7 @@ class TestSelfCriticPrecheck:
         # Fail-open: returns passed=True
         assert result["passed"] is True
         assert result["rationale"] == "skipped"
+        assert result["blocking"] is False
 
     def test_uses_critic_route(self) -> None:
         gateway = MagicMock()
@@ -87,6 +90,7 @@ class TestSelfCriticPrecheck:
         gateway.call_structured.assert_called_once()
         call_args = gateway.call_structured.call_args
         assert call_args[0][0] == "critic"
+        assert call_args[0][1][0]["role"] == "user"
 
     def test_prompt_template_renders(self) -> None:
         """Verify the Jinja2 template renders without errors."""

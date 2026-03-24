@@ -21,13 +21,25 @@ def build_rerun_note(
     output_contract_checks: list[dict[str, Any]],
     metric_sanity_checks: list[dict[str, Any]],
     directional_signal: str | None = None,
+    self_critic_result: dict[str, Any] | None = None,
+    tradeoff_resolution: dict[str, Any] | None = None,
 ) -> str | None:
     """Generate deterministic replay/rerun guidance from verification state."""
+    self_critic_result = self_critic_result or {}
+    tradeoff_resolution = tradeoff_resolution or {}
     if run_status == "failed":
         return (
             "Retry only after fixing the execution failure "
             "and regenerating the declared artifacts."
         )
+    if self_critic_result.get("blocking"):
+        critical_issues = [
+            item.get("issue", "critical self-critic finding")
+            for item in self_critic_result.get("flags", [])
+            if item.get("severity") == "critical"
+        ]
+        issue_text = critical_issues[0] if critical_issues else "critical self-critic finding"
+        return f"Rerun only after addressing the blocking self-critic issue: {issue_text}."
     if any(not item.get("passed", True) for item in output_contract_checks):
         return (
             "Rerun after fixing the output contract mismatch so "
@@ -52,6 +64,11 @@ def build_rerun_note(
         delta_pct = baseline_comparison.get("delta_pct")
         if isinstance(delta_pct, (int, float)) and abs(delta_pct) < 1.0:
             return "Rerun or replay to confirm the marginal improvement before promotion."
+    if tradeoff_resolution.get("resolution") == "needs_investigation":
+        return (
+            tradeoff_resolution.get("recommendation")
+            or "Run a follow-up experiment to understand the metric tradeoff."
+        )
     return None
 
 
@@ -64,11 +81,13 @@ def build_next_step_recommendations(
     protocol_update_hints: list[dict[str, Any]] | None = None,
     reviewer_summary: str | None = None,
     directional_signal: str | None = None,
+    tradeoff_resolution: dict[str, Any] | None = None,
 ) -> list[dict[str, Any]]:
     """Return structured recommendations for orchestrators and UI clients."""
     recommendations: list[dict[str, Any]] = []
     retrieval_hints = retrieval_hints or []
     protocol_update_hints = protocol_update_hints or []
+    tradeoff_resolution = tradeoff_resolution or {}
 
     if OUTCOME_ORDER.get(outcome, 0) >= OUTCOME_ORDER.get(min_outcome_for_promotion, 0):
         recommendations.append({
@@ -179,6 +198,35 @@ def build_next_step_recommendations(
                 "This result warrants attention and potential fast-track promotion."
             ),
             "payload": {},
+        })
+
+    resolution = tradeoff_resolution.get("resolution")
+    if resolution == "reject_tradeoff":
+        recommendations.append({
+            "recommendation_type": "tradeoff_pivot",
+            "rationale": (
+                tradeoff_resolution.get("rationale")
+                or "Constraint regressions outweigh the primary metric improvement."
+            ),
+            "payload": {"recommendation": tradeoff_resolution.get("recommendation")},
+        })
+    elif resolution == "needs_investigation":
+        recommendations.append({
+            "recommendation_type": "investigate_tradeoff",
+            "rationale": (
+                tradeoff_resolution.get("rationale")
+                or "The metric tradeoff is ambiguous and needs more evidence."
+            ),
+            "payload": {"recommendation": tradeoff_resolution.get("recommendation")},
+        })
+    elif resolution == "accept_tradeoff":
+        recommendations.append({
+            "recommendation_type": "continue_with_guardrails",
+            "rationale": (
+                tradeoff_resolution.get("rationale")
+                or "The current tradeoff is acceptable, but the constraint should stay monitored."
+            ),
+            "payload": {"recommendation": tradeoff_resolution.get("recommendation")},
         })
 
     return recommendations

@@ -42,13 +42,11 @@ def run_self_critic_precheck(
             spec_metrics=spec_metrics,
         )
 
-        prompt_id = "verification/v1/self_critic_precheck"
         response = gateway.call_structured(
             "critic",
-            rendered,
+            [{"role": "user", "content": rendered}],
             temperature=0.2,
             max_tokens=256,
-            prompt_id=prompt_id,
         )
 
         passed = response.get("passed", True)
@@ -59,17 +57,22 @@ def run_self_critic_precheck(
         validated_flags: list[dict[str, str]] = []
         for flag in flags:
             if isinstance(flag, dict) and "issue" in flag:
+                severity = str(flag.get("severity", "warning")).lower()
+                if severity not in {"critical", "warning"}:
+                    severity = "warning"
                 validated_flags.append({
                     "issue": str(flag["issue"]),
-                    "severity": flag.get("severity", "warning"),
+                    "severity": severity,
                 })
 
+        blocking = any(flag["severity"] == "critical" for flag in validated_flags)
         return {
-            "passed": bool(passed),
+            "passed": bool(passed) and not blocking,
             "flags": validated_flags,
             "rationale": str(rationale),
+            "blocking": blocking,
         }
 
     except Exception:
         log.warning("self_critic_precheck_failed", exc_info=True)
-        return {"passed": True, "flags": [], "rationale": "skipped"}
+        return {"passed": True, "flags": [], "rationale": "skipped", "blocking": False}

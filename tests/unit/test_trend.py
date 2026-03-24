@@ -11,6 +11,7 @@ from libs.schemas.domain import SuccessCriteria
 from libs.verification.trend import (
     DirectionalSignal,
     MetricPoint,
+    assess_direction,
     classify_direction,
     compute_frontier,
     compute_metric_series,
@@ -146,6 +147,18 @@ class TestClassifyDirection:
         signal = classify_direction([], higher_is_better=True, significance_threshold=0.01)
         assert signal == DirectionalSignal.NOISY
 
+    def test_assessment_tracks_threshold_source(self) -> None:
+        series = _make_series([0.80, 0.82, 0.85, 0.88])
+        assessment = assess_direction(
+            series,
+            higher_is_better=True,
+            significance_threshold=0.01,
+            threshold_source="default",
+        )
+        assert assessment.signal == DirectionalSignal.ADVANCING
+        assert assessment.diagnostics["threshold_source"] == "default"
+        assert assessment.diagnostics["reasons"]
+
 
 # ---------------------------------------------------------------------------
 # compute_frontier
@@ -224,6 +237,26 @@ class TestReconcileSignals:
         }
         result = reconcile_signals(signal_map, "accuracy", ["latency"])
         assert result["conflicts"] == []
+
+    def test_bound_violation_counts_as_conflict(self) -> None:
+        signal_map = {
+            "accuracy": DirectionalSignal.ADVANCING,
+            "latency_ms": DirectionalSignal.STALLED,
+        }
+        constraint = SuccessCriteria.model_validate({
+            "primary_metric": "accuracy",
+            "constraint_metrics": [
+                {"name": "latency_ms", "higher_is_better": False, "upper_bound": 120.0},
+            ],
+        }).constraint_metrics[0]
+        result = reconcile_signals(
+            signal_map,
+            "accuracy",
+            [constraint],
+            {"latency_ms": 145.0},
+        )
+        assert len(result["conflicts"]) == 1
+        assert result["conflicts"][0]["violates_bound"] is True
 
 
 # ---------------------------------------------------------------------------

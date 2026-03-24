@@ -12,6 +12,7 @@ from libs.schemas.domain import (
     EvidenceCard,
     ExperimentSpec,
     FailurePostmortem,
+    FrontierSnapshot,
     HypothesisCard,
     JobRecord,
     PaperCard,
@@ -71,6 +72,9 @@ class TimelineEntry(BaseModel):
     category: Literal["state_change", "operator", "run", "report", "user_action", "system"]
     summary: str
     details: dict[str, Any] = Field(default_factory=dict)
+    directional_signal: str | None = None
+    verification_outcome: str | None = None
+    frontier_snapshot: FrontierSnapshot | None = None
 
 
 class TimelineResponse(BaseModel):
@@ -335,6 +339,7 @@ class RunDetailResponse(BaseModel):
     telemetry_events: list[RunTelemetryEvent] = Field(default_factory=list)
     skill_execution_records: list[SkillExecutionRecord] = Field(default_factory=list)
     remediation_actions: list[RemediationAction] = Field(default_factory=list)
+    frontier_snapshot: FrontierSnapshot | None = None
     reports: list[ReportSummary] = Field(default_factory=list)
     verification_report: VerificationReportSummary | None = None
     postmortem: FailurePostmortemSummary | None = None

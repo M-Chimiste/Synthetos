@@ -7,7 +7,7 @@ describe("Timeline", () => {
   it("renders all timeline entries", () => {
     render(<Timeline items={sampleTimelineEntries} />);
     const entries = screen.getAllByTestId("timeline-entry");
-    expect(entries).toHaveLength(4);
+    expect(entries).toHaveLength(5);
   });
 
   it("shows summaries for each entry", () => {
@@ -39,5 +39,12 @@ describe("Timeline", () => {
     // The timestamp should be rendered in some locale format
     const entry = screen.getByTestId("timeline-entry");
     expect(entry.textContent).toContain("2026");
+  });
+
+  it("renders frontier progress when present", () => {
+    render(<Timeline items={sampleTimelineEntries} />);
+    expect(screen.getByTestId("frontier-progress")).toBeInTheDocument();
+    expect(screen.getByText("Frontier Progress")).toBeInTheDocument();
+    expect(screen.getByText("accuracy")).toBeInTheDocument();
   });
 });

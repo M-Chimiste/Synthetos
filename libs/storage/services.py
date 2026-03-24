@@ -497,6 +497,9 @@ def get_cycle_timeline(
             "category": category,
             "summary": summary,
             "details": event.payload or {},
+            "directional_signal": (event.payload or {}).get("directional_signal"),
+            "verification_outcome": (event.payload or {}).get("outcome"),
+            "frontier_snapshot": (event.payload or {}).get("frontier_snapshot"),
         })
     return timeline
 
@@ -1412,6 +1415,11 @@ def get_run_detail_api(session: Session, run_public_id: str) -> RunDetailRespons
             root_cause_summary=pm.root_cause_summary,
             created_at=pm.created_at,
         )
+    frontier_snapshot = None
+    if vr is not None:
+        raw_detail = vr.directional_signal_detail or {}
+        if isinstance(raw_detail, dict):
+            frontier_snapshot = raw_detail.get("frontier")
 
     return RunDetailResponse(
         run=_build_run_record_response(session, run),
@@ -1450,6 +1458,7 @@ def get_run_detail_api(session: Session, run_public_id: str) -> RunDetailRespons
             )
             for item in remediation_actions
         ],
+        frontier_snapshot=frontier_snapshot,
         reports=run_reports,
         verification_report=vr_summary,
         postmortem=pm_summary,
@@ -2244,6 +2253,9 @@ def _build_verification_report_detail(
         reviewer_summary=vr.reviewer_summary,
         model_route_id=vr.model_route_id,
         prompt_id=vr.prompt_id,
+        directional_signal=vr.directional_signal,
+        directional_signal_detail=vr.directional_signal_detail or {},
+        self_critic_result=vr.self_critic_result or {},
         created_at=vr.created_at,
         updated_at=vr.updated_at,
     )
@@ -2351,6 +2363,20 @@ def get_verification_summary_for_cycle(
         ),
         reviewer_summary=(
             latest_verification_report.reviewer_summary if latest_verification_report else None
+        ),
+        directional_signal=(
+            latest_verification_report.directional_signal if latest_verification_report else None
+        ),
+        tradeoff_resolution=(
+            (
+                (
+                    (latest_verification_report.directional_signal_detail or {})
+                    .get("reconciliation")
+                )
+                or {}
+            ).get("tradeoff_resolution")
+            if latest_verification_report
+            else None
         ),
     )
     return VerificationSummaryResponse(

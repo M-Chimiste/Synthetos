@@ -2159,22 +2159,13 @@ def run_verify_operator(
         }
     )
 
-    # ---- Historical comparison ----
-    prior_runs = find_comparable_runs(
-        session,
-        run,
-        spec,
-        charter_id=cycle.charter_id,
-    )
-    historical_comparisons = compare_to_historical(
-        run.metrics_summary or {},
-        prior_runs,
-        spec.metrics or [],
-    )
-    historical_memory_refs = collect_historical_memory_refs(session, prior_runs)
-
     # ---- Self-critic pre-check (Phase B) ----
-    self_critic_result: dict[str, Any] = {"passed": True, "flags": [], "rationale": "skipped"}
+    self_critic_result: dict[str, Any] = {
+        "passed": True,
+        "flags": [],
+        "rationale": "skipped",
+        "blocking": False,
+    }
     self_critic_enabled = bool(verification_policy.get("self_critic_enabled", True))
     if self_critic_enabled and run.status not in ("failed", "cancelled"):
         try:
@@ -2192,10 +2183,34 @@ def run_verify_operator(
         except Exception:
             log.warning("self_critic_precheck_error", run_public_id=run.public_id)
 
+    blocking_self_critic_flags = [
+        flag for flag in self_critic_result.get("flags", [])
+        if flag.get("severity") == "critical"
+    ]
+
+    # ---- Historical comparison ----
+    prior_runs: list[Any] = []
+    historical_comparisons: list[dict[str, Any]] = []
+    historical_memory_refs: list[dict[str, Any]] = []
+    if not self_critic_result.get("blocking"):
+        prior_runs = find_comparable_runs(
+            session,
+            run,
+            spec,
+            charter_id=cycle.charter_id,
+        )
+        historical_comparisons = compare_to_historical(
+            run.metrics_summary or {},
+            prior_runs,
+            spec.metrics or [],
+        )
+        historical_memory_refs = collect_historical_memory_refs(session, prior_runs)
+
     # ---- Directional signal analysis (Phase B) ----
     from libs.schemas.domain import SuccessCriteria
+    from libs.verification.conflict_resolution import resolve_metric_tradeoff
     from libs.verification.trend import (
-        classify_direction,
+        assess_direction,
         compute_frontier,
         compute_metric_series,
         reconcile_signals,
@@ -2203,15 +2218,29 @@ def run_verify_operator(
 
     directional_signal: str | None = None
     directional_signal_detail: dict[str, Any] = {}
+    tradeoff_resolution: dict[str, Any] | None = None
 
     success_criteria_raw = (charter.success_criteria or {}) if charter else {}
-    if success_criteria_raw.get("primary_metric"):
+    default_significance_threshold = float(
+        verification_policy.get("default_significance_threshold", 0.01)
+    )
+    default_stall_window = int(verification_policy.get("default_stall_window", 3))
+    if success_criteria_raw.get("primary_metric") and not self_critic_result.get("blocking"):
         try:
-            sc = SuccessCriteria.model_validate(success_criteria_raw)
+            sc_payload = dict(success_criteria_raw)
+            threshold_source = (
+                "charter" if "significance_threshold" in sc_payload else "default"
+            )
+            sc_payload.setdefault("significance_threshold", default_significance_threshold)
+            sc_payload.setdefault("stall_window", default_stall_window)
+            sc = SuccessCriteria.model_validate(sc_payload)
         except Exception:
             sc = SuccessCriteria(
                 primary_metric=success_criteria_raw["primary_metric"],
+                significance_threshold=default_significance_threshold,
+                stall_window=default_stall_window,
             )
+            threshold_source = "default"
 
         series = compute_metric_series(
             run.metrics_summary or {},
@@ -2221,15 +2250,29 @@ def run_verify_operator(
             run.created_at,
         )
         if len(series) >= 1:
-            signal = classify_direction(
-                series, sc.primary_higher_is_better, sc.significance_threshold, sc.stall_window,
+            primary_assessment = assess_direction(
+                series,
+                sc.primary_higher_is_better,
+                sc.significance_threshold,
+                sc.stall_window,
+                threshold_source=threshold_source,
             )
+            signal = primary_assessment.signal
             directional_signal = signal.value
 
             frontier = compute_frontier(series, sc.primary_higher_is_better)
 
             # Per-constraint signals
             signal_map = {sc.primary_metric: signal}
+            assessments: dict[str, dict[str, Any]] = {
+                sc.primary_metric: primary_assessment.diagnostics,
+            }
+            metric_histories: dict[str, list[dict[str, Any]]] = {
+                sc.primary_metric: [
+                    {"run_public_id": point.run_public_id, "value": point.value}
+                    for point in series
+                ],
+            }
             for cm in sc.constraint_metrics:
                 cm_series = compute_metric_series(
                     run.metrics_summary or {},
@@ -2239,23 +2282,83 @@ def run_verify_operator(
                     run.created_at,
                 )
                 if cm_series:
-                    signal_map[cm.name] = classify_direction(
-                        cm_series, cm.higher_is_better, sc.significance_threshold, sc.stall_window,
+                    assessment = assess_direction(
+                        cm_series,
+                        cm.higher_is_better,
+                        sc.significance_threshold,
+                        sc.stall_window,
+                        threshold_source=threshold_source,
                     )
+                    signal_map[cm.name] = assessment.signal
+                    assessments[cm.name] = assessment.diagnostics
+                    metric_histories[cm.name] = [
+                        {"run_public_id": point.run_public_id, "value": point.value}
+                        for point in cm_series
+                    ]
 
             reconciliation = reconcile_signals(
-                signal_map, sc.primary_metric,
-                [cm.name for cm in sc.constraint_metrics],
+                signal_map,
+                sc.primary_metric,
+                sc.constraint_metrics,
+                run.metrics_summary or {},
             )
+            if reconciliation["conflicts"] and run.status not in ("failed", "cancelled"):
+                tradeoff_gateway = ModelGateway.from_config(config)
+                tradeoff_resolution = resolve_metric_tradeoff(
+                    gateway=tradeoff_gateway,
+                    charter_problem=charter.problem_statement if charter else "",
+                    experiment_title=spec.title,
+                    primary_metric=sc.primary_metric,
+                    primary_value=(
+                        float((run.metrics_summary or {}).get(sc.primary_metric))
+                        if isinstance(
+                            (run.metrics_summary or {}).get(sc.primary_metric),
+                            (int, float),
+                        )
+                        else None
+                    ),
+                    primary_signal=signal.value,
+                    primary_higher_is_better=sc.primary_higher_is_better,
+                    conflicts=reconciliation["conflicts"],
+                    metric_histories=metric_histories,
+                )
+                reconciliation["tradeoff_resolution"] = tradeoff_resolution
+            elif reconciliation["conflicts"]:
+                tradeoff_resolution = {
+                    "resolution": "needs_investigation",
+                    "rationale": "Constraint conflicts were detected on a non-successful run.",
+                    "recommendation": "Re-run after fixing the failed execution path.",
+                    "resolved_by": "deterministic",
+                }
+                reconciliation["tradeoff_resolution"] = tradeoff_resolution
+
+            threshold_warning = None
+            if threshold_source == "default":
+                threshold_warning = (
+                    f"Using default significance threshold "
+                    f"({sc.significance_threshold:.4f}) because the charter did not specify one."
+                )
+
+            frontier_snapshot = {
+                "metric_name": sc.primary_metric,
+                "current_value": (
+                    float((run.metrics_summary or {}).get(sc.primary_metric))
+                    if isinstance((run.metrics_summary or {}).get(sc.primary_metric), (int, float))
+                    else None
+                ),
+                "best_value": frontier.best_value,
+                "best_run_public_id": frontier.best_run_public_id,
+                "runs_since_improvement": frontier.runs_since_improvement,
+                "series_tail": [point.value for point in series[-5:]],
+            }
 
             directional_signal_detail = {
+                "primary_metric": sc.primary_metric,
                 "primary_signal": signal.value,
-                "per_metric_signals": {k: v.value for k, v in signal_map.items()},
-                "frontier": {
-                    "best_value": frontier.best_value,
-                    "best_run_public_id": frontier.best_run_public_id,
-                    "runs_since_improvement": frontier.runs_since_improvement,
-                },
+                "per_metric_signals": {key: value.value for key, value in signal_map.items()},
+                "assessments": assessments,
+                "frontier": frontier_snapshot,
+                "threshold_warning": threshold_warning,
                 "reconciliation": reconciliation,
             }
 
@@ -2289,6 +2392,8 @@ def run_verify_operator(
         require_historical_comparison=require_historical_comparison,
         leakage_check_enabled=leakage_check_enabled,
         split_validation_enabled=split_validation_enabled,
+        self_critic_result=self_critic_result,
+        tradeoff_resolution=tradeoff_resolution,
     )
     rerun_note = build_rerun_note(
         outcome=outcome.value,
@@ -2298,6 +2403,8 @@ def run_verify_operator(
         output_contract_checks=output_contract_checks,
         metric_sanity_checks=metric_sanity_checks,
         directional_signal=directional_signal,
+        self_critic_result=self_critic_result,
+        tradeoff_resolution=tradeoff_resolution,
     )
 
     # ---- LLM review (only for non-failed runs) ----
@@ -2306,8 +2413,21 @@ def run_verify_operator(
     fail_info = run.failure_classification or "none"
     outcome_rationale = f"Run status: {run.status}. Failure: {fail_info}."
     reviewer_summary = f"Outcome: {outcome.value}. Run {run.status}."
+    if blocking_self_critic_flags:
+        issue_text = "; ".join(
+            flag.get("issue", "critical issue")
+            for flag in blocking_self_critic_flags
+        )
+        outcome_rationale = (
+            "Self-critic flagged blocking issues before deeper verification: "
+            f"{issue_text}."
+        )
+        reviewer_summary = (
+            "Verification invalidated the run because the self-critic found "
+            f"blocking issues: {issue_text}."
+        )
 
-    if run.status not in ("failed", "cancelled"):
+    if run.status not in ("failed", "cancelled") and not self_critic_result.get("blocking"):
         try:
             gateway = ModelGateway.from_config(config)
             prompt_context = {
@@ -2384,6 +2504,8 @@ def run_verify_operator(
                 "run_public_id": run.public_id,
                 "outcome": outcome.value,
                 "verification_report_public_id": vr.public_id,
+                "directional_signal": directional_signal,
+                "frontier_snapshot": directional_signal_detail.get("frontier"),
             },
         }
     ]

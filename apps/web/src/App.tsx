@@ -17,6 +17,7 @@ import {
   getPortfolio,
   getReport,
   getRun,
+  getTimeline,
   getVerificationReport,
   getVerificationSummary,
   listCycles,
@@ -48,9 +49,11 @@ import type {
   RunListResponse,
   RunSummary,
   SkillSummaryResponse,
+  TimelineEntry,
   VerificationReportDetail,
   VerificationSummaryResponse,
 } from "./lib/types";
+import Timeline from "./components/Timeline";
 
 const defaultForm = {
   title: "Phase 1 literature triage cycle",
@@ -131,6 +134,13 @@ export default function App() {
     refetchInterval: 5000,
   });
 
+  const timelineQuery = useQuery({
+    queryKey: ["timeline", selectedCycleId],
+    queryFn: () => getTimeline(selectedCycleId!),
+    enabled: Boolean(selectedCycleId),
+    refetchInterval: 5000,
+  });
+
   const verificationReportQuery = useQuery({
     queryKey: ["verificationReport", runDetailQuery.data?.verification_report?.public_id],
     queryFn: () => getVerificationReport(runDetailQuery.data!.verification_report!.public_id),
@@ -171,6 +181,7 @@ export default function App() {
       client.invalidateQueries({ queryKey: ["cycle", selectedCycleId] });
       client.invalidateQueries({ queryKey: ["cycles"] });
       client.invalidateQueries({ queryKey: ["verificationSummary", selectedCycleId] });
+      client.invalidateQueries({ queryKey: ["timeline", selectedCycleId] });
     };
     source.onerror = () => {
       source.close();
@@ -189,6 +200,7 @@ export default function App() {
       client.invalidateQueries({ queryKey: ["cycle", selectedCycleId] });
       client.invalidateQueries({ queryKey: ["verificationSummary", selectedCycleId] });
       client.invalidateQueries({ queryKey: ["historicalComparison", selectedRunId] });
+      client.invalidateQueries({ queryKey: ["timeline", selectedCycleId] });
       const verificationReportId = runDetailQuery.data?.verification_report?.public_id;
       if (verificationReportId) {
         client.invalidateQueries({ queryKey: ["verificationReport", verificationReportId] });
@@ -442,6 +454,7 @@ export default function App() {
             evidencePending={evidenceMutation.isPending}
             onSelectReport={setSelectedReportId}
             verificationSummary={verificationSummaryQuery.data}
+            timelineItems={timelineQuery.data?.items}
           />
           <aside className="space-y-6">
             <LiteraturePanel triage={literatureQuery.data} />
@@ -489,6 +502,7 @@ function CycleDetailPanel({
   evidencePending,
   onSelectReport,
   verificationSummary,
+  timelineItems,
 }: {
   detail?: CycleDetailResponse;
   currentRun?: RunSummary;
@@ -499,6 +513,7 @@ function CycleDetailPanel({
   evidencePending: boolean;
   onSelectReport: (reportId: string) => void;
   verificationSummary?: VerificationSummaryResponse;
+  timelineItems?: TimelineEntry[] | null;
 }) {
   if (!detail) {
     return <section className="panel p-6">Select a cycle to inspect Phase 0 state.</section>;
@@ -606,17 +621,7 @@ function CycleDetailPanel({
         </div>
         <div className="space-y-4">
           <Subsection title="Event Timeline">
-            {detail.recent_events.map((event) => (
-              <div key={event.public_id} className="rounded-xl border border-slate-200 p-3">
-                <div className="font-medium">{event.event_type}</div>
-                <div className="text-xs text-slate-500">
-                  #{event.sequence_id} · {new Date(event.created_at).toLocaleString()}
-                </div>
-                <pre className="mt-2 overflow-auto rounded-lg bg-slate-50 p-2 text-xs text-slate-700">
-                  {JSON.stringify(event.payload, null, 2)}
-                </pre>
-              </div>
-            ))}
+            <Timeline items={timelineItems ?? []} />
           </Subsection>
           <Subsection title="Reports">
             {detail.reports.map((report) => (
@@ -956,6 +961,40 @@ function RunTelemetryPanel({
             <div className="rounded-xl border border-slate-200 p-3">
               <div className="font-medium">{verificationReport.outcome}</div>
               <div className="mt-1 text-sm text-slate-600">{verificationReport.reviewer_summary}</div>
+              {verificationReport.directional_signal ? (
+                <div className="mt-2 text-sm text-slate-600">
+                  <strong>Directional signal:</strong> {verificationReport.directional_signal}
+                </div>
+              ) : null}
+              {verificationReport.directional_signal_detail?.frontier ? (
+                <div className="mt-2 rounded-lg bg-slate-50 p-3 text-sm text-slate-700">
+                  <div className="font-medium">
+                    Frontier · {verificationReport.directional_signal_detail.frontier.metric_name ?? "primary metric"}
+                  </div>
+                  <div className="mt-1">
+                    Current {String(verificationReport.directional_signal_detail.frontier.current_value ?? "n/a")}
+                    {" "}· Best {String(verificationReport.directional_signal_detail.frontier.best_value)}
+                    {" "}· Runs since improvement {String(verificationReport.directional_signal_detail.frontier.runs_since_improvement)}
+                  </div>
+                </div>
+              ) : null}
+              {verificationReport.directional_signal_detail?.threshold_warning ? (
+                <div className="mt-2 text-sm text-amber-700">
+                  {verificationReport.directional_signal_detail.threshold_warning}
+                </div>
+              ) : null}
+              {(verificationReport.self_critic_result?.flags ?? []).length > 0 ? (
+                <div className="mt-2 space-y-2">
+                  {(verificationReport.self_critic_result?.flags ?? []).map((flag) => (
+                    <div
+                      key={`${flag.severity}-${flag.issue}`}
+                      className="rounded-lg border border-slate-200 bg-slate-50 p-2 text-xs text-slate-700"
+                    >
+                      <strong>{flag.severity}:</strong> {flag.issue}
+                    </div>
+                  ))}
+                </div>
+              ) : null}
               {verificationReport.rerun_note ? (
                 <div className="mt-2 text-sm text-slate-600">
                   <strong>Replay guidance:</strong> {verificationReport.rerun_note}

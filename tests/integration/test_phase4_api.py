@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from unittest.mock import MagicMock, patch
 
@@ -15,6 +16,7 @@ from apps.api.main import app, get_db
 from libs.adapters.container import ContainerExecutionResult
 from libs.adapters.git import WorktreeInfo
 from libs.core.config import AppConfig
+from libs.core.ids import generate_public_id
 from libs.storage import services
 from libs.storage.base import Base
 from libs.storage.models import (
@@ -23,6 +25,7 @@ from libs.storage.models import (
     RemediationActionModel,
     ResearchCharterModel,
     ResearchCycleModel,
+    RunRecordModel,
 )
 
 AUTH_HEADERS = {"Authorization": "Bearer lab-local-admin"}
@@ -186,6 +189,46 @@ class FakeDockerTimeoutMutationAdapter(FakeDockerContainerAdapter):
             telemetry_callback=telemetry_callback,
             status_checker=lambda: None,
             container_name="ignored",
+        )
+
+
+class FakeDockerConstraintConflictAdapter(FakeDockerContainerAdapter):
+    """Produces an improving primary metric with a regressing constraint metric."""
+
+    def run(
+        self, *, spec, stdout_path, stderr_path,
+        telemetry_callback, status_checker, container_name,
+    ):
+        del status_checker, container_name
+        stdout_path.write_text("epoch 1\n", encoding="utf-8")
+        stderr_path.write_text("", encoding="utf-8")
+        artifact_root = Path(spec.artifact_output_path)
+        artifact_root.mkdir(parents=True, exist_ok=True)
+        metrics = {"accuracy": 0.91, "latency_ms": 145.0}
+        (artifact_root / "metrics.json").write_text(
+            json.dumps(metrics), encoding="utf-8",
+        )
+        (artifact_root / "predictions.json").write_text(
+            json.dumps([{"id": "row-1", "prediction": 1}]),
+            encoding="utf-8",
+        )
+        manifest = {
+            "run_public_id": "placeholder",
+            "manifest_path": str(artifact_root / "artifact_manifest.json"),
+            "metrics_path": str(artifact_root / "metrics.json"),
+            "predictions_path": str(artifact_root / "predictions.json"),
+            "artifacts": [
+                {"name": "metrics", "path": str(artifact_root / "metrics.json")},
+            ],
+        }
+        (artifact_root / "artifact_manifest.json").write_text(
+            json.dumps(manifest), encoding="utf-8",
+        )
+        telemetry_callback("log", {"line": "epoch 1"}, "stdout", "epoch 1")
+        return ContainerExecutionResult(
+            exit_code=0,
+            interrupted_status=None,
+            latest_resource_snapshot={"cpu": "15%", "memory": "40MiB"},
         )
 
 
@@ -410,6 +453,49 @@ def _run_full_pipeline(client, test_session, docker_adapter_cls):
         _run_worker(client)
 
     return cycle_id, run_id
+
+
+def _seed_prior_run(
+    session,
+    *,
+    cycle_id: int,
+    spec_id: int,
+    metrics_summary: dict[str, float],
+) -> RunRecordModel:
+    created_at = datetime.now(UTC) - timedelta(hours=1)
+    run = RunRecordModel(
+        public_id=generate_public_id("run"),
+        cycle_id=cycle_id,
+        experiment_spec_id=spec_id,
+        status="succeeded",
+        execution_profile="cpu-small",
+        workspace_path="/tmp/prior-run",
+        artifact_root="/tmp/prior-artifacts",
+        image="python:3.12-slim",
+        build_recipe={},
+        command=["python", "train.py"],
+        env_vars={},
+        mounts=[],
+        hardware_profile="cpu-small",
+        timeout_seconds=60,
+        memory_limit_mb=1024,
+        network_mode="disabled",
+        bound_skill_keys=[],
+        prompt_lineage=[],
+        model_lineage=[],
+        latest_resource_snapshot={},
+        metrics_summary=metrics_summary,
+        artifact_manifest={},
+        verification_outcome="tentative",
+        attempt_count=1,
+        started_at=created_at,
+        completed_at=created_at,
+        created_at=created_at,
+        updated_at=created_at,
+    )
+    session.add(run)
+    session.commit()
+    return run
 
 
 def test_successful_run_verification(
@@ -735,6 +821,206 @@ def test_same_charter_history_cross_cycle(
     assert hist["total_prior_runs"] >= 1
     assert hist["comparison_scope"] == "same_charter"
     assert hist["memory_references"]
+
+
+def test_self_critic_critical_short_circuits_verification(
+    client: TestClient, test_session, tmp_config: AppConfig,
+):
+    tmp_config.policy_config_path.write_text(
+        "\n".join([
+            "allowed_command_scopes:",
+            "  create_cycle:",
+            "    - cycles.write",
+            "approval_rules:",
+            "  network_enabled_run: human_only",
+            "execution:",
+            "  auto_run_profiles:",
+            "    - cpu-small",
+            "verification:",
+            "  self_critic_enabled: true",
+            "  auto_postmortem_on_failure: false",
+        ]),
+        encoding="utf-8",
+    )
+    with test_session() as session:
+        _, spec_id = _create_valid_spec(session, suffix="criticblock")
+
+    gateway = MagicMock()
+    gateway.call_structured.side_effect = [
+        {
+            "passed": False,
+            "flags": [{"issue": "Perfect accuracy suggests leakage", "severity": "critical"}],
+            "rationale": "The reported score is suspiciously perfect.",
+        },
+        {
+            "root_cause_summary": "The self-critic found a blocking issue.",
+            "contributing_factors": [],
+            "remediation_suggestions": [],
+            "retrieval_hints": [],
+            "protocol_update_hints": [],
+        },
+    ]
+    gateway.resolve_route.return_value = MagicMock(id="local-verifier")
+
+    with patch(
+        "libs.orchestration.operators.GitWorktreeAdapter",
+        FakeGitWorktreeAdapter,
+    ), patch(
+        "libs.orchestration.operators.DockerContainerAdapter",
+        FakeDockerContainerAdapter,
+    ), patch(
+        "libs.orchestration.operators.ModelGateway.from_config",
+        return_value=gateway,
+    ):
+        response = client.post(
+            f"/api/v1/experiment-specs/{spec_id}/runs",
+            json={"execution_profile": "cpu-small"},
+            headers=AUTH_HEADERS,
+        )
+        run_id = response.json()["run"]["public_id"]
+        _run_jobs_until_idle(client)
+
+    detail = client.get(f"/api/v1/runs/{run_id}", headers=AUTH_HEADERS).json()
+    assert detail["run"]["verification_outcome"] == "invalid"
+    assert detail["postmortem"] is None
+    report_id = detail["verification_report"]["public_id"]
+    report = client.get(
+        f"/api/v1/verification-reports/{report_id}",
+        headers=AUTH_HEADERS,
+    ).json()
+    assert report["self_critic_result"]["blocking"] is True
+    assert report["self_critic_result"]["flags"][0]["severity"] == "critical"
+    assert "self-critic" in report["reviewer_summary"].lower()
+    assert gateway.call_structured.call_count == 1
+
+
+def test_metric_conflict_resolution_updates_outcome_and_timeline(
+    client: TestClient, test_session, tmp_config: AppConfig,
+):
+    tmp_config.policy_config_path.write_text(
+        "\n".join([
+            "allowed_command_scopes:",
+            "  create_cycle:",
+            "    - cycles.write",
+            "approval_rules:",
+            "  network_enabled_run: human_only",
+            "execution:",
+            "  auto_run_profiles:",
+            "    - cpu-small",
+            "verification:",
+            "  auto_postmortem_on_failure: false",
+            "  self_critic_enabled: true",
+            "  default_significance_threshold: 0.01",
+            "  default_stall_window: 3",
+        ]),
+        encoding="utf-8",
+    )
+    with test_session() as session:
+        charter = ResearchCharterModel(
+            public_id="charter-tradeoff",
+            title="Tradeoff Charter",
+            problem_statement="Improve accuracy without blowing the latency budget.",
+            success_criteria={
+                "primary_metric": "accuracy",
+                "primary_higher_is_better": True,
+                "constraint_metrics": [
+                    {
+                        "name": "latency_ms",
+                        "higher_is_better": False,
+                        "upper_bound": 120.0,
+                    },
+                ],
+            },
+            budget_envelope={},
+            source_scope={},
+            stop_conditions={"summary": "Stop after verification"},
+            constraints={},
+        )
+        session.add(charter)
+        session.flush()
+        cycle_id, spec_id = _create_valid_spec(session, suffix="tradeoff", charter=charter)
+        spec = session.query(ExperimentSpecModel).filter_by(public_id=spec_id).one()
+        cycle = session.query(ResearchCycleModel).filter_by(public_id=cycle_id).one()
+        assert spec is not None
+        assert cycle is not None
+        spec.metrics = [
+            {"name": "accuracy", "baseline_value": 0.8, "higher_is_better": True},
+            {"name": "latency_ms", "baseline_value": 100.0, "higher_is_better": False},
+        ]
+        session.flush()
+        _seed_prior_run(
+            session,
+            cycle_id=cycle.id,
+            spec_id=spec.id,
+            metrics_summary={"accuracy": 0.84, "latency_ms": 98.0},
+        )
+
+    gateway = MagicMock()
+    gateway.call_structured.side_effect = [
+        {"passed": True, "flags": [], "rationale": "Metrics look plausible."},
+        {
+            "resolution": "reject_tradeoff",
+            "rationale": "Latency regression breaks the declared constraint budget.",
+            "recommendation": "Reduce model size or batch size before promoting this run.",
+        },
+        {
+            "outcome_rationale": "Accuracy improved, but the latency tradeoff is unacceptable.",
+            "reviewer_summary": "Accuracy improved, but verification rejected the run on latency.",
+        },
+    ]
+    gateway.resolve_route.return_value = MagicMock(id="local-verifier")
+
+    with patch(
+        "libs.orchestration.operators.GitWorktreeAdapter",
+        FakeGitWorktreeAdapter,
+    ), patch(
+        "libs.orchestration.operators.DockerContainerAdapter",
+        FakeDockerConstraintConflictAdapter,
+    ), patch(
+        "libs.orchestration.operators.ModelGateway.from_config",
+        return_value=gateway,
+    ):
+        response = client.post(
+            f"/api/v1/experiment-specs/{spec_id}/runs",
+            json={"execution_profile": "cpu-small"},
+            headers=AUTH_HEADERS,
+        )
+        run_id = response.json()["run"]["public_id"]
+        _run_jobs_until_idle(client)
+
+    run_detail = client.get(f"/api/v1/runs/{run_id}", headers=AUTH_HEADERS).json()
+    assert run_detail["run"]["verification_outcome"] == "rejected"
+    assert run_detail["frontier_snapshot"]["metric_name"] == "accuracy"
+
+    report_id = run_detail["verification_report"]["public_id"]
+    report = client.get(
+        f"/api/v1/verification-reports/{report_id}",
+        headers=AUTH_HEADERS,
+    ).json()
+    assert report["directional_signal"] in ("advancing", "breakthrough")
+    assert report["directional_signal_detail"]["threshold_warning"]
+    tradeoff = report["directional_signal_detail"]["reconciliation"]["tradeoff_resolution"]
+    assert tradeoff["resolution"] == "reject_tradeoff"
+    assert tradeoff["resolved_by"] == "verifier_llm"
+
+    summary = client.get(
+        f"/api/v1/cycles/{cycle_id}/verification",
+        headers=AUTH_HEADERS,
+    ).json()
+    recommendation_types = {
+        item["recommendation_type"] for item in summary["next_step_recommendations"]
+    }
+    assert "tradeoff_pivot" in recommendation_types
+
+    timeline = client.get(
+        f"/api/v1/cycles/{cycle_id}/timeline",
+        headers=AUTH_HEADERS,
+    ).json()
+    run_verified_entries = [
+        item for item in timeline["items"] if item["event_type"] == "run_verified"
+    ]
+    assert run_verified_entries
+    assert run_verified_entries[-1]["frontier_snapshot"]["metric_name"] == "accuracy"
 
 
 def test_failed_run_can_skip_postmortem_when_policy_disabled(
