@@ -2,7 +2,7 @@
 
 **Product:** ML Laboratory Co-Scientist
 **Status:** Working Draft v1
-**Last Updated:** 2026-03-23
+**Last Updated:** 2026-03-24
 **Prerequisite:** Phases 0-5.1 complete. arXiv warehouse + hybrid search operational.
 
 ---
@@ -44,6 +44,14 @@ Inspired by Hermes Agent's three-tier memory. Short-term context (current cycle)
 ### 2.5 Keep/discard is more useful than a taxonomy
 
 Autoresearch's binary keep/discard on a single scalar is crude but decisive. Our system needs to handle multi-metric experiments, but the core question is the same: did this run advance the research goal or not? Everything else is detail.
+
+### 2.6 Tools and context should be retrieved, not hardcoded
+
+Inspired by TxAgent's ToolRAG pattern. As operator and skill counts grow, hardcoded pipelines break down. The system should embed operator/skill descriptions and retrieve the most relevant ones given the current research state — the same way the arXiv warehouse retrieves relevant papers. This applies to context assembly too: let the LLM help decide what prior evidence and patterns are relevant to the current step, rather than stuffing everything into a static context pack.
+
+### 2.7 Criticize cheaply before verifying expensively
+
+Inspired by Biomni's self-critic rounds. Before running the full deterministic verification pipeline (artifact checks, metric sanity, baseline comparison, historical comparison), run a fast LLM critic pass that catches obvious problems in the experimental setup or results. This is a lightweight pre-filter that saves compute on runs that would clearly fail verification — the critic can flag issues like "the model was only trained for 1 epoch" or "the reported accuracy is suspiciously close to random chance" before we spin up the full check suite.
 
 ---
 
@@ -101,7 +109,7 @@ The full debugging call uses a **general debug prompt** that gives the LLM the c
 New operator: `auto_remediate_operator`. Runs *before* the postmortem operator in the verification chain.
 
 - Input: run record with failure classification, stderr, generated code, experiment spec, prior remediation lineage
-- **Attempt 1 (focused):** If failure class is recognized, use the focused prompt template for that class. LLM returns a targeted fix (spec mutation, code patch, or build recipe change). Apply fix, enqueue retry, emit `auto_remediated` event.
+- **Attempt 1 (focused):** If failure class is recognized, use the focused prompt template for that class. LLM returns a targeted fix (`run_mutations`, `spec_mutations`, code patch, or dependency/build recipe change). Apply fix, then enqueue `run_prepare` when spec-level restaging is required or `run_execute` when the existing workspace can be retried directly.
 - **Attempt 2+ (escalated):** If the focused fix didn't resolve the failure, escalate to the full debug prompt with the prior attempt's context included. The LLM knows what was already tried.
 - **Give up:** If max remediation attempts reached, or if the LLM returns a low-confidence fix, pass through to the existing postmortem operator for full structured analysis.
 
@@ -109,27 +117,33 @@ The operator maintains a **remediation conversation** — each attempt builds on
 
 ### A.3 Fix Primitives
 
-The LLM's output is parsed into one or more **fix actions** that the remediation operator applies:
+The LLM's output is parsed into one or more **fix actions** that the remediation operator applies.
 
-**Spec/config mutations:**
-- `add_dependency(spec, package, version, index_url)` — adds to build recipe with version pin
-- `reduce_batch_size(spec, new_size)` — LLM chooses the appropriate size given model architecture
-- `step_up_profile(spec, target_profile)` — moves to a profile with more resources
-- `extend_timeout(spec, new_timeout, reason)` — LLM justifies the extension
-- `modify_hyperparameter(spec, param_path, new_value)` — generic spec mutation
+**Run-level mutations (`run_mutations`):**
+- `execution_profile` — switch to another configured profile when policy allows it
+- `timeout_seconds` — increase retry execution budget
+- `memory_limit_mb` / `cpu_limit` / `gpu_enabled` — bounded runtime overrides for the retrying run
+
+**Spec-level mutations (`spec_mutations`):**
+- `resource_requirements`
+- `stop_conditions`
+- `estimated_runtime_minutes`
+- `gpu_required`
+
+These require the harness to be restaged before retry so the updated values are written into `run_config.json`.
 
 **Code patches:**
-- `patch_code(workspace, diff)` — applies a unified diff to the generated experiment code
-- `replace_code_section(workspace, file, old_section, new_section)` — targeted replacement
+- `patch_code(workspace, full_file_contents)` — replaces the generated run script with corrected code
 
 **Build recipe changes:**
-- `add_system_package(recipe, package)` — adds an OS-level package to the container build
-- `change_base_image(recipe, new_image)` — switches to a different base container
+- `dependency_adds` — appends Python packages to `build_recipe.pip_packages`
+- On retry, the container bootstrap installs these packages before executing the experiment command
+- System package installation and base image switching remain out of scope for this correction pass
 
-**Lineage tracking:** Every fix is recorded in `remediation_lineage` on the new run:
+**Lineage tracking:** Every fix is recorded in an append-only `remediation_actions` log and surfaced on run detail:
 
 ```
-remediation_lineage: [
+remediation_actions: [
   {
     attempt: 1,
     failure_class: "dependency_failure",
@@ -176,9 +190,9 @@ remediation:
 ### A.5 Changes to Existing Code
 
 - `failure_postmortem_operator` gains a guard: skip if `auto_remediate_operator` already resolved the failure
-- `get_hypothesis_failure_caution()` excludes auto-remediated runs from penalty calculation — infrastructure fixes aren't experimental signal
-- New domain event: `auto_remediated` with the full remediation lineage
-- `classify_failure()` remains as-is — it provides the failure class that routes to the right focused prompt
+- `get_hypothesis_failure_caution()` and `aggregate_failure_guidance()` should reason over postmortems directly; successful auto-remediation is excluded implicitly because resolved runs do not create postmortems
+- Run detail includes remediation lineage so the operator trail is visible outside the database
+- `classify_failure()` must detect dependency/import errors before falling back to generic `runtime_exception`
 
 ### A.6 Acceptance Criteria
 
@@ -251,7 +265,26 @@ success_criteria:
 
 If no threshold is specified, the system defaults to a conservative relative threshold (1%) and logs a warning suggesting the researcher define one explicitly.
 
-### B.5 Integration with Verification
+### B.5 Self-Critic Pre-Check (Biomni-inspired)
+
+Before running the full deterministic verification pipeline, run a fast LLM critic pass. The critic receives the experiment spec, the run's metrics summary, and the generated code, and is prompted to identify obvious problems:
+
+- "The model trained for only 1 epoch — results are not meaningful"
+- "Reported accuracy of 0.51 on a binary task is indistinguishable from random"
+- "The training loss is still decreasing at the final step — the model hasn't converged"
+- "The evaluation was run on the training set, not the validation set"
+
+The critic uses a **cheap, fast model route** (e.g., a smaller model or low max_tokens) because it's a pre-filter, not a deep analysis. Its output is a structured list of `{issue, severity, suggestion}`.
+
+**How it integrates:**
+- Runs *before* `verification_evaluator_operator`, not after
+- If the critic finds `critical` severity issues: the run is marked `INVALID` immediately without running the full check suite, saving compute
+- If the critic finds `warning` severity issues: they're attached to the verification report as `critic_warnings` for the LLM verifier to consider
+- If the critic finds nothing: proceed to full verification as normal
+
+This is deliberately lightweight — a single LLM call with a focused prompt, not a multi-step reasoning chain. The goal is to catch the 20% of problems that are obvious at a glance, not to replace the deterministic checks.
+
+### B.6 Integration with Verification
 
 - `verification_evaluator_operator` calls `classify_direction()` after existing checks
 - Directional signal is stored on the `VerificationReport` (new field: `directional_signal`)
@@ -262,7 +295,7 @@ If no threshold is specified, the system defaults to a conservative relative thr
   - `noisy` → increase run count for statistical power
   - `breakthrough` → flag for human attention (good news worth reviewing)
 
-### B.6 Frontier Tracking
+### B.7 Frontier Tracking
 
 New entity or extension to run records: **metric frontier** per charter + hypothesis line.
 
@@ -271,12 +304,14 @@ New entity or extension to run records: **metric frontier** per charter + hypoth
 - "Runs since last improvement" is the key stall indicator
 - Visible in the timeline UI as a frontier chart
 
-### B.7 Acceptance Criteria
+### B.8 Acceptance Criteria
 
 - 3 runs with <0.5% accuracy change → `stalled` signal, recommendation to pivot
 - Run with 5% accuracy improvement over frontier → `breakthrough` signal
-- Run where accuracy improves but latency exceeds constraint → `advancing_with_constraints`
+- Run where accuracy improves but latency exceeds constraint → LLM evaluates tradeoff and decides pivot or continue
 - Noisy series (CV > 0.1 over 5 runs) → `noisy` signal, recommendation for more runs
+- Self-critic catches "trained for 1 epoch" → run marked INVALID without full verification suite
+- Self-critic warning "loss still decreasing" → attached to verification report, full checks still run
 
 ---
 
@@ -409,7 +444,56 @@ These writeups accumulate on the cycle and become the backbone of the completion
 
 Stored as lightweight `ReportBundle` entries (type: `experiment_result`) linked to the run record.
 
-### C.6 Autonomous Mode & Completion Report
+### C.6 Embedding-Based Operator & Skill Retrieval (TxAgent-inspired)
+
+As the system grows beyond the initial 15 skills, hardcoded operator pipelines become a bottleneck. The autonomous loop needs dynamic operator selection.
+
+**OperatorRAG:** Embed all operator and skill descriptions using the same sentence-transformers infrastructure as the arXiv warehouse. At each step in the loop, retrieve the top-K most relevant operators/skills given the current research state (hypothesis, recent results, failure context).
+
+**How it works:**
+- Operator and skill manifests already have structured descriptions. Embed these at registration time.
+- Before each loop iteration, assemble a query from the current state: active hypothesis title + latest metric summary + directional signal + any failure context
+- Retrieve top-K operators/skills by cosine similarity
+- The loop operator uses the retrieved set rather than a hardcoded pipeline
+
+**Dynamic expansion (TxAgent meta-tool pattern):** The loop operator can request additional operators mid-execution. If the retrieved set doesn't include what's needed (e.g., the system encounters a new kind of failure it hasn't seen), it can explicitly query for more operators — similar to TxAgent's `Tool_RAG` meta-tool that lets the agent expand its own toolbox.
+
+**Fallback:** When the operator count is small (< 20), the overhead of embedding retrieval isn't worth it. The system falls back to the existing hardcoded pipelines. OperatorRAG activates only when the registry exceeds a configured threshold.
+
+### C.7 Context Summarization Under Pressure (TxAgent-inspired)
+
+Long autonomous runs accumulate evidence, experiment results, and remediation history that can exceed context window limits. Rather than truncating or failing, the system compresses earlier context while preserving key findings.
+
+**When it triggers:** The `ContextPack` token budget is exceeded during loop iteration.
+
+**How it works:**
+- Earlier evidence cards, experiment writeups, and remediation logs are summarized into condensed forms using a cheap LLM call
+- Recent items (last N iterations) are preserved in full
+- The summary retains: key metric values, directional signals, hypothesis status changes, and any patterns identified
+- Similar to TxAgent's step-by-step summarization that replaces verbose tool outputs with single-sentence summaries
+
+**What's preserved verbatim:**
+- Current hypothesis and experiment spec (always full)
+- Most recent 3 experiment writeups (full detail)
+- Current metric frontier (always full)
+- Active remediation lineage (full)
+
+**What gets compressed:**
+- Older experiment writeups → one-line summaries: "Hypothesis X, run 3: accuracy 0.82 → 0.84 (advancing)"
+- Resolved remediation chains → "Fixed OOM via batch size reduction on run 2"
+- Superseded evidence cards → summary of conclusions only
+
+This ensures the autonomous loop can run for dozens of iterations without context degradation.
+
+### C.8 Repetition Detection (TxAgent-inspired)
+
+The autonomous loop must detect and break out of unproductive cycles. Without this, a stalled hypothesis could trigger the same experiment parameters repeatedly.
+
+**Trace-level detection:** Track the last N operator invocations with their key arguments (hypothesis ID, experiment spec hash, parameter values). If the same combination appears twice, flag it as a loop and force a pivot or parameter variation.
+
+**Result-level detection:** If 3 consecutive runs produce metrics within the noise threshold of each other (same hypothesis, same approach), the system recognizes stall even if parameters differ slightly and forces a more significant variation or pivot.
+
+### C.9 Autonomous Mode & Completion Report
 
 When `autonomy.mode == "autonomous"`:
 
@@ -426,12 +510,15 @@ When `autonomy.mode == "autonomous"`:
   - Recommendations for next steps (if any)
 - The human reviews a research report, not individual run approvals
 
-### C.7 Acceptance Criteria
+### C.10 Acceptance Criteria
 
 - Autonomous mode: system runs 10+ experiments across 3+ hypotheses without human input
 - Auto-pivot: hypothesis stalls after 3 runs → system picks next ranked hypothesis and continues
 - Budget enforcement: loop stops at compute hour limit with clean summary
 - Portfolio exhaustion: all hypotheses stalled/regressing → system stops and requests new literature intake
+- Repetition detection: same experiment spec run twice → system forces parameter variation or pivot
+- Context summarization: loop runs 20+ iterations without context overflow or truncation
+- OperatorRAG (when skill count > 20): system retrieves relevant operators dynamically, not from hardcoded pipeline
 
 ---
 
@@ -551,9 +638,12 @@ Phases A and B can be developed in parallel — they're independent. Phase C dep
 | Entity | Phase | Purpose |
 |--------|-------|---------|
 | `RemediationAction` | A | Records auto-fix applied to a run (lineage) |
+| `CriticFinding` | B | Self-critic pre-check issue (severity, suggestion) |
 | `MetricFrontier` | B | Best-so-far tracker per charter + hypothesis line |
 | `DirectionalSignal` | B | Enum: advancing/stalled/regressing/noisy/breakthrough |
 | `RunBudget` | C | Compute/run budget tracking per cycle |
+| `OperatorEmbedding` | C | Embedded operator/skill descriptions for retrieval |
+| `ContextSummary` | C | Compressed earlier context for long-running loops |
 | `CanonicalPattern` | D | Cross-charter distilled knowledge |
 
 ---
@@ -592,23 +682,30 @@ Phases A and B can be developed in parallel — they're independent. Phase C dep
 
 ### Phase B
 - `libs/verification/trend.py` — new module: metric series, direction classification, frontier
+- `libs/verification/critic.py` — new module: self-critic pre-check (Biomni-inspired)
 - `libs/verification/outcome.py` — extend with `DirectionalSignal`
 - `libs/verification/checks.py` — `compare_to_baseline()` gains trend awareness
 - `libs/verification/historical.py` — `compare_to_historical()` returns trend data
 - `libs/verification/recommendations.py` — signal-driven recommendations
-- `libs/schemas/domain.py` — `MetricFrontier`, directional signal fields on `VerificationReport`
-- `libs/storage/models.py` — new columns/tables for frontier tracking
+- `libs/schemas/domain.py` — `MetricFrontier`, `CriticFinding`, directional signal fields on `VerificationReport`
+- `libs/storage/models.py` — new columns/tables for frontier tracking, critic warnings on verification reports
+- `prompts/verification/v1/self_critic.md` — focused critic prompt template
+- `configs/models/routes.yaml` — `critic` model route (cheap/fast model)
 
 ### Phase C
 - `libs/orchestration/operators.py` — new `autonomous_loop_operator`
 - `libs/orchestration/worker.py` — loop-aware scheduling
+- `libs/orchestration/operator_rag.py` — new module: embedding-based operator/skill retrieval (TxAgent-inspired)
+- `libs/orchestration/context_summarizer.py` — new module: context compression for long-running loops (TxAgent-inspired)
+- `libs/orchestration/loop_guard.py` — new module: repetition detection at trace and result level
 - `libs/ideation/services.py` — autonomous hypothesis lifecycle transitions
-- `libs/schemas/domain.py` — `RunBudget`, extended `HypothesisCard` status values
-- `libs/storage/models.py` — budget tracking columns on `ResearchCycle`
+- `libs/schemas/domain.py` — `RunBudget`, `OperatorEmbedding`, `ContextSummary`, extended `HypothesisCard` status values
+- `libs/storage/models.py` — budget tracking columns on `ResearchCycle`, operator embedding cache
 - `libs/reporting/` — per-experiment results writeup generation, completion report template
 - `configs/policies/default.yaml` — `autonomy` section
 - `prompts/reporting/v1/experiment_result.md` — per-experiment writeup template
 - `prompts/reporting/v1/completion_report.md` — full research completion report template
+- `prompts/orchestration/v1/context_summary.md` — prompt for compressing earlier context
 
 ### Phase D
 - `libs/memory/` — new package: canonical patterns, consolidation, retrieval
@@ -648,6 +745,33 @@ Phases A and B can be developed in parallel — they're independent. Phase C dep
 
 ---
 
-## 14. Open Questions
+## 14. External Influences
+
+Patterns adopted from research into existing agent systems:
+
+| Pattern | Source | Where Applied | What We Took |
+|---------|--------|--------------|--------------|
+| Three-tier memory (declarative, procedural, dialectic) | [Hermes Agent](https://github.com/NousResearch/hermes-agent) | Phase D | Memory architecture with different lifetimes. Skill extraction from experience. Background consolidation nudges. |
+| Binary keep/discard on single metric, fully autonomous loop | [autoresearch](https://github.com/karpathy/autoresearch) | Phase B, C | Decisiveness over deliberation. No human approval gates during the loop. Budget as the only safety valve. |
+| Embedding-based tool retrieval (ToolRAG) | [TxAgent](https://github.com/mims-harvard/TxAgent) | Phase C | Dynamic operator/skill selection via embedding similarity instead of hardcoded pipelines. Meta-tool pattern for requesting more capabilities mid-execution. |
+| Token-overflow-triggered context summarization | [TxAgent](https://github.com/mims-harvard/TxAgent) | Phase C | Compress earlier evidence and results under pressure rather than truncating or failing. Step-by-step summarization preserving reasoning structure. |
+| Repetition detection (trace-level and token-level) | [TxAgent](https://github.com/mims-harvard/TxAgent) | Phase C | Prevent autonomous loops from repeating identical experiments. Force variation or pivot when loops are detected. |
+| Hierarchical sub-agent spawning with depth limits | [TxAgent](https://github.com/mims-harvard/TxAgent) | Phase C | Bounded recursion for hypothesis re-generation sub-loops within the main autonomous loop. |
+| Force-finish resilience | [TxAgent](https://github.com/mims-harvard/TxAgent) | Phase C | Always produce a completion report even when the loop terminates abnormally. |
+| Self-critic feedback rounds | [Biomni](https://github.com/snap-stanford/Biomni) | Phase B | Cheap LLM pre-check before expensive verification pipeline. Catch obvious problems at a glance. |
+| LLM-as-resource-router | [Biomni](https://github.com/snap-stanford/Biomni) | Phase C | Let the LLM help select relevant context (evidence, patterns, tools) for the current step, rather than static context packs. |
+| Two-layer tool definitions (implementation + schema) | [Biomni](https://github.com/snap-stanford/Biomni) | Existing | Validates our existing pattern of adapter interfaces + skill manifests. |
+| Know-how document injection | [Biomni](https://github.com/snap-stanford/Biomni) | Phase D | Canonical patterns injected into operator prompts as domain expertise — same pattern as Biomni's protocol documents in system prompts. |
+
+**What we deliberately did NOT adopt:**
+- TxAgent's lack of formal verification (we keep our deterministic verification pipeline)
+- TxAgent's monolithic agent class (we keep hexagonal architecture)
+- Biomni's `exec()`-based code execution without sandboxing (we keep containerized execution)
+- Biomni's flat generate-execute loop without state machine (we keep typed `ResearchState` with transitions)
+- Hermes Agent's reliance on implicit success/failure signals (we keep explicit directional signal evaluation)
+
+---
+
+## 15. Open Questions
 
 None currently. All design decisions resolved. Ready for detailed implementation planning.

@@ -421,11 +421,31 @@ export interface HistoricalComparisonResponse {
   total_prior_runs: number;
 }
 
+export interface RemediationAction {
+  public_id: string;
+  cycle_public_id: string;
+  run_public_id: string;
+  attempt_number: number;
+  failure_classification: string;
+  prompt_mode: string;
+  prompt_id: string;
+  model_route_id: string;
+  diagnosis: string;
+  fix_type: string;
+  fix_description: string;
+  fix_payload: Dictionary;
+  prior_attempts_summary: Dictionary[];
+  outcome: string;
+  created_at: string;
+  updated_at: string;
+}
+
 export interface RunDetailResponse {
   run: RunRecord;
   artifact_manifest?: RunArtifactManifest | null;
   telemetry_events: RunTelemetryEvent[];
   skill_execution_records: SkillExecutionRecord[];
+  remediation_actions: RemediationAction[];
   reports: ReportSummary[];
   verification_report?: VerificationReportSummary | null;
   postmortem?: FailurePostmortemSummary | null;

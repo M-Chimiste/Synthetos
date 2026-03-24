@@ -58,6 +58,37 @@ You are a verification reviewer for an ML experiment run. Your job is to interpr
 
 {{ outcome }}
 
+## Directional Signal
+
+**Trend:** {{ directional_signal }}
+{% if directional_signal_detail %}
+{% if directional_signal_detail.frontier %}
+**Frontier:** best={{ directional_signal_detail.frontier.best_value }}, runs since improvement={{ directional_signal_detail.frontier.runs_since_improvement }}
+{% endif %}
+{% if directional_signal_detail.per_metric_signals %}
+**Per-metric signals:**
+{% for metric, signal in directional_signal_detail.per_metric_signals.items() %}
+- {{ metric }}: {{ signal }}
+{% endfor %}
+{% endif %}
+{% if directional_signal_detail.reconciliation and directional_signal_detail.reconciliation.conflicts %}
+**Metric conflicts:**
+{% for c in directional_signal_detail.reconciliation.conflicts %}
+- {{ c.detail }}
+{% endfor %}
+{% endif %}
+{% endif %}
+
+## Self-Critic Pre-Check
+
+**Result:** {{ "PASSED" if self_critic_result.passed else "FLAGGED" }}
+{% if self_critic_result.flags %}
+{% for flag in self_critic_result.flags %}
+- [{{ flag.severity }}] {{ flag.issue }}
+{% endfor %}
+{% endif %}
+{{ self_critic_result.rationale }}
+
 ## Instructions
 
 Based on the check results above, provide:

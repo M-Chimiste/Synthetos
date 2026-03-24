@@ -82,7 +82,8 @@ class TestNextOperatorAfter:
         assert next_operator_after("run_execute") == "run_finalize"
 
     def test_verification_pipeline_sequence(self) -> None:
-        assert next_operator_after("run_verify") == "failure_postmortem"
+        assert next_operator_after("run_verify") == "auto_remediate"
+        assert next_operator_after("auto_remediate") == "failure_postmortem"
         assert next_operator_after("failure_postmortem") == "verification_report"
 
     def test_last_operator_returns_none(self) -> None:

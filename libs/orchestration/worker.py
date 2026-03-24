@@ -56,6 +56,7 @@ OPERATOR_PIPELINES: dict[str, list[str]] = {
     ],
     "verification": [
         "run_verify",
+        "auto_remediate",
         "failure_postmortem",
         "verification_report",
     ],
@@ -147,21 +148,34 @@ def run_worker_once(
             },
         )
     else:
-        create_state_snapshot(
-            session,
-            cycle=cycle,
-            target_state=CycleStatus.INITIALIZING,
-            actor=actor,
-            reason=f"Worker claimed job {job.public_id}",
-            context={"job_public_id": job.public_id},
-        )
         if job.operator_name == "run_execute":
+            current = CycleStatus(cycle.current_status)
+            if current in {CycleStatus.QUEUED, CycleStatus.READY}:
+                create_state_snapshot(
+                    session,
+                    cycle=cycle,
+                    target_state=CycleStatus.INITIALIZING,
+                    actor=actor,
+                    reason=f"Worker claimed job {job.public_id}",
+                    context={"job_public_id": job.public_id},
+                )
+                current = CycleStatus(cycle.current_status)
+            if current != CycleStatus.RUNNING:
+                create_state_snapshot(
+                    session,
+                    cycle=cycle,
+                    target_state=CycleStatus.RUNNING,
+                    actor=actor,
+                    reason=f"Run execution started for job {job.public_id}",
+                    context={"job_public_id": job.public_id},
+                )
+        else:
             create_state_snapshot(
                 session,
                 cycle=cycle,
-                target_state=CycleStatus.RUNNING,
+                target_state=CycleStatus.INITIALIZING,
                 actor=actor,
-                reason=f"Run execution started for job {job.public_id}",
+                reason=f"Worker claimed job {job.public_id}",
                 context={"job_public_id": job.public_id},
             )
     append_event(

@@ -15,6 +15,7 @@ from libs.schemas.domain import (
     HypothesisCard,
     JobRecord,
     PaperCard,
+    RemediationAction,
     ResearchCharter,
     ResearchCycle,
     ResearchStateSnapshot,
@@ -333,6 +334,7 @@ class RunDetailResponse(BaseModel):
     artifact_manifest: RunArtifactManifest | None = None
     telemetry_events: list[RunTelemetryEvent] = Field(default_factory=list)
     skill_execution_records: list[SkillExecutionRecord] = Field(default_factory=list)
+    remediation_actions: list[RemediationAction] = Field(default_factory=list)
     reports: list[ReportSummary] = Field(default_factory=list)
     verification_report: VerificationReportSummary | None = None
     postmortem: FailurePostmortemSummary | None = None

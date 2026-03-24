@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import json
 from pathlib import Path
-from unittest.mock import patch
+from unittest.mock import MagicMock, patch
 
 import pytest
 from fastapi.testclient import TestClient
@@ -20,6 +20,7 @@ from libs.storage.base import Base
 from libs.storage.models import (
     ExperimentSpecModel,
     HypothesisCardModel,
+    RemediationActionModel,
     ResearchCharterModel,
     ResearchCycleModel,
 )
@@ -127,6 +128,64 @@ class FakeDockerFailAdapter(FakeDockerContainerAdapter):
             exit_code=137,
             interrupted_status=None,
             latest_resource_snapshot={},
+        )
+
+
+class FakeDockerDependencyRemediationAdapter(FakeDockerContainerAdapter):
+    """Fails until the remediation loop adds the required pip package."""
+
+    def run(
+        self, *, spec, stdout_path, stderr_path,
+        telemetry_callback, status_checker, container_name,
+    ):
+        del status_checker, container_name
+        pip_packages = set((spec.build_recipe or {}).get("pip_packages", []))
+        if "torch==2.3.1" not in pip_packages:
+            stdout_path.write_text("", encoding="utf-8")
+            stderr_path.write_text(
+                "Traceback...\nModuleNotFoundError: No module named 'torch'\n",
+                encoding="utf-8",
+            )
+            Path(spec.artifact_output_path).mkdir(parents=True, exist_ok=True)
+            return ContainerExecutionResult(
+                exit_code=1,
+                interrupted_status=None,
+                latest_resource_snapshot={},
+            )
+        return super().run(
+            spec=spec,
+            stdout_path=stdout_path,
+            stderr_path=stderr_path,
+            telemetry_callback=telemetry_callback,
+            status_checker=lambda: None,
+            container_name="ignored",
+        )
+
+
+class FakeDockerTimeoutMutationAdapter(FakeDockerContainerAdapter):
+    """Fails with timeout until the remediation loop extends timeout_seconds."""
+
+    def run(
+        self, *, spec, stdout_path, stderr_path,
+        telemetry_callback, status_checker, container_name,
+    ):
+        del status_checker, container_name
+        if spec.timeout_seconds < 120:
+            stdout_path.write_text("", encoding="utf-8")
+            stderr_path.write_text("Run exceeded allotted time\n", encoding="utf-8")
+            Path(spec.artifact_output_path).mkdir(parents=True, exist_ok=True)
+            return ContainerExecutionResult(
+                exit_code=None,
+                interrupted_status="timed_out",
+                latest_resource_snapshot={"elapsed_seconds": spec.timeout_seconds},
+            )
+        return super().run(
+            spec=spec,
+            stdout_path=stdout_path,
+            stderr_path=stderr_path,
+            telemetry_callback=telemetry_callback,
+            status_checker=lambda: None,
+            container_name="ignored",
         )
 
 
@@ -306,6 +365,16 @@ def _run_worker(client: TestClient) -> str:
     return response.json()["result"]
 
 
+def _run_jobs_until_idle(client: TestClient, *, max_steps: int = 20) -> list[str]:
+    results: list[str] = []
+    for _ in range(max_steps):
+        result = _run_worker(client)
+        results.append(result)
+        if result == "no_job":
+            return results
+    raise AssertionError(f"worker did not go idle after {max_steps} steps: {results}")
+
+
 def _run_full_pipeline(client, test_session, docker_adapter_cls):
     """Run prepare → execute → finalize → verify → (postmortem) → report."""
     with test_session() as session:
@@ -442,6 +511,147 @@ def test_failed_run_generates_postmortem(
     ).json()
     assert summary["postmortem_count"] >= 1
     assert summary["invalid_count"] >= 1
+
+
+def test_dependency_failure_is_auto_remediated_and_exposed_on_run_detail(
+    client: TestClient, test_session,
+):
+    with test_session() as session:
+        _, spec_id = _create_valid_spec(session, suffix="depfix")
+
+    gateway = MagicMock()
+    gateway.call_structured.return_value = {
+        "diagnosis": "Missing torch dependency",
+        "fix_type": "dependency_add",
+        "fix_description": "Add torch to the run build recipe",
+        "dependency_adds": ["torch==2.3.1"],
+    }
+    gateway.resolve_route.return_value = MagicMock(id="local-debugger")
+
+    with patch(
+        "libs.orchestration.operators.GitWorktreeAdapter",
+        FakeGitWorktreeAdapter,
+    ), patch(
+        "libs.orchestration.operators.DockerContainerAdapter",
+        FakeDockerDependencyRemediationAdapter,
+    ), patch(
+        "libs.orchestration.operators.ModelGateway.from_config",
+        return_value=gateway,
+    ):
+        response = client.post(
+            f"/api/v1/experiment-specs/{spec_id}/runs",
+            json={"execution_profile": "cpu-small"},
+            headers=AUTH_HEADERS,
+        )
+        run_id = response.json()["run"]["public_id"]
+        results = _run_jobs_until_idle(client)
+
+    assert "no_job" in results
+    detail = client.get(f"/api/v1/runs/{run_id}", headers=AUTH_HEADERS).json()
+    assert detail["run"]["status"] == "succeeded"
+    assert detail["verification_report"] is not None
+    assert detail["postmortem"] is None
+    assert len(detail["remediation_actions"]) == 1
+    assert detail["remediation_actions"][0]["fix_type"] == "dependency_add"
+    assert detail["remediation_actions"][0]["fix_payload"]["dependency_adds"] == ["torch==2.3.1"]
+    assert detail["run"]["run_spec"]["build_recipe"]["pip_packages"] == ["torch==2.3.1"]
+
+
+def test_runtime_mutation_retry_updates_run_spec(
+    client: TestClient, test_session,
+):
+    with test_session() as session:
+        _, spec_id = _create_valid_spec(session, suffix="timeoutfix")
+
+    gateway = MagicMock()
+    gateway.call_structured.return_value = {
+        "diagnosis": "The execution budget is too small for this run",
+        "fix_type": "env_change",
+        "fix_description": "Extend timeout for the retry",
+        "run_mutations": {"timeout_seconds": 300},
+    }
+    gateway.resolve_route.return_value = MagicMock(id="local-debugger")
+
+    with patch(
+        "libs.orchestration.operators.GitWorktreeAdapter",
+        FakeGitWorktreeAdapter,
+    ), patch(
+        "libs.orchestration.operators.DockerContainerAdapter",
+        FakeDockerTimeoutMutationAdapter,
+    ), patch(
+        "libs.orchestration.operators.ModelGateway.from_config",
+        return_value=gateway,
+    ):
+        response = client.post(
+            f"/api/v1/experiment-specs/{spec_id}/runs",
+            json={"execution_profile": "cpu-small"},
+            headers=AUTH_HEADERS,
+        )
+        run_id = response.json()["run"]["public_id"]
+        results = _run_jobs_until_idle(client)
+
+    assert "no_job" in results
+    detail = client.get(f"/api/v1/runs/{run_id}", headers=AUTH_HEADERS).json()
+    assert detail["run"]["status"] == "succeeded"
+    assert detail["run"]["run_spec"]["timeout_seconds"] == 300
+    assert len(detail["remediation_actions"]) == 1
+    assert (
+        detail["remediation_actions"][0]["fix_payload"]["run_mutations_applied"]["timeout_seconds"]
+        == 300
+    )
+
+
+def test_run_detail_returns_ordered_remediation_lineage(
+    client: TestClient, test_session,
+):
+    with test_session() as session:
+        cycle_id, spec_id = _create_valid_spec(session, suffix="lineage")
+        response = client.post(
+            f"/api/v1/experiment-specs/{spec_id}/runs",
+            json={"execution_profile": "cpu-small"},
+            headers=AUTH_HEADERS,
+        )
+        run_id = response.json()["run"]["public_id"]
+        run = services.get_run_by_public_id(session, run_id)
+        session.add_all([
+            RemediationActionModel(
+                public_id="remed-two",
+                cycle_id=run.cycle_id,
+                run_record_id=run.id,
+                attempt_number=2,
+                failure_classification="runtime_exception",
+                prompt_mode="full_debug",
+                prompt_id="prompts/remediation/v1/full_debug.md",
+                model_route_id="local-debugger",
+                diagnosis="second",
+                fix_type="code_patch",
+                fix_description="second fix",
+                fix_payload={"order": 2},
+                prior_attempts_summary=[],
+                outcome="applied",
+            ),
+            RemediationActionModel(
+                public_id="remed-one",
+                cycle_id=run.cycle_id,
+                run_record_id=run.id,
+                attempt_number=1,
+                failure_classification="dependency_failure",
+                prompt_mode="focused",
+                prompt_id="prompts/remediation/v1/focused_fix.md",
+                model_route_id="local-debugger",
+                diagnosis="first",
+                fix_type="dependency_add",
+                fix_description="first fix",
+                fix_payload={"order": 1},
+                prior_attempts_summary=[],
+                outcome="applied",
+            ),
+        ])
+        session.commit()
+
+    detail = client.get(f"/api/v1/runs/{run_id}", headers=AUTH_HEADERS).json()
+    assert [item["attempt_number"] for item in detail["remediation_actions"]] == [1, 2]
+    assert [item["fix_payload"]["order"] for item in detail["remediation_actions"]] == [1, 2]
 
 
 def test_verification_chain_from_finalize(

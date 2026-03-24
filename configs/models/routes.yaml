@@ -46,3 +46,19 @@ routes:
     model: local-model
     supports_json_mode: true
     priority: 0
+
+  - id: local-verifier
+    role: verifier
+    provider: openai_compatible
+    base_url: http://localhost:1234/v1
+    model: local-model
+    supports_json_mode: true
+    priority: 0
+
+  - id: local-debugger
+    role: debugger
+    provider: openai_compatible
+    base_url: http://localhost:1234/v1
+    model: local-model
+    supports_json_mode: true
+    priority: 0

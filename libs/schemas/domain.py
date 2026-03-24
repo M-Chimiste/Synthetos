@@ -362,6 +362,9 @@ class VerificationReport(BaseModel):
     reviewer_summary: str
     model_route_id: str
     prompt_id: str
+    directional_signal: str | None = None
+    directional_signal_detail: dict[str, Any] = Field(default_factory=dict)
+    self_critic_result: dict[str, Any] = Field(default_factory=dict)
     created_at: datetime
     updated_at: datetime
 
@@ -385,6 +388,71 @@ class FailurePostmortem(BaseModel):
     prompt_id: str
     created_at: datetime
     updated_at: datetime
+
+
+class RemediationAction(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+
+    public_id: str
+    cycle_public_id: str
+    run_public_id: str
+    attempt_number: int
+    failure_classification: str
+    prompt_mode: str
+    prompt_id: str
+    model_route_id: str
+    diagnosis: str
+    fix_type: str
+    fix_description: str
+    fix_payload: dict[str, Any] = Field(default_factory=dict)
+    prior_attempts_summary: list[dict[str, Any]] = Field(default_factory=list)
+    outcome: str
+    created_at: datetime
+    updated_at: datetime
+
+
+# ---------------------------------------------------------------------------
+# Phase B — Directional Signal Evaluation
+# ---------------------------------------------------------------------------
+
+
+class ConstraintMetric(BaseModel):
+    """A constraint metric with bounds for multi-metric reconciliation."""
+
+    name: str
+    higher_is_better: bool = True
+    lower_bound: float | None = None
+    upper_bound: float | None = None
+
+
+class SuccessCriteria(BaseModel):
+    """Typed access to a charter's success_criteria JSON field."""
+
+    primary_metric: str
+    primary_higher_is_better: bool = True
+    significance_threshold: float = 0.01
+    stall_window: int = 3
+    constraint_metrics: list[ConstraintMetric] = Field(default_factory=list)
+
+
+class MetricFrontier(BaseModel):
+    """Best-known metric value for a hypothesis line."""
+
+    model_config = ConfigDict(from_attributes=True)
+
+    public_id: str
+    hypothesis_public_id: str
+    metric_name: str
+    best_value: float
+    best_run_public_id: str
+    runs_since_improvement: int
+    created_at: datetime
+    updated_at: datetime
+
+
+# ---------------------------------------------------------------------------
+# arXiv Warehouse
+# ---------------------------------------------------------------------------
 
 
 class ArxivPaper(BaseModel):

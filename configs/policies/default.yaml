@@ -32,5 +32,22 @@ verification:
   leakage_check_enabled: true
   split_validation_enabled: true
   min_outcome_for_promotion: tentative
+  self_critic_enabled: true
+  default_significance_threshold: 0.01
+  default_stall_window: 3
+remediation:
+  enabled: true
+  max_attempts_per_run: 3
+  focused_failure_classes:
+    - dependency_failure
+    - runtime_exception
+    - metric_parse_failure
+    - invalid_artifact_output
+  full_debug_failure_classes:
+    - timeout
+    - oom_or_resource_limit
+  escalate_to_full_debug_after: 1
+  max_stderr_chars: 3000
+  max_code_chars: 8000
 skills:
   validation_mode: strict

@@ -29,6 +29,7 @@ def aggregate_failure_guidance(
     postmortems = session.scalars(
         select(FailurePostmortemModel)
         .join(ResearchCycleModel, FailurePostmortemModel.cycle_id == ResearchCycleModel.id)
+        .join(RunRecordModel, FailurePostmortemModel.run_record_id == RunRecordModel.id)
         .where(ResearchCycleModel.charter_id == charter_id)
         .order_by(FailurePostmortemModel.created_at.desc())
     ).all()

@@ -1,0 +1,9 @@
+{
+  "diagnosis": "The run failed because 'torch' is not installed in the container environment. The experiment code imports torch for model training but the dependency is missing from the build recipe.",
+  "fix_type": "dependency_add",
+  "fix_description": "Add torch 2.3.1 with CUDA 12.1 support to the build recipe",
+  "code_patch": null,
+  "dependency_adds": ["torch==2.3.1+cu121"],
+  "env_changes": {},
+  "spec_mutations": {}
+}

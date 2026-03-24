@@ -32,12 +32,17 @@ def classify_failure(
     artifact_manifest: dict[str, object],
     stderr_path: Path,
 ) -> str | None:
+    stderr_text = ""
+    if stderr_path.exists():
+        stderr_text = stderr_path.read_text(encoding="utf-8")
     if interrupted_status == "cancelled":
         return None
     if interrupted_status == "paused":
         return None
     if interrupted_status == "timed_out":
         return "timeout"
+    if "ModuleNotFoundError" in stderr_text or "No module named" in stderr_text:
+        return "dependency_failure"
     if exit_code in (137, 143):
         return "oom_or_resource_limit"
     if exit_code not in (0, None):
@@ -48,6 +53,4 @@ def classify_failure(
     manifest_path = Path(str(artifact_manifest.get("manifest_path", "")))
     if manifest_path and not manifest_path.exists():
         return "invalid_artifact_output"
-    if stderr_path.exists() and "No module named" in stderr_path.read_text(encoding="utf-8"):
-        return "dependency_failure"
     return None

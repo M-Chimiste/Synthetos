@@ -3,7 +3,17 @@ from __future__ import annotations
 from datetime import UTC, datetime
 from typing import Any
 
-from sqlalchemy import JSON, Boolean, DateTime, ForeignKey, Integer, String, Text, UniqueConstraint
+from sqlalchemy import (
+    JSON,
+    Boolean,
+    DateTime,
+    Float,
+    ForeignKey,
+    Integer,
+    String,
+    Text,
+    UniqueConstraint,
+)
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from libs.storage.base import Base, TimestampMixin
@@ -124,6 +134,14 @@ class ReportBundleModel(TimestampMixin, Base):
     artifact_path: Mapped[str] = mapped_column(String(512))
     report_metadata: Mapped[dict[str, Any]] = mapped_column("metadata", JSON, default=dict)
     quality_metadata: Mapped[dict[str, Any]] = mapped_column(JSON, default=dict)
+
+    # Phase B — link writeups to runs and hypotheses
+    run_record_id: Mapped[int | None] = mapped_column(
+        ForeignKey("run_records.id"), nullable=True, index=True,
+    )
+    hypothesis_card_id: Mapped[int | None] = mapped_column(
+        ForeignKey("hypothesis_cards.id"), nullable=True, index=True,
+    )
 
 
 class ApprovalEventModel(TimestampMixin, Base):
@@ -559,6 +577,8 @@ class RunRecordModel(TimestampMixin, Base):
     last_completed_job_id: Mapped[int | None] = mapped_column(Integer, nullable=True)
     resume_payload: Mapped[dict[str, Any]] = mapped_column(JSON, default=dict)
     attempt_count: Mapped[int] = mapped_column(Integer, default=0)
+    remediation_count: Mapped[int] = mapped_column(Integer, default=0)
+    is_remediated_run: Mapped[bool] = mapped_column(Boolean, default=False)
     started_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     completed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
 
@@ -610,6 +630,33 @@ class VerificationReportModel(TimestampMixin, Base):
     model_route_id: Mapped[str] = mapped_column(String(128))
     prompt_id: Mapped[str] = mapped_column(String(255))
 
+    # Phase B — Directional Signal
+    directional_signal: Mapped[str | None] = mapped_column(
+        String(32), nullable=True, index=True,
+    )
+    directional_signal_detail: Mapped[dict[str, Any]] = mapped_column(JSON, default=dict)
+    self_critic_result: Mapped[dict[str, Any]] = mapped_column(JSON, default=dict)
+
+
+class RemediationActionModel(TimestampMixin, Base):
+    __tablename__ = "remediation_actions"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    public_id: Mapped[str] = mapped_column(String(64), unique=True, index=True)
+    cycle_id: Mapped[int] = mapped_column(ForeignKey("research_cycles.id"), index=True)
+    run_record_id: Mapped[int] = mapped_column(ForeignKey("run_records.id"), index=True)
+    attempt_number: Mapped[int] = mapped_column(Integer)
+    failure_classification: Mapped[str] = mapped_column(String(64))
+    prompt_mode: Mapped[str] = mapped_column(String(32))
+    prompt_id: Mapped[str] = mapped_column(String(255))
+    model_route_id: Mapped[str] = mapped_column(String(128))
+    diagnosis: Mapped[str] = mapped_column(Text)
+    fix_type: Mapped[str] = mapped_column(String(64))
+    fix_description: Mapped[str] = mapped_column(Text)
+    fix_payload: Mapped[dict[str, Any]] = mapped_column(JSON, default=dict)
+    prior_attempts_summary: Mapped[list[dict[str, Any]]] = mapped_column(JSON, default=list)
+    outcome: Mapped[str] = mapped_column(String(32), index=True)
+
 
 class FailurePostmortemModel(TimestampMixin, Base):
     __tablename__ = "failure_postmortems"
@@ -631,3 +678,27 @@ class FailurePostmortemModel(TimestampMixin, Base):
     similar_prior_failures: Mapped[list[dict[str, Any]]] = mapped_column(JSON, default=list)
     model_route_id: Mapped[str] = mapped_column(String(128))
     prompt_id: Mapped[str] = mapped_column(String(255))
+
+
+class MetricFrontierModel(TimestampMixin, Base):
+    """Best-known metric value per hypothesis line. One row per (hypothesis, metric) pair."""
+
+    __tablename__ = "metric_frontiers"
+    __table_args__ = (
+        UniqueConstraint("hypothesis_card_id", "metric_name", name="uq_frontier_hypothesis_metric"),
+    )
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    public_id: Mapped[str] = mapped_column(String(64), unique=True, index=True)
+    hypothesis_card_id: Mapped[int] = mapped_column(
+        ForeignKey("hypothesis_cards.id"), index=True,
+    )
+    charter_id: Mapped[int] = mapped_column(
+        ForeignKey("research_charters.id"), index=True,
+    )
+    metric_name: Mapped[str] = mapped_column(String(128))
+    best_value: Mapped[float] = mapped_column(Float)
+    best_run_public_id: Mapped[str] = mapped_column(String(64))
+    best_run_id: Mapped[int] = mapped_column(ForeignKey("run_records.id"))
+    runs_since_improvement: Mapped[int] = mapped_column(Integer, default=0)
+    last_updated_run_id: Mapped[int] = mapped_column(ForeignKey("run_records.id"))

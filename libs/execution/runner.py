@@ -78,7 +78,9 @@ def stage_execution_harness(
         "baseline_description": experiment_spec.baseline_description,
         "method_description": experiment_spec.method_description,
         "metrics": experiment_spec.metrics,
+        "stop_conditions": experiment_spec.stop_conditions,
         "expected_outputs": experiment_spec.expected_outputs,
+        "estimated_runtime_minutes": experiment_spec.estimated_runtime_minutes,
         "gpu_required": experiment_spec.gpu_required,
         "resource_requirements": experiment_spec.resource_requirements,
         "artifact_dir": "/artifacts",
@@ -112,6 +114,7 @@ def build_run_spec(
     execution_profile: str,
     patch_archive_path: Path,
     artifact_root: Path,
+    build_recipe_overrides: dict[str, Any] | None = None,
     env_overrides: dict[str, str] | None = None,
 ) -> RunSpec:
     profile = load_execution_profile(config, execution_profile)
@@ -132,7 +135,7 @@ def build_run_spec(
     return RunSpec(
         workspace_path=str(workspace_path),
         image=image["image"],
-        build_recipe={},
+        build_recipe=dict(build_recipe_overrides or {}),
         command=command,
         env_vars={
             "SYNTHETOS_EXPERIMENT_TITLE": experiment_spec.title,

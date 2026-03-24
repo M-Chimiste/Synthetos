@@ -20,6 +20,7 @@ def build_rerun_note(
     historical_comparisons: list[dict[str, Any]],
     output_contract_checks: list[dict[str, Any]],
     metric_sanity_checks: list[dict[str, Any]],
+    directional_signal: str | None = None,
 ) -> str | None:
     """Generate deterministic replay/rerun guidance from verification state."""
     if run_status == "failed":
@@ -38,6 +39,11 @@ def build_rerun_note(
             "the reported metrics satisfy the spec bounds."
         )
     if outcome == "tentative":
+        if directional_signal == "stalled":
+            return (
+                "Metric trend is stalled; consider a different approach "
+                "or parameter variation rather than rerunning the same protocol."
+            )
         if not historical_comparisons:
             return (
                 "Replay or rerun once more to establish "
@@ -57,6 +63,7 @@ def build_next_step_recommendations(
     retrieval_hints: list[dict[str, Any]] | None = None,
     protocol_update_hints: list[dict[str, Any]] | None = None,
     reviewer_summary: str | None = None,
+    directional_signal: str | None = None,
 ) -> list[dict[str, Any]]:
     """Return structured recommendations for orchestrators and UI clients."""
     recommendations: list[dict[str, Any]] = []
@@ -128,6 +135,50 @@ def build_next_step_recommendations(
                 "protocol adjustments."
             ),
             "payload": {"updates": protocol_update_hints},
+        })
+
+    # Directional signal recommendations
+    if directional_signal == "advancing":
+        recommendations.append({
+            "recommendation_type": "intensify_approach",
+            "rationale": "Primary metric is advancing. Continue this approach.",
+            "payload": {},
+        })
+    elif directional_signal == "stalled":
+        recommendations.append({
+            "recommendation_type": "stall_alert",
+            "rationale": (
+                "Primary metric is stalled across recent runs. "
+                "Consider a parameter sweep or hypothesis pivot."
+            ),
+            "payload": {},
+        })
+    elif directional_signal == "regressing":
+        recommendations.append({
+            "recommendation_type": "regression_warning",
+            "rationale": (
+                "Primary metric is regressing. Consider reverting to "
+                "the best known configuration or trying a different approach."
+            ),
+            "payload": {},
+        })
+    elif directional_signal == "noisy":
+        recommendations.append({
+            "recommendation_type": "noise_alert",
+            "rationale": (
+                "Metric trend is noisy with no clear direction. "
+                "Run more experiments for statistical power."
+            ),
+            "payload": {},
+        })
+    elif directional_signal == "breakthrough":
+        recommendations.append({
+            "recommendation_type": "breakthrough_flag",
+            "rationale": (
+                "Large unexpected improvement detected. "
+                "This result warrants attention and potential fast-track promotion."
+            ),
+            "payload": {},
         })
 
     return recommendations

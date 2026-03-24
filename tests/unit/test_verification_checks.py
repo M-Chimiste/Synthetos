@@ -354,3 +354,63 @@ def test_build_next_step_recommendations_returns_follow_up_search():
     kinds = {item["recommendation_type"] for item in recommendations}
     assert "revise_protocol" in kinds
     assert "follow_up_search" in kinds
+
+
+# ---------------------------------------------------------------------------
+# Phase B — Directional signal recommendations
+# ---------------------------------------------------------------------------
+
+
+def test_recommendations_with_stall_signal():
+    recommendations = build_next_step_recommendations(
+        outcome="tentative",
+        min_outcome_for_promotion="robust",
+        rerun_note=None,
+        directional_signal="stalled",
+    )
+    kinds = {item["recommendation_type"] for item in recommendations}
+    assert "stall_alert" in kinds
+
+
+def test_recommendations_with_regression_signal():
+    recommendations = build_next_step_recommendations(
+        outcome="tentative",
+        min_outcome_for_promotion="robust",
+        rerun_note=None,
+        directional_signal="regressing",
+    )
+    kinds = {item["recommendation_type"] for item in recommendations}
+    assert "regression_warning" in kinds
+
+
+def test_recommendations_with_breakthrough_signal():
+    recommendations = build_next_step_recommendations(
+        outcome="robust",
+        min_outcome_for_promotion="tentative",
+        rerun_note=None,
+        directional_signal="breakthrough",
+    )
+    kinds = {item["recommendation_type"] for item in recommendations}
+    assert "breakthrough_flag" in kinds
+
+
+def test_recommendations_with_advancing_signal():
+    recommendations = build_next_step_recommendations(
+        outcome="robust",
+        min_outcome_for_promotion="tentative",
+        rerun_note=None,
+        directional_signal="advancing",
+    )
+    kinds = {item["recommendation_type"] for item in recommendations}
+    assert "intensify_approach" in kinds
+
+
+def test_recommendations_with_noise_signal():
+    recommendations = build_next_step_recommendations(
+        outcome="tentative",
+        min_outcome_for_promotion="robust",
+        rerun_note=None,
+        directional_signal="noisy",
+    )
+    kinds = {item["recommendation_type"] for item in recommendations}
+    assert "noise_alert" in kinds

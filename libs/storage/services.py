@@ -59,6 +59,7 @@ from libs.schemas.api import (
 from libs.schemas.domain import (
     DomainEventEnvelope,
     JobRecord,
+    RemediationAction,
     ResearchCharter,
     ResearchCycle,
     ResearchStateSnapshot,
@@ -75,10 +76,12 @@ from libs.storage.models import (
     ExperimentSpecModel,
     FailurePostmortemModel,
     JobModel,
+    MetricFrontierModel,
     ModelInvocationRecordModel,
     OrchestratorClientModel,
     OrchestratorCommandModel,
     OrchestratorTokenModel,
+    RemediationActionModel,
     ReportBundleModel,
     ResearchCharterModel,
     ResearchCycleModel,
@@ -1172,6 +1175,7 @@ def create_run_from_experiment_spec(
         execution_profile=payload.execution_profile,
         patch_archive_path=paths.patch_archive_path,
         artifact_root=paths.artifact_root,
+        build_recipe_overrides={},
         env_overrides=payload.env_overrides,
     )
     status = "queued" if decision.allowed else "policy_blocked"
@@ -1349,6 +1353,11 @@ def get_run_detail_api(session: Session, run_public_id: str) -> RunDetailRespons
         .where(ReportBundleModel.cycle_id == run.cycle_id)
         .order_by(ReportBundleModel.created_at.desc())
     ).all()
+    remediation_actions = session.scalars(
+        select(RemediationActionModel)
+        .where(RemediationActionModel.run_record_id == run.id)
+        .order_by(RemediationActionModel.attempt_number.asc())
+    ).all()
     run_reports = [
         ReportSummary(
             public_id=report.public_id,
@@ -1419,6 +1428,27 @@ def get_run_detail_api(session: Session, run_public_id: str) -> RunDetailRespons
                 updated_at=item.updated_at,
             )
             for item in skill_records
+        ],
+        remediation_actions=[
+            RemediationAction(
+                public_id=item.public_id,
+                cycle_public_id=cycle.public_id if cycle else "",
+                run_public_id=run.public_id,
+                attempt_number=item.attempt_number,
+                failure_classification=item.failure_classification,
+                prompt_mode=item.prompt_mode,
+                prompt_id=item.prompt_id,
+                model_route_id=item.model_route_id,
+                diagnosis=item.diagnosis,
+                fix_type=item.fix_type,
+                fix_description=item.fix_description,
+                fix_payload=item.fix_payload or {},
+                prior_attempts_summary=item.prior_attempts_summary or [],
+                outcome=item.outcome,
+                created_at=item.created_at,
+                updated_at=item.updated_at,
+            )
+            for item in remediation_actions
         ],
         reports=run_reports,
         verification_report=vr_summary,
@@ -1986,6 +2016,9 @@ def create_verification_report(
     reviewer_summary: str,
     model_route_id: str,
     prompt_id: str,
+    directional_signal: str | None = None,
+    directional_signal_detail: dict[str, Any] | None = None,
+    self_critic_result: dict[str, Any] | None = None,
 ) -> VerificationReportModel:
     record = VerificationReportModel(
         public_id=generate_public_id("vr"),
@@ -2006,10 +2039,67 @@ def create_verification_report(
         reviewer_summary=reviewer_summary,
         model_route_id=model_route_id,
         prompt_id=prompt_id,
+        directional_signal=directional_signal,
+        directional_signal_detail=directional_signal_detail or {},
+        self_critic_result=self_critic_result or {},
     )
     session.add(record)
     session.flush()
     return record
+
+
+def upsert_metric_frontier(
+    session: Session,
+    *,
+    hypothesis_card_id: int,
+    charter_id: int,
+    metric_name: str,
+    best_value: float,
+    best_run_public_id: str,
+    best_run_id: int,
+    current_run_id: int,
+    higher_is_better: bool,
+) -> MetricFrontierModel:
+    """Insert or update the metric frontier for a hypothesis+metric pair."""
+    from sqlalchemy import select
+
+    existing = session.scalar(
+        select(MetricFrontierModel).where(
+            MetricFrontierModel.hypothesis_card_id == hypothesis_card_id,
+            MetricFrontierModel.metric_name == metric_name,
+        )
+    )
+
+    if existing is None:
+        record = MetricFrontierModel(
+            public_id=generate_public_id("frontier"),
+            hypothesis_card_id=hypothesis_card_id,
+            charter_id=charter_id,
+            metric_name=metric_name,
+            best_value=best_value,
+            best_run_public_id=best_run_public_id,
+            best_run_id=best_run_id,
+            runs_since_improvement=0,
+            last_updated_run_id=current_run_id,
+        )
+        session.add(record)
+        session.flush()
+        return record
+
+    if higher_is_better:
+        improved = best_value > existing.best_value
+    else:
+        improved = best_value < existing.best_value
+    if improved:
+        existing.best_value = best_value
+        existing.best_run_public_id = best_run_public_id
+        existing.best_run_id = best_run_id
+        existing.runs_since_improvement = 0
+    else:
+        existing.runs_since_improvement += 1
+    existing.last_updated_run_id = current_run_id
+    session.flush()
+    return existing
 
 
 def create_failure_postmortem(

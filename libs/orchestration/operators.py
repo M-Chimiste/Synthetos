@@ -1646,6 +1646,7 @@ def run_prepare_operator(
         execution_profile=run.execution_profile,
         patch_archive_path=patch_archive_path,
         artifact_root=paths.artifact_root,
+        build_recipe_overrides=run.build_recipe,
         env_overrides=run.env_vars,
     )
     issues = preflight_run_spec(run_spec)
@@ -2172,6 +2173,108 @@ def run_verify_operator(
     )
     historical_memory_refs = collect_historical_memory_refs(session, prior_runs)
 
+    # ---- Self-critic pre-check (Phase B) ----
+    self_critic_result: dict[str, Any] = {"passed": True, "flags": [], "rationale": "skipped"}
+    self_critic_enabled = bool(verification_policy.get("self_critic_enabled", True))
+    if self_critic_enabled and run.status not in ("failed", "cancelled"):
+        try:
+            from libs.verification.self_critic import run_self_critic_precheck
+
+            gateway_for_critic = ModelGateway.from_config(config)
+            self_critic_result = run_self_critic_precheck(
+                gateway=gateway_for_critic,
+                metrics_summary=run.metrics_summary or {},
+                baseline_comparison=baseline_comparison,
+                spec_metrics=spec.metrics or [],
+                charter_problem=charter.problem_statement if charter else "",
+                experiment_title=spec.title,
+            )
+        except Exception:
+            log.warning("self_critic_precheck_error", run_public_id=run.public_id)
+
+    # ---- Directional signal analysis (Phase B) ----
+    from libs.schemas.domain import SuccessCriteria
+    from libs.verification.trend import (
+        classify_direction,
+        compute_frontier,
+        compute_metric_series,
+        reconcile_signals,
+    )
+
+    directional_signal: str | None = None
+    directional_signal_detail: dict[str, Any] = {}
+
+    success_criteria_raw = (charter.success_criteria or {}) if charter else {}
+    if success_criteria_raw.get("primary_metric"):
+        try:
+            sc = SuccessCriteria.model_validate(success_criteria_raw)
+        except Exception:
+            sc = SuccessCriteria(
+                primary_metric=success_criteria_raw["primary_metric"],
+            )
+
+        series = compute_metric_series(
+            run.metrics_summary or {},
+            prior_runs,
+            sc.primary_metric,
+            run.public_id,
+            run.created_at,
+        )
+        if len(series) >= 1:
+            signal = classify_direction(
+                series, sc.primary_higher_is_better, sc.significance_threshold, sc.stall_window,
+            )
+            directional_signal = signal.value
+
+            frontier = compute_frontier(series, sc.primary_higher_is_better)
+
+            # Per-constraint signals
+            signal_map = {sc.primary_metric: signal}
+            for cm in sc.constraint_metrics:
+                cm_series = compute_metric_series(
+                    run.metrics_summary or {},
+                    prior_runs,
+                    cm.name,
+                    run.public_id,
+                    run.created_at,
+                )
+                if cm_series:
+                    signal_map[cm.name] = classify_direction(
+                        cm_series, cm.higher_is_better, sc.significance_threshold, sc.stall_window,
+                    )
+
+            reconciliation = reconcile_signals(
+                signal_map, sc.primary_metric,
+                [cm.name for cm in sc.constraint_metrics],
+            )
+
+            directional_signal_detail = {
+                "primary_signal": signal.value,
+                "per_metric_signals": {k: v.value for k, v in signal_map.items()},
+                "frontier": {
+                    "best_value": frontier.best_value,
+                    "best_run_public_id": frontier.best_run_public_id,
+                    "runs_since_improvement": frontier.runs_since_improvement,
+                },
+                "reconciliation": reconciliation,
+            }
+
+            # Update frontier table
+            if spec.hypothesis_card_id:
+                from libs.storage.services import upsert_metric_frontier
+
+                upsert_metric_frontier(
+                    session,
+                    hypothesis_card_id=spec.hypothesis_card_id,
+                    charter_id=cycle.charter_id,
+                    metric_name=sc.primary_metric,
+                    best_value=frontier.best_value,
+                    best_run_public_id=frontier.best_run_public_id,
+                    best_run_id=run.id,
+                    current_run_id=run.id,
+                    higher_is_better=sc.primary_higher_is_better,
+                )
+
     # ---- Determine outcome ----
     outcome = determine_outcome(
         run_status=run.status,
@@ -2194,6 +2297,7 @@ def run_verify_operator(
         historical_comparisons=historical_comparisons,
         output_contract_checks=output_contract_checks,
         metric_sanity_checks=metric_sanity_checks,
+        directional_signal=directional_signal,
     )
 
     # ---- LLM review (only for non-failed runs) ----
@@ -2223,6 +2327,9 @@ def run_verify_operator(
                 "leakage_signals": leakage_signals,
                 "split_validation": json.dumps(split_validation, sort_keys=True),
                 "outcome": outcome.value,
+                "directional_signal": directional_signal or "N/A",
+                "directional_signal_detail": directional_signal_detail,
+                "self_critic_result": self_critic_result,
             }
             from jinja2 import Template
 
@@ -2262,6 +2369,9 @@ def run_verify_operator(
         reviewer_summary=reviewer_summary,
         model_route_id=model_route_id,
         prompt_id=prompt_id,
+        directional_signal=directional_signal,
+        directional_signal_detail=directional_signal_detail,
+        self_critic_result=self_critic_result,
     )
     run.verification_outcome = outcome.value
     session.flush()
@@ -2278,9 +2388,22 @@ def run_verify_operator(
         }
     ]
 
-    # Chain: failed/rejected → postmortem, otherwise → verification_report
+    # Chain: failed/rejected → auto_remediate (if budget remains) or postmortem
     needs_postmortem = auto_postmortem_on_failure and outcome.value in ("rejected", "invalid")
-    next_op = "failure_postmortem" if needs_postmortem else "verification_report"
+    if needs_postmortem:
+        from libs.core.policy import load_remediation_policy
+
+        raw_policy = config.load_yaml(config.policy_config_path)
+        remed_policy = load_remediation_policy(raw_policy)
+        if (
+            remed_policy.enabled
+            and (run.remediation_count or 0) < remed_policy.max_attempts_per_run
+        ):
+            next_op = "auto_remediate"
+        else:
+            next_op = "failure_postmortem"
+    else:
+        next_op = "verification_report"
 
     return OperatorResult(
         state_patch=StatePatch(
@@ -2310,6 +2433,9 @@ def run_verify_operator(
                 f"- Sanity checks failed: "
                 f"**{sum(1 for c in metric_sanity_checks if not c.get('passed'))}**",
                 f"- Leakage signals: **{sum(1 for s in leakage_signals if s.get('detected'))}**",
+                f"- Directional signal: **{directional_signal or 'N/A'}**",
+                f"- Self-critic: **"
+                f"{'passed' if self_critic_result.get('passed', True) else 'FLAGGED'}**",
                 (f"- Rerun note: {rerun_note}" if rerun_note else "- Rerun note: none"),
                 "",
                 f"**Summary:** {reviewer_summary}",
@@ -2323,6 +2449,261 @@ def run_verify_operator(
                 not needs_postmortem and outcome.value in ("rejected", "invalid")
             ),
         })],
+    )
+
+
+def auto_remediate_operator(
+    session: Session,
+    config: AppConfig,
+    actor: Actor,
+    cycle: ResearchCycleModel,
+    job: JobModel,
+) -> OperatorResult:
+    """LLM-assisted auto-remediation: diagnose failure and apply fix before postmortem."""
+    from libs.core.policy import load_remediation_policy
+    from libs.execution.debug import (
+        build_remediation_prompt,
+        call_debugger,
+        determine_prompt_mode,
+    )
+    from libs.execution.remediation import (
+        apply_code_patch,
+        apply_dependency_adds,
+        apply_env_changes,
+        apply_run_mutations,
+        apply_spec_mutations,
+        build_prior_attempts_summary,
+        prepare_run_for_retry,
+        read_code_from_workspace,
+        read_log_tail,
+    )
+    from libs.storage.models import RemediationActionModel
+
+    run = get_run_by_public_id(session, job.payload["run_public_id"])
+    spec = session.get(ExperimentSpecModel, run.experiment_spec_id)
+    charter = session.get(ResearchCharterModel, cycle.charter_id) if cycle.charter_id else None
+
+    raw_policy = config.load_yaml(config.policy_config_path)
+    policy = load_remediation_policy(raw_policy)
+
+    skill_keys, skill_outcomes = _bound_skill_context(
+        session,
+        cycle,
+        job.operator_name,
+        influence="auto_remediation",
+        payload={
+            "failure_classification": run.failure_classification,
+            "run_status": run.status,
+        },
+    )
+    _assign_run_public_id(skill_outcomes, run.public_id)
+
+    # Budget check — if exhausted, fall through to postmortem
+    if (run.remediation_count or 0) >= policy.max_attempts_per_run:
+        log.info(
+            "remediation_budget_exhausted",
+            run_public_id=run.public_id,
+            attempts=run.remediation_count,
+        )
+        return OperatorResult(
+            state_patch=StatePatch(
+                target_state=CycleStatus.VERIFYING,
+                reason="Remediation budget exhausted, forwarding to postmortem",
+                context={
+                    "run_public_id": run.public_id,
+                    "phase": "auto_remediate_exhausted",
+                },
+            ),
+            emitted_events=[{
+                "event_type": "remediation_budget_exhausted",
+                "payload": {
+                    "run_public_id": run.public_id,
+                    "attempts": run.remediation_count,
+                },
+            }],
+            operator_report=OperatorReport(
+                title=f"Remediation Exhausted: {run.public_id}",
+                prompt_id="system:remediation_budget_exhausted",
+                body_markdown=(
+                    f"Budget of {policy.max_attempts_per_run} remediation "
+                    f"attempts exhausted for run {run.public_id}."
+                ),
+            ),
+            skill_execution_records=skill_outcomes,
+            next_actions=[NextAction(action="failure_postmortem", payload=job.payload)],
+        )
+
+    failure_class = run.failure_classification or "unknown"
+    attempt_number = (run.remediation_count or 0) + 1
+    prior_attempts = build_prior_attempts_summary(session, run.id)
+
+    stderr_excerpt = read_log_tail(run.stderr_path, policy.max_stderr_chars)
+    stdout_excerpt = read_log_tail(run.stdout_path, 1000)
+    generated_code = read_code_from_workspace(
+        run.workspace_path or "", run.public_id, policy.max_code_chars,
+    )
+
+    mode = determine_prompt_mode(failure_class, attempt_number, policy)
+    rendered_prompt, prompt_id = build_remediation_prompt(
+        mode=mode,
+        charter_problem=charter.problem_statement if charter else "",
+        experiment_title=spec.title if spec else "",
+        experiment_objective=spec.objective if spec else "",
+        method_description=spec.method_description if spec else "",
+        expected_outputs=list(spec.expected_outputs or []) if spec else [],
+        metrics=list(spec.metrics or []) if spec else [],
+        failure_classification=failure_class,
+        exit_code=run.exit_code,
+        last_error=run.last_error or "",
+        stderr_excerpt=stderr_excerpt,
+        stdout_excerpt=stdout_excerpt,
+        generated_code=generated_code,
+        artifact_manifest=run.artifact_manifest or {},
+        resource_snapshot=run.latest_resource_snapshot or {},
+        verification_summary=job.payload.get("verification_summary"),
+        prior_attempts=prior_attempts,
+        attempt_number=attempt_number,
+        run_status=run.status,
+        attempt_count=run.attempt_count or 0,
+        policy=policy,
+    )
+
+    # Call LLM debugger — fall through to postmortem on any failure
+    try:
+        gateway = ModelGateway.from_config(config)
+        response = call_debugger(gateway, rendered_prompt)
+        model_route_id = gateway.resolve_route("debugger").id
+    except Exception as exc:
+        log.warning(
+            "remediation_llm_call_failed",
+            run_public_id=run.public_id,
+            error=str(exc),
+        )
+        return OperatorResult(
+            state_patch=StatePatch(
+                target_state=CycleStatus.VERIFYING,
+                reason=f"Remediation LLM call failed: {exc}",
+                context={
+                    "run_public_id": run.public_id,
+                    "phase": "auto_remediate_llm_failure",
+                },
+            ),
+            emitted_events=[{
+                "event_type": "remediation_llm_failed",
+                "payload": {
+                    "run_public_id": run.public_id,
+                    "error": str(exc)[:500],
+                },
+            }],
+            operator_report=OperatorReport(
+                title=f"Remediation Failed: {run.public_id}",
+                prompt_id=prompt_id,
+                body_markdown=(
+                    f"LLM debugger call failed for run {run.public_id}: {exc}\n\n"
+                    "Falling through to failure postmortem."
+                ),
+            ),
+            skill_execution_records=skill_outcomes,
+            next_actions=[NextAction(action="failure_postmortem", payload=job.payload)],
+        )
+
+    # Apply the fix
+    if response.code_patch and run.workspace_path:
+        apply_code_patch(Path(run.workspace_path), run.public_id, response.code_patch)
+    if response.dependency_adds:
+        apply_dependency_adds(run, response.dependency_adds)
+    if response.env_changes:
+        apply_env_changes(run, response.env_changes)
+    applied_run_mutations = apply_run_mutations(config, run, response.run_mutations)
+    applied_spec_mutations: dict[str, Any] = {}
+    if response.spec_mutations and spec:
+        applied_spec_mutations = apply_spec_mutations(spec, response.spec_mutations)
+
+    # Record the remediation action
+    action = RemediationActionModel(
+        public_id=generate_public_id("remed"),
+        cycle_id=cycle.id,
+        run_record_id=run.id,
+        attempt_number=attempt_number,
+        failure_classification=failure_class,
+        prompt_mode=mode,
+        prompt_id=prompt_id,
+        model_route_id=model_route_id,
+        diagnosis=response.diagnosis,
+        fix_type=response.fix_type,
+        fix_description=response.fix_description,
+        fix_payload={
+            "code_patch_applied": bool(response.code_patch),
+            "dependency_adds": response.dependency_adds,
+            "env_changes": response.env_changes,
+            "run_mutations_requested": response.run_mutations,
+            "run_mutations_applied": applied_run_mutations,
+            "spec_mutations_requested": response.spec_mutations,
+            "spec_mutations_applied": applied_spec_mutations,
+        },
+        prior_attempts_summary=prior_attempts,
+        outcome="applied",
+    )
+    session.add(action)
+
+    # Prepare run for re-execution
+    next_operator = "run_prepare" if applied_spec_mutations else "run_execute"
+    prepare_run_for_retry(
+        run,
+        response,
+        prompt_id,
+        increment_attempt_count=next_operator == "run_execute",
+    )
+    session.flush()
+
+    log.info(
+        "remediation_applied",
+        run_public_id=run.public_id,
+        attempt=attempt_number,
+        fix_type=response.fix_type,
+        diagnosis=response.diagnosis[:200],
+    )
+    return OperatorResult(
+        state_patch=StatePatch(
+            target_state=CycleStatus.RUNNING,
+            reason=f"Auto-remediation attempt {attempt_number}: {response.fix_type}",
+            context={
+                "run_public_id": run.public_id,
+                "phase": "auto_remediate",
+                "attempt": attempt_number,
+            },
+        ),
+        emitted_events=[{
+            "event_type": "remediation_applied",
+            "payload": {
+                "run_public_id": run.public_id,
+                "attempt_number": attempt_number,
+                "fix_type": response.fix_type,
+                "diagnosis": response.diagnosis[:200],
+                "remediation_action_public_id": action.public_id,
+            },
+        }],
+        operator_report=OperatorReport(
+            title=f"Auto-Remediation #{attempt_number}: {run.public_id}",
+            prompt_id=prompt_id,
+            report_type="remediation_report",
+            body_markdown="\n".join([
+                f"# Auto-Remediation Attempt {attempt_number}",
+                "",
+                f"- Run: **{run.public_id}**",
+                f"- Failure: **{failure_class}**",
+                f"- Mode: **{mode}**",
+                f"- Fix type: **{response.fix_type}**",
+                f"- Diagnosis: {response.diagnosis}",
+                f"- Fix: {response.fix_description}",
+                f"- Bound skills: **{_format_skill_line(skill_keys)}**",
+            ]),
+        ),
+        skill_execution_records=skill_outcomes,
+        next_actions=[NextAction(
+            action=next_operator,
+            payload={"run_public_id": run.public_id},
+        )],
     )
 
 
@@ -2590,6 +2971,7 @@ def verification_report_operator(
         retrieval_hints=retrieval_hints,
         protocol_update_hints=protocol_update_hints,
         reviewer_summary=vr.reviewer_summary if vr else None,
+        directional_signal=vr.directional_signal if vr else None,
     )
 
     # Build markdown report body
@@ -2750,6 +3132,65 @@ def verification_report_operator(
         "run_public_id": run.public_id,
     }
 
+    # ---- Per-experiment writeup (Phase B) ----
+    writeup_lines = [
+        f"# Experiment Writeup: {spec.title}",
+        "",
+        f"**Hypothesis:** {hyp.title if hyp else 'N/A'}",
+        f"**Run:** {run.public_id}",
+        f"**Outcome:** {outcome}",
+        f"**Directional Signal:** "
+        f"{vr.directional_signal if vr and vr.directional_signal else 'N/A'}",
+        "",
+        "## Objective",
+        "",
+        spec.objective,
+        "",
+        "## Method",
+        "",
+        spec.method_description,
+        "",
+        "## Results",
+        "",
+        f"```json\n{json.dumps(run.metrics_summary or {}, indent=2, sort_keys=True)}\n```",
+        "",
+        "## Interpretation",
+        "",
+        vr.reviewer_summary if vr else "No review available.",
+        "",
+    ]
+    if vr and vr.directional_signal_detail:
+        frontier = vr.directional_signal_detail.get("frontier", {})
+        if frontier:
+            writeup_lines.extend([
+                "## Progress Tracking",
+                "",
+                f"- Best value: {frontier.get('best_value', 'N/A')}",
+                f"- Best run: {frontier.get('best_run_public_id', 'N/A')}",
+                f"- Runs since improvement: {frontier.get('runs_since_improvement', 'N/A')}",
+                "",
+            ])
+    if recommendations:
+        writeup_lines.extend(["## Decision", ""])
+        for item in recommendations:
+            writeup_lines.append(
+                f"- **{item.get('recommendation_type', 'next_step')}**: {item.get('rationale', '')}"
+            )
+        writeup_lines.append("")
+
+    writeup_report = create_report(
+        session,
+        config,
+        cycle=cycle,
+        job=job,
+        title=f"Experiment Writeup: {spec.title}",
+        report_type="experiment_writeup",
+        body_markdown="\n".join(writeup_lines),
+    )
+    writeup_report.run_record_id = run.id
+    writeup_report.hypothesis_card_id = spec.hypothesis_card_id
+    session.flush()
+
     events = [
         {
             "event_type": "verification_report_created",
@@ -2845,6 +3286,7 @@ OPERATOR_REGISTRY = {
     "run_retry_repair": run_retry_repair_operator,
     # Phase 4
     "run_verify": run_verify_operator,
+    "auto_remediate": auto_remediate_operator,
     "failure_postmortem": failure_postmortem_operator,
     "verification_report": verification_report_operator,
     # Cycle-independent

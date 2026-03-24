@@ -88,6 +88,34 @@ def test_build_docker_run_command_includes_mounts_and_limits():
     assert command[-2:] == ["python", "train.py"]
 
 
+def test_build_docker_run_command_bootstraps_python_dependencies():
+    spec = RunSpec(
+        workspace_path="/tmp/workspace",
+        image="python:3.12-slim",
+        build_recipe={"pip_packages": ["torch==2.3.1", "numpy==1.26.4"]},
+        command=["python", "train.py", "--config", "run.json"],
+        env_vars={},
+        mounts=[],
+        hardware_profile="cpu-small",
+        timeout_seconds=60,
+        memory_limit_mb=1024,
+        cpu_limit=None,
+        gpu_enabled=False,
+        network_mode="disabled",
+        artifact_output_path="/tmp/artifacts",
+        patch_archive_path="/tmp/patch.diff",
+    )
+
+    command = build_docker_run_command("synthetos-run", spec)
+
+    assert command[-3] == "/bin/sh"
+    assert command[-2] == "-lc"
+    assert "python -m pip install" in command[-1]
+    assert "torch==2.3.1" in command[-1]
+    assert "numpy==1.26.4" in command[-1]
+    assert "exec python train.py --config run.json" in command[-1]
+
+
 def test_git_worktree_adapter_creates_patch_archive(tmp_path: Path):
     repo_root = tmp_path / "repo"
     repo_root.mkdir()
@@ -156,6 +184,21 @@ def test_classify_failure_timed_out_returns_timeout(tmp_path: Path):
         stderr_path=stderr_path,
     )
     assert result == "timeout"
+
+
+def test_classify_failure_dependency_takes_precedence_over_runtime_exception(tmp_path: Path):
+    stderr_path = tmp_path / "stderr.log"
+    stderr_path.write_text(
+        "Traceback...\nModuleNotFoundError: No module named 'torch'\n",
+        encoding="utf-8",
+    )
+    result = classify_failure(
+        exit_code=1,
+        interrupted_status=None,
+        artifact_manifest={"manifest_path": str(tmp_path / "artifact_manifest.json")},
+        stderr_path=stderr_path,
+    )
+    assert result == "dependency_failure"
 
 
 def test_docker_timeout_enforcement():

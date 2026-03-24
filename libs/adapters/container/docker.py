@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import shlex
 import shutil
 import subprocess
 import threading
@@ -43,7 +44,19 @@ def build_docker_run_command(container_name: str, spec: RunSpec) -> list[str]:
     for key, value in spec.env_vars.items():
         command.extend(["-e", f"{key}={value}"])
     command.append(spec.image)
-    command.extend(spec.command)
+    pip_packages = [
+        str(package).strip()
+        for package in (spec.build_recipe or {}).get("pip_packages", [])
+        if str(package).strip()
+    ]
+    if pip_packages:
+        install_cmd = "python -m pip install " + " ".join(
+            shlex.quote(package) for package in pip_packages
+        )
+        exec_cmd = "exec " + " ".join(shlex.quote(part) for part in spec.command)
+        command.extend(["/bin/sh", "-lc", f"{install_cmd} && {exec_cmd}"])
+    else:
+        command.extend(spec.command)
     return command
 
 
