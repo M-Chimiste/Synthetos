@@ -10,10 +10,12 @@ Three core loops drive the research process:
 2. **Experiment** — Hypothesis to ExperimentSpec, code generation, containerized local execution with GPU support
 3. **Verify** — Result verification, historical comparison, failure memory, human-readable reports
 
-Two autonomy layers make the loops increasingly self-directed:
+Four autonomy layers make the loops increasingly self-directed:
 
 4. **Auto-Remediate** — LLM-assisted failure diagnosis and code fixing. Two-mode prompt system (focused for known failure classes, full debug for unknowns) with conversation context across attempts. Fixes are applied and retried automatically within a configurable budget.
 5. **Directional Signal** — Metric trend analysis across runs classifies each hypothesis line as advancing, stalled, regressing, noisy, or breakthrough. A self-critic pre-check catches obvious problems before full verification. Metric frontiers track best-known values per hypothesis. Signal-aware recommendations drive pivot-or-continue decisions.
+6. **Autonomous Loop** — Budget-bounded unattended experiment cycling. The loop decides to continue, vary parameters, pivot hypotheses, or regenerate the portfolio based on directional signals, repetition detection, and budget constraints.
+7. **Procedural Memory** — Cross-charter canonical patterns distilled from postmortems and successful runs. Patterns are clustered by semantic similarity, extracted via LLM, and organized into an emergent ontology. Positive patterns inform hypothesis generation; negative patterns prevent repeated mistakes; failure patterns accelerate auto-remediation.
 
 The system uses **operator-over-shared-state** orchestration: typed operators read/write a shared `ResearchState` through an explicit state machine with append-only audit trail. All external systems (arXiv, models, Docker, git) sit behind adapter interfaces (hexagonal architecture).
 
@@ -36,6 +38,7 @@ libs/
   ideation/     Evidence extraction, hypothesis generation
   execution/    Docker execution, artifact collection, failure classification, auto-remediation
   verification/ Result verification, postmortems, trend analysis, self-critic, frontier tracking
+  memory/       Cross-charter procedural memory (canonical patterns, consolidation, retrieval)
   reporting/    Report quality scoring, templates
   retrieval/    arXiv warehouse, hybrid search, source retrieval
   adapters/     External system adapters (arXiv OAI-PMH, LLM, embeddings, containers)
@@ -160,7 +163,7 @@ See [.env.example](.env.example) for all configuration options. Key variables:
 ### Running Tests
 
 ```bash
-# Backend tests (347 tests)
+# Backend tests (389 tests)
 uv run pytest
 
 # Backend tests with coverage
@@ -227,6 +230,8 @@ The system includes 15 first-party skills across literature, ideation, coding, a
 | Phase 5.1 — Hardening | Complete |
 | Phase A — Auto-Remediation | Complete |
 | Phase B — Directional Signal | Complete |
+| Phase C — Autonomous Loop | Complete |
+| Phase D — Procedural Memory | Complete |
 | Phase 5.2 — Pilot Exercises | Not started |
 
 ## Autonomy Roadmap
@@ -237,8 +242,8 @@ Phases A-D extend the co-scientist toward autonomous operation. See [project_doc
 |-------|------|--------|
 | A — Auto-Remediation | LLM fixes its own failed experiments | Complete |
 | B — Directional Signal | Metric trends answer "is this hypothesis making progress?" | Complete |
-| C — Autonomous Loop | Unattended experiment sequences with budget tracking | Planned |
-| D — Cross-Charter Memory | Reusable patterns learned across research problems | Planned |
+| C — Autonomous Loop | Unattended experiment sequences with budget tracking | Complete |
+| D — Cross-Charter Memory | Reusable patterns learned across research problems | Complete |
 
 ## License
 
