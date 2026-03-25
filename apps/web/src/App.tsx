@@ -5,11 +5,13 @@ import ReactMarkdown from "react-markdown";
 import {
   API_BASE,
   API_TOKEN,
+  curatePattern,
   createCycle,
   createRun,
   cycleCommand,
   eventSource,
   getCycle,
+  getPattern,
   getEvidenceSummary,
   getHistoricalComparison,
   getLiteratureTriage,
@@ -20,6 +22,8 @@ import {
   getTimeline,
   getVerificationReport,
   getVerificationSummary,
+  listPatternCategories,
+  listPatterns,
   listCycles,
   listEvidence,
   listExperimentSpecs,
@@ -29,8 +33,11 @@ import {
   runEventSource,
   startEvidence,
   startIntake,
+  triggerPatternConsolidation,
 } from "./lib/api";
 import type {
+  CanonicalPatternDetail,
+  CanonicalPatternListResponse,
   CycleDetailResponse,
   CycleSummaryResponse,
   EvidenceCardSummary,
@@ -43,6 +50,7 @@ import type {
   HypothesisCardSummary,
   LiteratureTriageResponse,
   PaperCardSummary,
+  PatternCategoryListResponse,
   PortfolioRankingResponse,
   ReportDetail,
   RunDetailResponse,
@@ -53,6 +61,7 @@ import type {
   VerificationReportDetail,
   VerificationSummaryResponse,
 } from "./lib/types";
+import PatternsPanel from "./components/PatternsPanel";
 import Timeline from "./components/Timeline";
 
 const defaultForm = {
@@ -88,6 +97,8 @@ export default function App() {
   const [selectedCycleId, setSelectedCycleId] = useState<string | null>(null);
   const [selectedReportId, setSelectedReportId] = useState<string | null>(null);
   const [selectedRunId, setSelectedRunId] = useState<string | null>(null);
+  const [selectedPatternId, setSelectedPatternId] = useState<string | null>(null);
+  const [selectedPatternCategory, setSelectedPatternCategory] = useState<string | null>(null);
   const [form, setForm] = useState(defaultForm);
 
   const cyclesQuery = useQuery({
@@ -160,6 +171,28 @@ export default function App() {
     refetchInterval: 5000,
   });
 
+  const patternCategoriesQuery = useQuery({
+    queryKey: ["patternCategories"],
+    queryFn: listPatternCategories,
+    refetchInterval: 30000,
+  });
+
+  const patternsQuery = useQuery({
+    queryKey: ["patterns", selectedPatternCategory],
+    queryFn: () =>
+      listPatterns({
+        categoryPrefix: selectedPatternCategory ?? undefined,
+        minConfidence: 0.3,
+      }),
+    refetchInterval: 15000,
+  });
+
+  const patternDetailQuery = useQuery({
+    queryKey: ["pattern", selectedPatternId],
+    queryFn: () => getPattern(selectedPatternId!),
+    enabled: Boolean(selectedPatternId),
+  });
+
   useEffect(() => {
     if (!selectedCycleId && cyclesQuery.data?.items?.[0]) {
       setSelectedCycleId(cyclesQuery.data.items[0].cycle.public_id);
@@ -171,6 +204,12 @@ export default function App() {
       setSelectedRunId(runsQuery.data.items[0].public_id);
     }
   }, [runsQuery.data, selectedRunId]);
+
+  useEffect(() => {
+    if (!selectedPatternId && patternsQuery.data?.patterns?.[0]) {
+      setSelectedPatternId(patternsQuery.data.patterns[0].public_id);
+    }
+  }, [patternsQuery.data, selectedPatternId]);
 
   useEffect(() => {
     if (!selectedCycleId) {
@@ -324,6 +363,36 @@ export default function App() {
       client.invalidateQueries({ queryKey: ["run", variables.runId] });
       client.invalidateQueries({ queryKey: ["runs", selectedCycleId] });
       client.invalidateQueries({ queryKey: ["cycle", selectedCycleId] });
+    },
+  });
+
+  const curatePatternMutation = useMutation({
+    mutationFn: async (payload: {
+      patternId: string;
+      action: "confirm" | "dismiss" | "refine";
+      category?: string | null;
+      refinement_notes?: string | null;
+    }) =>
+      curatePattern(payload.patternId, {
+        action: payload.action,
+        category: payload.category,
+        refinement_notes: payload.refinement_notes,
+      }),
+    onSuccess: () => {
+      client.invalidateQueries({ queryKey: ["patterns"] });
+      client.invalidateQueries({ queryKey: ["patternCategories"] });
+      if (selectedPatternId) {
+        client.invalidateQueries({ queryKey: ["pattern", selectedPatternId] });
+      }
+    },
+  });
+
+  const consolidatePatternsMutation = useMutation({
+    mutationFn: triggerPatternConsolidation,
+    onSuccess: () => {
+      client.invalidateQueries({ queryKey: ["patterns"] });
+      client.invalidateQueries({ queryKey: ["patternCategories"] });
+      client.invalidateQueries({ queryKey: ["cycles"] });
     },
   });
 
@@ -482,6 +551,32 @@ export default function App() {
               }}
               commandPending={runCommandMutation.isPending}
               onSelectReport={setSelectedReportId}
+            />
+            <PatternsPanel
+              patterns={patternsQuery.data?.patterns ?? []}
+              categories={patternCategoriesQuery.data?.categories ?? []}
+              selectedCategory={selectedPatternCategory}
+              selectedPatternId={selectedPatternId}
+              patternDetail={patternDetailQuery.data}
+              curationPending={curatePatternMutation.isPending}
+              consolidationPending={consolidatePatternsMutation.isPending}
+              onSelectCategory={(path) => {
+                setSelectedPatternCategory(path);
+                setSelectedPatternId(null);
+              }}
+              onSelectPattern={setSelectedPatternId}
+              onCurate={(payload) => {
+                if (!selectedPatternId) {
+                  return;
+                }
+                curatePatternMutation.mutate({
+                  patternId: selectedPatternId,
+                  action: payload.action,
+                  category: payload.category,
+                  refinement_notes: payload.refinement_notes,
+                });
+              }}
+              onConsolidate={() => consolidatePatternsMutation.mutate()}
             />
             <SkillsPanel skills={skillsQuery.data?.items ?? []} />
             <ReportPanel report={reportQuery.data} />

@@ -454,7 +454,7 @@ def create_report(
     session: Session,
     config: AppConfig,
     *,
-    cycle: ResearchCycleModel,
+    cycle: ResearchCycleModel | None,
     job: JobModel,
     title: str,
     report_type: str,
@@ -468,7 +468,7 @@ def create_report(
     quality = score_report_structure(body_markdown, report_type)
     report = ReportBundleModel(
         public_id=public_id,
-        cycle_id=cycle.id,
+        cycle_id=cycle.id if cycle else None,
         job_id=job.id,
         report_type=report_type,
         title=title,
@@ -655,6 +655,52 @@ def apply_operator_result(
         event_type="job_succeeded",
         payload={"job_public_id": job.public_id, "operator_name": job.operator_name},
         cycle_id=cycle.id,
+        job_id=job.id,
+    )
+
+
+def apply_cycle_independent_operator_result(
+    session: Session,
+    *,
+    job: JobModel,
+    actor: Actor,
+    result: OperatorResult,
+    config: AppConfig,
+) -> None:
+    for event in result.emitted_events:
+        append_event(
+            session,
+            actor=actor,
+            event_type=event["event_type"],
+            payload=event["payload"],
+            cycle_id=None,
+            job_id=job.id,
+        )
+    create_report(
+        session,
+        config,
+        cycle=None,
+        job=job,
+        title=result.operator_report.title,
+        report_type=result.operator_report.report_type,
+        body_markdown=result.operator_report.body_markdown,
+    )
+    from libs.orchestration.job_queue import enqueue_job as _enqueue
+
+    for action in result.next_actions:
+        _enqueue(
+            session,
+            actor,
+            None,
+            action.action,
+            action.payload,
+        )
+    append_event(
+        session,
+        actor=actor,
+        event_type="job_succeeded",
+        payload={"job_public_id": job.public_id, "operator_name": job.operator_name},
+        cycle_id=None,
         job_id=job.id,
     )
 

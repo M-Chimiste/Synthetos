@@ -9,6 +9,7 @@ from sqlalchemy import select, text
 from sqlalchemy.orm import Session
 
 from libs.adapters.embeddings.base import EmbeddingAdapter
+from libs.memory.consolidation import check_staleness_context
 from libs.storage.models import CanonicalPatternModel
 
 
@@ -41,6 +42,7 @@ class PatternRetrievalService:
         min_confidence: float = 0.3,
         limit: int = 10,
         candidate_pool: int = 50,
+        current_context: dict[str, Any] | None = None,
     ) -> list[PatternSearchHit]:
         """Hybrid search (0.5*lexical + 0.5*vector) over active canonical patterns."""
         query_text = query_text.strip()
@@ -57,7 +59,8 @@ class PatternRetrievalService:
             session, vector=vector, filters=filters, limit=max(limit, candidate_pool),
         )
 
-        return self._merge_and_rank(session, lexical_rows, vector_rows, limit)
+        hits = self._merge_and_rank(session, lexical_rows, vector_rows, limit)
+        return self._apply_context_filter(hits, current_context=current_context)
 
     def get_failure_patterns(
         self,
@@ -66,6 +69,7 @@ class PatternRetrievalService:
         failure_class: str | None = None,
         category_prefix: str | None = None,
         min_confidence: float = 0.3,
+        current_context: dict[str, Any] | None = None,
     ) -> list[CanonicalPatternModel]:
         """Direct lookup for failure patterns, optionally by failure_class."""
         stmt = (
@@ -86,6 +90,11 @@ class PatternRetrievalService:
                 if failure_class in (p.trigger_conditions or [])
             ]
 
+        if current_context:
+            return [
+                pattern for pattern in patterns
+                if check_staleness_context(pattern, current_context)
+            ]
         return patterns
 
     def get_method_patterns(
@@ -96,6 +105,7 @@ class PatternRetrievalService:
         category_prefix: str | None = None,
         limit: int = 5,
         min_confidence: float = 0.3,
+        current_context: dict[str, Any] | None = None,
     ) -> list[PatternSearchHit]:
         """Semantic search for positive method patterns."""
         return self.search(
@@ -106,6 +116,7 @@ class PatternRetrievalService:
             category_prefix=category_prefix,
             min_confidence=min_confidence,
             limit=limit,
+            current_context=current_context,
         )
 
     def get_signal_patterns(
@@ -114,6 +125,7 @@ class PatternRetrievalService:
         *,
         query_text: str,
         limit: int = 5,
+        current_context: dict[str, Any] | None = None,
     ) -> list[PatternSearchHit]:
         """Semantic search for signal patterns."""
         return self.search(
@@ -121,6 +133,7 @@ class PatternRetrievalService:
             query_text=query_text,
             pattern_types=["signal_pattern"],
             limit=limit,
+            current_context=current_context,
         )
 
     def list_categories(self, session: Session) -> list[str]:
@@ -132,6 +145,43 @@ class PatternRetrievalService:
             .order_by(CanonicalPatternModel.category)
         )
         return list(session.scalars(stmt).all())
+
+    @staticmethod
+    def build_category_tree(categories: list[str]) -> list[dict[str, Any]]:
+        roots: dict[str, dict[str, Any]] = {}
+        for raw_path in categories:
+            parts = [part.strip() for part in raw_path.split("/") if part.strip()]
+            if not parts:
+                continue
+            cursor = roots
+            path_parts: list[str] = []
+            for part in parts:
+                path_parts.append(part)
+                joined_path = "/".join(path_parts)
+                node = cursor.setdefault(
+                    part,
+                    {"name": part, "path": joined_path, "children_map": {}},
+                )
+                cursor = node["children_map"]
+
+        def _serialize(node: dict[str, Any]) -> dict[str, Any]:
+            children = [
+                _serialize(child)
+                for child in sorted(
+                    node["children_map"].values(),
+                    key=lambda item: item["name"],
+                )
+            ]
+            return {
+                "name": node["name"],
+                "path": node["path"],
+                "children": children,
+            }
+
+        return [
+            _serialize(node)
+            for node in sorted(roots.values(), key=lambda item: item["name"])
+        ]
 
     # ------------------------------------------------------------------
     # Internals
@@ -256,6 +306,19 @@ class PatternRetrievalService:
 
         hits.sort(key=lambda h: h.hybrid_score, reverse=True)
         return hits[:limit]
+
+    @staticmethod
+    def _apply_context_filter(
+        hits: list[PatternSearchHit],
+        *,
+        current_context: dict[str, Any] | None,
+    ) -> list[PatternSearchHit]:
+        if not current_context:
+            return hits
+        return [
+            hit for hit in hits
+            if check_staleness_context(hit.pattern, current_context)
+        ]
 
     @staticmethod
     def _vector_literal(vector: list[float]) -> str:

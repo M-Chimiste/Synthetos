@@ -1,4 +1,6 @@
 import type {
+  CanonicalPatternDetail,
+  CanonicalPatternListResponse,
   CycleDetailResponse,
   CycleSummaryResponse,
   EvidenceListResponse,
@@ -9,6 +11,7 @@ import type {
   HypothesisListResponse,
   LiteratureTriageResponse,
   PaperCardSummary,
+  PatternCategoryListResponse,
   PortfolioRankingResponse,
   ReportDetail,
   RunDetailResponse,
@@ -174,6 +177,52 @@ export function runEventSource(runId: string): EventSource {
 
 export function getTimeline(cycleId: string) {
   return request<import("./types").TimelineResponse>(`/api/v1/cycles/${cycleId}/timeline`);
+}
+
+export function listPatterns(params?: {
+  patternType?: string;
+  polarity?: string;
+  status?: string;
+  categoryPrefix?: string;
+  minConfidence?: number;
+}) {
+  const search = new URLSearchParams();
+  if (params?.patternType) search.set("pattern_type", params.patternType);
+  if (params?.polarity) search.set("polarity", params.polarity);
+  if (params?.status) search.set("status", params.status);
+  if (params?.categoryPrefix) search.set("category_prefix", params.categoryPrefix);
+  if (params?.minConfidence != null) {
+    search.set("min_confidence", String(params.minConfidence));
+  }
+  const suffix = search.size > 0 ? `?${search.toString()}` : "";
+  return request<CanonicalPatternListResponse>(`/api/v1/patterns${suffix}`);
+}
+
+export function getPattern(patternId: string) {
+  return request<CanonicalPatternDetail>(`/api/v1/patterns/${patternId}`);
+}
+
+export function listPatternCategories() {
+  return request<PatternCategoryListResponse>("/api/v1/patterns/categories");
+}
+
+export function curatePattern(
+  patternId: string,
+  payload: { action: "confirm" | "dismiss" | "refine"; category?: string | null; refinement_notes?: string | null },
+) {
+  return request<{ status: string; pattern_public_id: string }>(
+    `/api/v1/patterns/${patternId}/curate`,
+    {
+      method: "POST",
+      body: JSON.stringify(payload),
+    },
+  );
+}
+
+export function triggerPatternConsolidation() {
+  return request<{ status: string; job_public_id: string }>("/api/v1/patterns/consolidate", {
+    method: "POST",
+  });
 }
 
 export { API_BASE, API_TOKEN };

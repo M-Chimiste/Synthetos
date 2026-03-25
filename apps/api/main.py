@@ -45,6 +45,7 @@ from libs.schemas.api import (
     PaperSearchHit,
     PaperSearchResponse,
     PatternCategoryListResponse,
+    PatternCategoryNode,
     PatternCurateRequest,
     PortfolioRankingResponse,
     ReportDetailResponse,
@@ -736,8 +737,13 @@ def list_pattern_categories(
     session: Session = Depends(get_db),
 ) -> PatternCategoryListResponse:
     from libs.memory.consolidation import get_existing_categories
+    from libs.memory.retrieval import PatternRetrievalService
 
-    return PatternCategoryListResponse(categories=get_existing_categories(session))
+    categories = get_existing_categories(session)
+    tree = PatternRetrievalService.build_category_tree(categories)
+    return PatternCategoryListResponse(
+        categories=[PatternCategoryNode.model_validate(node) for node in tree]
+    )
 
 
 @app.get("/api/v1/patterns/{pattern_id}", response_model=CanonicalPatternDetail)
@@ -777,14 +783,24 @@ def curate_pattern(
     if pattern is None:
         raise HTTPException(status_code=404, detail="Pattern not found")
 
+    timestamp = datetime.now(UTC)
     if body.action == "confirm":
         pattern.status = "confirmed"
-        pattern.last_validated_at = datetime.now(UTC)
+        pattern.last_validated_at = timestamp
     elif body.action == "dismiss":
         pattern.status = "dismissed"
     elif body.action == "refine":
         pattern.status = "active"
-        pattern.last_validated_at = datetime.now(UTC)
+        pattern.last_validated_at = timestamp
+        if body.refinement_notes:
+            pattern.curation_notes = (pattern.curation_notes or []) + [
+                {
+                    "action": "refine",
+                    "note": body.refinement_notes,
+                    "actor_id": actor.actor_id,
+                    "created_at": timestamp.isoformat(),
+                }
+            ]
     if body.category is not None:
         pattern.category = body.category
     session.commit()
@@ -796,12 +812,12 @@ def trigger_consolidation(
     actor: Actor = Depends(require_scopes(TokenScope.ADMIN_LOCAL)),
     session: Session = Depends(get_db),
 ) -> dict[str, str]:
-    config = get_config()
     job = enqueue_job(
         session,
+        actor=actor,
+        cycle_id=None,
         operator_name="pattern_consolidation",
         payload={"trigger": "on_demand"},
-        actor=actor,
     )
     session.commit()
     return {"status": "queued", "job_public_id": job.public_id}

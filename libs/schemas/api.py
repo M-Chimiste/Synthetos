@@ -419,5 +419,14 @@ class PatternCurateRequest(BaseModel):
     refinement_notes: str | None = None
 
 
+class PatternCategoryNode(BaseModel):
+    name: str
+    path: str
+    children: list[PatternCategoryNode] = Field(default_factory=list)
+
+
 class PatternCategoryListResponse(BaseModel):
-    categories: list[str]
+    categories: list[PatternCategoryNode]
+
+
+PatternCategoryNode.model_rebuild()

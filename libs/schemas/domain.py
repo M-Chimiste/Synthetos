@@ -650,6 +650,7 @@ class CanonicalPattern(BaseModel):
     evidence_count: int = 0
     confidence_score: float = 1.0
     staleness_context: dict[str, Any] = Field(default_factory=dict)
+    curation_notes: list[dict[str, Any]] = Field(default_factory=list)
     status: Literal[
         "active", "needs_revalidation", "dismissed", "confirmed"
     ] = "active"

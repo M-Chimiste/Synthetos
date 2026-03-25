@@ -534,3 +534,42 @@ export interface RunDetailResponse {
   verification_report?: VerificationReportSummary | null;
   postmortem?: FailurePostmortemSummary | null;
 }
+
+export interface CanonicalPatternSummary {
+  public_id: string;
+  pattern_type: string;
+  polarity: string;
+  title: string;
+  category: string;
+  confidence_score: number;
+  evidence_count: number;
+  status: string;
+  created_at: string;
+}
+
+export interface CanonicalPatternDetail extends CanonicalPatternSummary {
+  description: string;
+  trigger_conditions: string[];
+  proven_actions: Dictionary[];
+  disproven_actions: string[];
+  evidence_refs: Dictionary[];
+  staleness_context: Dictionary;
+  curation_notes: Dictionary[];
+  last_validated_at?: string | null;
+  updated_at: string;
+}
+
+export interface CanonicalPatternListResponse {
+  patterns: CanonicalPatternSummary[];
+  total: number;
+}
+
+export interface PatternCategoryNode {
+  name: string;
+  path: string;
+  children: PatternCategoryNode[];
+}
+
+export interface PatternCategoryListResponse {
+  categories: PatternCategoryNode[];
+}

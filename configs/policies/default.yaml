@@ -58,7 +58,7 @@ autonomy:
   escalate_on_portfolio_exhausted: true
 memory:
   enabled: true
-  consolidation_interval_cycles: 10
+  consolidation_interval_hours: 24
   min_cluster_size: 3
   min_charters_for_pattern: 2
   similarity_threshold: 0.75

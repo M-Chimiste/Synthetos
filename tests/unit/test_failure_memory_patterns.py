@@ -53,6 +53,7 @@ class TestAggregateWithPatterns:
         assert len(result["canonical_patterns"]) == 1
         assert result["canonical_patterns"][0]["title"] == "OOM pattern"
         assert result["canonical_patterns"][0]["category"] == "resource/oom"
+        assert pattern_svc.search.call_args.kwargs["current_context"] is None
 
     @patch("libs.verification.failure_memory.aggregate_failure_guidance")
     def test_empty_problem_skips_patterns(self, mock_agg: MagicMock) -> None:
@@ -69,3 +70,22 @@ class TestAggregateWithPatterns:
         )
         assert result["canonical_patterns"] == []
         pattern_svc.search.assert_not_called()
+
+    @patch("libs.verification.failure_memory.aggregate_failure_guidance")
+    def test_passes_current_context_to_pattern_search(self, mock_agg: MagicMock) -> None:
+        mock_agg.return_value = {
+            "retrieval_guidance": [],
+            "protocol_guidance": [],
+            "ranking_caution_signals": [],
+        }
+        pattern_svc = MagicMock()
+        pattern_svc.search.return_value = []
+
+        aggregate_failure_guidance_with_patterns(
+            MagicMock(),
+            charter_id=1,
+            pattern_svc=pattern_svc,
+            charter_problem="test",
+            current_context={"hardware": "A100"},
+        )
+        assert pattern_svc.search.call_args.kwargs["current_context"] == {"hardware": "A100"}

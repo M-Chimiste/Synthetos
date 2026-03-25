@@ -197,8 +197,12 @@ class TestCheckStalenessContext:
 
 class TestUpsertCanonicalPattern:
     def test_creates_new_pattern(self) -> None:
+        exact_query = MagicMock()
+        exact_query.first.return_value = None
+        candidate_query = MagicMock()
+        candidate_query.all.return_value = []
         session = MagicMock()
-        session.scalars.return_value.first.return_value = None  # No existing
+        session.scalars.side_effect = [exact_query, candidate_query]
 
         embedder = MagicMock()
         embedder.embed_query.return_value = [0.1] * 768
@@ -218,8 +222,9 @@ class TestUpsertCanonicalPattern:
         }
         refs = [{"charter_public_id": "charter-1", "ref_type": "postmortem", "public_id": "pm-1"}]
 
-        pattern = upsert_canonical_pattern(session, extracted, refs, embedder)
+        pattern, created = upsert_canonical_pattern(session, extracted, refs, embedder)
         session.add.assert_called_once()
+        assert created is True
         assert pattern.title == "OOM on large batch sizes"
         assert pattern.category == "resource/oom"
         assert pattern.evidence_count == 1
@@ -233,6 +238,7 @@ class TestUpsertCanonicalPattern:
 
         session = MagicMock()
         session.scalars.return_value.first.return_value = existing
+        session.scalars.return_value.all.return_value = []
 
         embedder = MagicMock()
         embedder.embed_query.return_value = [0.1] * 768
@@ -247,7 +253,48 @@ class TestUpsertCanonicalPattern:
             {"public_id": "pm-2", "charter_public_id": "charter-2"},
         ]
 
-        result = upsert_canonical_pattern(session, extracted, new_refs, embedder)
+        result, created = upsert_canonical_pattern(session, extracted, new_refs, embedder)
         assert result is existing
+        assert created is False
         assert len(existing.evidence_refs) == 2
         assert existing.evidence_count == 2
+
+    def test_semantic_match_merges_near_duplicate_title(self) -> None:
+        existing = MagicMock()
+        existing.evidence_refs = [{"public_id": "pm-1", "charter_public_id": "charter-1"}]
+        existing.embedding = [1.0, 0.0]
+        existing.polarity = "negative"
+        existing.description = "Existing"
+        existing.trigger_conditions = []
+        existing.proven_actions = []
+        existing.disproven_actions = []
+        existing.staleness_context = {}
+        existing.category = "resource/oom"
+
+        exact_query = MagicMock()
+        exact_query.first.return_value = None
+        candidate_query = MagicMock()
+        candidate_query.all.return_value = [existing]
+
+        session = MagicMock()
+        session.scalars.side_effect = [exact_query, candidate_query]
+
+        embedder = MagicMock()
+        embedder.embed_query.return_value = [0.99, 0.01]
+
+        extracted = {
+            "title": "Batch-size OOM failure",
+            "pattern_type": "failure_pattern",
+            "description": "Near-duplicate",
+            "category": "resource/oom",
+        }
+
+        result, created = upsert_canonical_pattern(
+            session,
+            extracted,
+            [{"public_id": "pm-2", "charter_public_id": "charter-2"}],
+            embedder,
+            similarity_threshold=0.8,
+        )
+        assert result is existing
+        assert created is False

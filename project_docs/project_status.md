@@ -2,8 +2,8 @@
 
 **Product:** ML Laboratory Co-Scientist
 **Repository:** `Synthetos`
-**Last Updated:** 2026-03-24
-**Overall Status:** Phase D (Cross-Charter Procedural Memory) implementation complete. Phases A-C shipped. Phase 5.2 not started.
+**Last Updated:** 2026-03-25
+**Overall Status:** Phase D (Cross-Charter Procedural Memory) gap-closure shipped. Phases A-D are now implemented end-to-end. Phase 5.2 not started.
 
 ---
 
@@ -17,7 +17,7 @@
 | Phase 3 — Execution Lab MVP | Complete | Git worktree isolation, Docker container execution with GPU support, run telemetry streaming (SSE), pause/cancel/retry controls, automation policy, artifact collection, failure classification, 3 Phase 3 skills, run API endpoints |
 | Phase 4 — Verification | Complete | Same-charter history, policy-driven checks, output-contract validation, next-step recommendations, cycle verification summaries, failure-memory feedback loops, web UI visibility |
 | Phase 5.1 — Hardening | Complete | Policy/skill validation, recovery/resume flows, report quality/timeline, API contract tests, frontend tests, skill library, orchestrator SDK |
-| Phase D — Cross-Charter Procedural Memory | Complete | Canonical patterns, consolidation, retrieval, operator integrations, API, emergent ontology |
+| Phase D — Cross-Charter Procedural Memory | Complete | Canonical patterns, cycle-independent + scheduled consolidation, signal/method/failure learning, staleness-aware retrieval, curation notes, ontology API, minimal web UI |
 | Phase 5.2 — Pilot Exercises | Not started | |
 
 ---
@@ -61,6 +61,38 @@
 ### Tests
 - 25 new unit tests across 4 test files, all passing
 - Full regression: 389 tests passing, 0 lint errors
+
+### Phase D — gap closure (Codex)
+- Fixed the Phase D control plane so pattern consolidation is actually runnable:
+  - `POST /api/v1/patterns/consolidate` now enqueues with `cycle_id=None`
+  - worker treats `pattern_consolidation` as a cycle-independent operator
+  - cycle-independent operator results now persist reports/events instead of being discarded
+  - scheduled consolidation now uses `memory.consolidation_interval_hours` and only enqueues when there is real verification/postmortem evidence to consolidate
+- Corrected consolidation behavior:
+  - successful-run gathering now reads `VerificationReportModel.outcome` and treats `robust` / `tentative` as positive outcomes
+  - added signal-observation gathering, clustering, extraction, and upsert using `consolidate_signal_pattern.md`
+  - pattern upsert now falls back from exact title matching to semantic dedupe within the same pattern type
+  - evidence merging remains additive and idempotent by `public_id`
+- Made retrieval/injection behavior consistent across operators:
+  - retrieval now supports staleness-aware filtering with shared runtime context
+  - source retrieval, hypothesis generation, verification, remediation, and verification summary now use the same filtered pattern path
+  - `aggregate_failure_guidance_with_patterns()` is now used in production instead of being test-only dead code
+- Finished the curation and browsing surface:
+  - canonical patterns now store `curation_notes`
+  - `refine` appends notes and refreshes validation timestamps
+  - categories endpoint returns an ontology tree instead of a flat list
+  - web app now includes a minimal pattern memory panel with browsing, detail, consolidation, confirm/dismiss/refine actions
+- Added Phase D coverage for:
+  - policy parsing for time-based consolidation
+  - semantic dedupe and staleness filtering
+  - pattern consolidation trigger + worker execution + API curation flow
+  - ontology tree rendering and refinement UI interactions
+- Verification performed for this pass:
+  - `uv run pytest tests/unit/test_memory_policy.py tests/unit/test_pattern_consolidation.py tests/unit/test_pattern_retrieval.py tests/unit/test_failure_memory_patterns.py tests/integration/test_phase_d_api.py -q`
+  - `uv run pytest tests/integration/test_api_contract.py -q`
+  - `npm run --prefix apps/web test -- --run PatternsPanel Timeline`
+  - `npm run --prefix apps/web build`
+  - `uv run ruff check libs apps tests`
 
 ---
 

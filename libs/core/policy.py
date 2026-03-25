@@ -4,7 +4,7 @@ from dataclasses import dataclass
 from enum import StrEnum
 from typing import Any
 
-from pydantic import BaseModel
+from pydantic import BaseModel, model_validator
 
 
 class TokenScope(StrEnum):
@@ -72,7 +72,7 @@ def load_autonomy_policy(raw_policy: dict[str, Any]) -> AutonomyPolicyConfig:
 
 class MemoryPolicyConfig(BaseModel):
     enabled: bool = True
-    consolidation_interval_cycles: int = 10
+    consolidation_interval_hours: int = 24
     min_cluster_size: int = 3
     min_charters_for_pattern: int = 2
     similarity_threshold: float = 0.75
@@ -82,9 +82,21 @@ class MemoryPolicyConfig(BaseModel):
     min_confidence_for_injection: float = 0.5
     max_patterns_per_query: int = 5
 
+    @model_validator(mode="before")
+    @classmethod
+    def _upgrade_legacy_keys(cls, data: Any) -> Any:
+        if not isinstance(data, dict):
+            return data
+        if (
+            "consolidation_interval_hours" not in data
+            and "consolidation_interval_cycles" in data
+        ):
+            data = dict(data)
+            data["consolidation_interval_hours"] = data["consolidation_interval_cycles"]
+        return data
+
 
 def load_memory_policy(raw_policy: dict[str, Any]) -> MemoryPolicyConfig:
     """Parse the 'memory' section from policy YAML."""
     section = raw_policy.get("memory", {})
     return MemoryPolicyConfig.model_validate(section)
-

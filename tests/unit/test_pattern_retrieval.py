@@ -68,3 +68,31 @@ class TestPatternRetrievalService:
         svc = PatternRetrievalService(embedder)
         cats = svc.list_categories(session)
         assert len(cats) == 3
+
+    def test_get_failure_patterns_respects_staleness_context(self) -> None:
+        session = MagicMock()
+        matching = MagicMock()
+        matching.trigger_conditions = ["oom"]
+        matching.staleness_context = {"hardware": "A100"}
+        mismatched = MagicMock()
+        mismatched.trigger_conditions = ["oom"]
+        mismatched.staleness_context = {"hardware": "H100"}
+        session.scalars.return_value.all.return_value = [matching, mismatched]
+
+        svc = PatternRetrievalService(MagicMock())
+        results = svc.get_failure_patterns(
+            session,
+            failure_class="oom",
+            current_context={"hardware": "A100"},
+        )
+        assert results == [matching]
+
+    def test_build_category_tree(self) -> None:
+        tree = PatternRetrievalService.build_category_tree([
+            "failure/resource/oom",
+            "failure/resource/cpu",
+            "signal/frontier/breakthrough",
+        ])
+        assert len(tree) == 2
+        assert tree[0]["name"] == "failure"
+        assert tree[0]["children"][0]["path"].startswith("failure/")

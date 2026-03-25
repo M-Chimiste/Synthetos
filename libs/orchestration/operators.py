@@ -26,7 +26,7 @@ from libs.core.operators import (
     SkillExecutionOutcome,
     StatePatch,
 )
-from libs.core.policy import Actor, TokenScope
+from libs.core.policy import Actor, TokenScope, load_memory_policy
 from libs.core.state_machine import CycleStatus
 from libs.execution import (
     build_run_spec,
@@ -116,6 +116,66 @@ def _merge_next_payload(
     if AUTONOMOUS_PAYLOAD_KEYS & set(merged.keys()):
         return merge_autonomous_payload(merged)
     return merged
+
+
+def _load_pattern_retrieval_service(config: AppConfig):
+    memory_policy = load_memory_policy(config.load_yaml(config.policy_config_path))
+    if not memory_policy.enabled:
+        return memory_policy, None
+    from libs.adapters.embeddings.sentence_transformers import (
+        SentenceTransformerEmbeddingAdapter,
+    )
+    from libs.memory.retrieval import PatternRetrievalService
+
+    embedder = SentenceTransformerEmbeddingAdapter(config)
+    return memory_policy, PatternRetrievalService(embedder)
+
+
+def _build_pattern_context(
+    *,
+    charter: ResearchCharterModel | None = None,
+    source_scope: dict[str, Any] | None = None,
+    spec: ExperimentSpecModel | None = None,
+    run: Any | None = None,
+) -> dict[str, Any]:
+    context: dict[str, Any] = {}
+    constraints = (charter.constraints or {}) if charter else {}
+    for key in (
+        "execution_profile",
+        "hardware_profile",
+        "gpu_enabled",
+        "network_mode",
+        "image",
+        "framework_versions",
+        "torch_version",
+    ):
+        value = constraints.get(key)
+        if value is not None:
+            context[key] = value
+
+    if source_scope and source_scope.get("mode"):
+        context["source_mode"] = source_scope["mode"]
+    if spec and spec.gpu_required:
+        context["gpu_enabled"] = True
+    if run is not None:
+        for key in (
+            "execution_profile",
+            "hardware_profile",
+            "gpu_enabled",
+            "network_mode",
+            "image",
+        ):
+            value = getattr(run, key, None)
+            if value is not None:
+                context[key] = value
+        env_vars = getattr(run, "env_vars", {}) or {}
+        if env_vars.get("TORCH_VERSION"):
+            context["torch_version"] = env_vars["TORCH_VERSION"]
+        if env_vars.get("FRAMEWORK_VERSIONS"):
+            context["framework_versions"] = env_vars["FRAMEWORK_VERSIONS"]
+    if "hardware" not in context and context.get("hardware_profile"):
+        context["hardware"] = context["hardware_profile"]
+    return context
 
 
 def _experiment_spec_schema(spec: ExperimentSpecModel):
@@ -276,7 +336,7 @@ def source_retrieval_operator(
 ) -> OperatorResult:
     """Retrieve papers from hybrid arXiv warehouse + internal corpus."""
     from libs.retrieval.arxiv_warehouse import ArxivWarehouseService
-    from libs.verification.failure_memory import aggregate_failure_guidance
+    from libs.verification.failure_memory import aggregate_failure_guidance_with_patterns
 
     charter = session.get(ResearchCharterModel, cycle.charter_id)
     if charter is None:
@@ -306,27 +366,32 @@ def source_retrieval_operator(
         date_until=date_until,
         max_results=max_results,
     )
-    failure_guidance = aggregate_failure_guidance(session, charter_id=charter.id)
+    pattern_context = _build_pattern_context(
+        charter=charter,
+        source_scope=source_scope,
+    )
+    _, pattern_svc = _load_pattern_retrieval_service(config)
+    failure_guidance = aggregate_failure_guidance_with_patterns(
+        session,
+        charter_id=charter.id,
+        pattern_svc=pattern_svc,
+        charter_problem=charter.problem_statement,
+        current_context=pattern_context,
+    )
     retrieval_guidance = failure_guidance["retrieval_guidance"][:3]
 
     # Phase D: augment queries with canonical pattern trigger conditions
     pattern_augmented_queries: list[str] = []
     try:
-        from libs.core.policy import load_memory_policy
-        mem_policy = load_memory_policy(config.load_yaml(config.policy_config_path))
-        if mem_policy.enabled:
-            from libs.adapters.embeddings.sentence_transformers import (
-                SentenceTransformerEmbeddingAdapter,
-            )
-            from libs.memory.retrieval import PatternRetrievalService
-            _embedder = SentenceTransformerEmbeddingAdapter(config)
-            _pattern_svc = PatternRetrievalService(_embedder)
+        mem_policy, _pattern_svc = _load_pattern_retrieval_service(config)
+        if mem_policy.enabled and _pattern_svc is not None:
             _pattern_hits = _pattern_svc.search(
                 session,
                 query_text=charter.problem_statement,
                 pattern_types=["method_pattern", "signal_pattern"],
                 polarity="positive",
                 limit=3,
+                current_context=pattern_context,
             )
             for _hit in _pattern_hits:
                 for _cond in (_hit.pattern.trigger_conditions or []):
@@ -1154,19 +1219,14 @@ def hypothesis_generation_operator(
     method_hints: list[dict[str, Any]] = []
     failure_warnings: list[dict[str, Any]] = []
     try:
-        from libs.core.policy import load_memory_policy
-        _mem_policy = load_memory_policy(config.load_yaml(config.policy_config_path))
-        if _mem_policy.enabled:
-            from libs.adapters.embeddings.sentence_transformers import (
-                SentenceTransformerEmbeddingAdapter,
-            )
-            from libs.memory.retrieval import PatternRetrievalService
-            _embedder = SentenceTransformerEmbeddingAdapter(config)
-            _pat_svc = PatternRetrievalService(_embedder)
+        pattern_context = _build_pattern_context(charter=charter)
+        _mem_policy, _pat_svc = _load_pattern_retrieval_service(config)
+        if _mem_policy.enabled and _pat_svc is not None:
             _method_hits = _pat_svc.get_method_patterns(
                 session,
                 query_text=charter.problem_statement,
                 limit=_mem_policy.max_patterns_per_query,
+                current_context=pattern_context,
             )
             method_hints = [
                 {
@@ -1181,6 +1241,7 @@ def hypothesis_generation_operator(
                 query_text=charter.problem_statement,
                 polarity="negative",
                 limit=_mem_policy.max_patterns_per_query,
+                current_context=pattern_context,
             )
             failure_warnings = [
                 {
@@ -2756,19 +2817,14 @@ def run_verify_operator(
         # Phase D: retrieve signal patterns for verification context
         signal_pattern_context: list[dict[str, Any]] = []
         try:
-            from libs.core.policy import load_memory_policy
-            _vmp = load_memory_policy(config.load_yaml(config.policy_config_path))
-            if _vmp.enabled:
-                from libs.adapters.embeddings.sentence_transformers import (
-                    SentenceTransformerEmbeddingAdapter,
-                )
-                from libs.memory.retrieval import PatternRetrievalService
-                _vemb = SentenceTransformerEmbeddingAdapter(config)
-                _vpat = PatternRetrievalService(_vemb)
+            pattern_context = _build_pattern_context(charter=charter, spec=spec, run=run)
+            _vmp, _vpat = _load_pattern_retrieval_service(config)
+            if _vmp.enabled and _vpat is not None:
                 _sig_hits = _vpat.get_signal_patterns(
                     session,
                     query_text=f"{spec.title} {spec.method_description or ''}",
                     limit=3,
+                    current_context=pattern_context,
                 )
                 signal_pattern_context = [
                     {
@@ -3025,30 +3081,28 @@ def auto_remediate_operator(
     # Phase D: inject canonical failure patterns as prior knowledge
     canonical_fix_hints: list[dict[str, Any]] = []
     try:
-        from libs.core.policy import load_memory_policy
         _mem_policy = load_memory_policy(raw_policy)
         if _mem_policy.enabled:
-            from libs.adapters.embeddings.sentence_transformers import (
-                SentenceTransformerEmbeddingAdapter,
-            )
-            from libs.memory.consolidation import check_staleness_context
-            from libs.memory.retrieval import PatternRetrievalService
-            _embedder = SentenceTransformerEmbeddingAdapter(config)
-            _pat_svc = PatternRetrievalService(_embedder)
+            pattern_context = _build_pattern_context(charter=charter, spec=spec, run=run)
+            _, _pat_svc = _load_pattern_retrieval_service(config)
+            if _pat_svc is None:
+                raise RuntimeError("pattern retrieval unavailable")
             _failure_pats = _pat_svc.get_failure_patterns(
-                session, failure_class=failure_class, min_confidence=0.5,
+                session,
+                failure_class=failure_class,
+                min_confidence=0.5,
+                current_context=pattern_context,
             )
             for _fp in _failure_pats[:3]:
-                if check_staleness_context(_fp, {}):
-                    canonical_fix_hints.append({
-                        "title": _fp.title,
-                        "description": _fp.description,
-                        "proven_actions": [
-                            a.get("action", a) if isinstance(a, dict) else a
-                            for a in (_fp.proven_actions or [])
-                        ],
-                        "disproven_actions": _fp.disproven_actions or [],
-                    })
+                canonical_fix_hints.append({
+                    "title": _fp.title,
+                    "description": _fp.description,
+                    "proven_actions": [
+                        a.get("action", a) if isinstance(a, dict) else a
+                        for a in (_fp.proven_actions or [])
+                    ],
+                    "disproven_actions": _fp.disproven_actions or [],
+                })
     except Exception:
         log.debug("pattern_injection_skipped_in_auto_remediate", exc_info=True)
 
@@ -3422,7 +3476,7 @@ def verification_report_operator(
         VerificationReportModel,
     )
     from libs.storage.services import create_report, get_verification_summary_for_cycle
-    from libs.verification.failure_memory import aggregate_failure_guidance
+    from libs.verification.failure_memory import aggregate_failure_guidance_with_patterns
     from libs.verification.recommendations import build_next_step_recommendations
 
     run = get_run_by_public_id(session, job.payload["run_public_id"])
@@ -3475,7 +3529,15 @@ def verification_report_operator(
     min_outcome_for_promotion = str(
         verification_policy.get("min_outcome_for_promotion", "tentative")
     )
-    failure_guidance = aggregate_failure_guidance(session, charter_id=cycle.charter_id)
+    pattern_context = _build_pattern_context(charter=charter, spec=spec, run=run)
+    _, pattern_svc = _load_pattern_retrieval_service(config)
+    failure_guidance = aggregate_failure_guidance_with_patterns(
+        session,
+        charter_id=cycle.charter_id,
+        pattern_svc=pattern_svc,
+        charter_problem=charter.problem_statement if charter else "",
+        current_context=pattern_context,
+    )
     retrieval_hints = list(pm.retrieval_hints or []) if pm else []
     if not retrieval_hints:
         retrieval_hints = failure_guidance["retrieval_guidance"][:3]
@@ -3559,6 +3621,19 @@ def verification_report_operator(
         f"```json\n{json.dumps(run.metrics_summary or {}, indent=2, sort_keys=True)}\n```",
         "",
     ])
+    canonical_patterns = failure_guidance.get("canonical_patterns", [])
+    if canonical_patterns:
+        report_lines.extend([
+            "## Canonical Pattern Memory",
+            "",
+        ])
+        for pattern in canonical_patterns[:3]:
+            report_lines.append(
+                f"- **{pattern['title']}** ({pattern['pattern_type']}, "
+                f"confidence {pattern['confidence_score']:.2f})"
+            )
+            report_lines.append(f"  {pattern['description']}")
+        report_lines.append("")
     if recommendations:
         report_lines.extend([
             "## Recommendations",
@@ -3810,29 +3885,34 @@ def pattern_consolidation_operator(
     session: Session,
     config: AppConfig,
     actor: Actor,
-    cycle: ResearchCycleModel,
+    cycle: ResearchCycleModel | None,
     job: JobModel,
 ) -> OperatorResult:
     """Consolidate cross-charter observations into canonical patterns."""
     from libs.adapters.embeddings.sentence_transformers import (
         SentenceTransformerEmbeddingAdapter,
     )
-    from libs.core.policy import load_memory_policy
     from libs.memory.consolidation import (
+        _build_evidence_refs,
         apply_staleness_decay,
         cluster_postmortems_by_failure,
+        cluster_signal_observations,
         cluster_successful_runs_by_method,
         extract_pattern_from_failure_cluster,
+        extract_pattern_from_signal_cluster,
         extract_pattern_from_success_cluster,
         gather_cross_charter_postmortems,
+        gather_cross_charter_signal_observations,
         gather_cross_charter_successful_runs,
         get_existing_categories,
         upsert_canonical_pattern,
     )
     from libs.storage.models import (
         PatternConsolidationRunModel,
-        ResearchCharterModel as CharterModel,
         VerificationReportModel,
+    )
+    from libs.storage.models import (
+        ResearchCharterModel as CharterModel,
     )
 
     raw_policy = config.load_yaml(config.policy_config_path)
@@ -3840,6 +3920,10 @@ def pattern_consolidation_operator(
 
     if not memory_policy.enabled:
         return OperatorResult(
+            state_patch=StatePatch(
+                target_state=CycleStatus.READY,
+                reason="Pattern consolidation skipped because memory policy is disabled",
+            ),
             operator_report=OperatorReport(
                 title="Pattern Consolidation (disabled)",
                 prompt_id="system:pattern_consolidation_disabled",
@@ -3856,6 +3940,10 @@ def pattern_consolidation_operator(
     )
     if running is not None:
         return OperatorResult(
+            state_patch=StatePatch(
+                target_state=CycleStatus.READY,
+                reason="Pattern consolidation skipped because another run is active",
+            ),
             operator_report=OperatorReport(
                 title="Pattern Consolidation (skipped — already running)",
                 prompt_id="system:pattern_consolidation_concurrent",
@@ -3884,6 +3972,7 @@ def pattern_consolidation_operator(
         # Gather observations
         postmortems = gather_cross_charter_postmortems(session)
         successful_runs = gather_cross_charter_successful_runs(session)
+        signal_observations = gather_cross_charter_signal_observations(session)
         consolidation_run.postmortems_scanned = len(postmortems)
         consolidation_run.runs_scanned = len(successful_runs)
 
@@ -3901,7 +3990,7 @@ def pattern_consolidation_operator(
                 VerificationReportModel.run_record_id.in_(run_ids)
             )
         ).all() if run_ids else []
-        verification_outcomes = {vr.run_record_id: vr.verification_outcome for vr in vr_rows}
+        verification_outcomes = {vr.run_record_id: vr.outcome for vr in vr_rows}
         directional_signals = {
             vr.run_record_id: (vr.directional_signal or "unknown") for vr in vr_rows
         }
@@ -3912,10 +4001,15 @@ def pattern_consolidation_operator(
             extracted = extract_pattern_from_failure_cluster(
                 cluster, gateway, existing_categories, charter_public_ids,
             )
-            from libs.memory.consolidation import _build_evidence_refs
             refs = _build_evidence_refs(cluster.members, "postmortem", charter_public_ids)
-            pattern = upsert_canonical_pattern(session, extracted, refs, embedder)
-            if pattern.evidence_count == len(refs):
+            _pattern, created = upsert_canonical_pattern(
+                session,
+                extracted,
+                refs,
+                embedder,
+                similarity_threshold=memory_policy.similarity_threshold,
+            )
+            if created:
                 consolidation_run.patterns_created += 1
             else:
                 consolidation_run.patterns_updated += 1
@@ -3931,8 +4025,35 @@ def pattern_consolidation_operator(
                 verification_outcomes, directional_signals,
             )
             refs = _build_evidence_refs(cluster.members, "run", charter_public_ids)
-            pattern = upsert_canonical_pattern(session, extracted, refs, embedder)
-            if pattern.evidence_count == len(refs):
+            _pattern, created = upsert_canonical_pattern(
+                session,
+                extracted,
+                refs,
+                embedder,
+                similarity_threshold=memory_policy.similarity_threshold,
+            )
+            if created:
+                consolidation_run.patterns_created += 1
+            else:
+                consolidation_run.patterns_updated += 1
+            existing_categories = get_existing_categories(session)
+
+        signal_clusters = cluster_signal_observations(
+            signal_observations, embedder, memory_policy,
+        )
+        for cluster in signal_clusters:
+            extracted = extract_pattern_from_signal_cluster(
+                cluster, gateway, existing_categories, charter_public_ids,
+            )
+            refs = _build_evidence_refs(cluster.members, "verification_report", charter_public_ids)
+            _pattern, created = upsert_canonical_pattern(
+                session,
+                extracted,
+                refs,
+                embedder,
+                similarity_threshold=memory_policy.similarity_threshold,
+            )
+            if created:
                 consolidation_run.patterns_created += 1
             else:
                 consolidation_run.patterns_updated += 1
@@ -3954,14 +4075,20 @@ def pattern_consolidation_operator(
         "",
         f"- Postmortems scanned: **{consolidation_run.postmortems_scanned}**",
         f"- Successful runs scanned: **{consolidation_run.runs_scanned}**",
+        f"- Signal observations scanned: **{len(signal_observations)}**",
         f"- Failure clusters found: **{len(failure_clusters)}**",
         f"- Success clusters found: **{len(success_clusters)}**",
+        f"- Signal clusters found: **{len(signal_clusters)}**",
         f"- Patterns created: **{consolidation_run.patterns_created}**",
         f"- Patterns updated: **{consolidation_run.patterns_updated}**",
         f"- Patterns decayed: **{consolidation_run.patterns_decayed}**",
     ]
 
     return OperatorResult(
+        state_patch=StatePatch(
+            target_state=CycleStatus.READY,
+            reason="Cycle-independent pattern consolidation completed",
+        ),
         emitted_events=[{
             "event_type": "pattern_consolidation_completed",
             "payload": {

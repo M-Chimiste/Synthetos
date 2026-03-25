@@ -2,25 +2,34 @@ from __future__ import annotations
 
 import signal
 import threading
+from datetime import UTC, datetime, timedelta
 
 import structlog
 from sqlalchemy import select
 from sqlalchemy.orm import Session, sessionmaker
 
 from libs.core.config import AppConfig
-from libs.core.policy import Actor
+from libs.core.policy import Actor, load_memory_policy
 from libs.core.state_machine import CycleStatus
 from libs.orchestration.job_queue import (
     claim_next_job,
     cycle_for_job,
+    enqueue_job,
     mark_job_failed,
     mark_job_succeeded,
     reclaim_expired_leases,
 )
 from libs.orchestration.operators import OPERATOR_REGISTRY
-from libs.storage.models import JobModel, RunRecordModel
+from libs.storage.models import (
+    FailurePostmortemModel,
+    JobModel,
+    PatternConsolidationRunModel,
+    RunRecordModel,
+    VerificationReportModel,
+)
 from libs.storage.services import (
     append_event,
+    apply_cycle_independent_operator_result,
     apply_operator_result,
     create_state_snapshot,
 )
@@ -30,7 +39,7 @@ log = structlog.get_logger(__name__)
 _shutdown_event = threading.Event()
 
 # Operators that run without an associated research cycle.
-CYCLE_INDEPENDENT_OPERATORS: set[str] = {"arxiv_warehouse_sync"}
+CYCLE_INDEPENDENT_OPERATORS: set[str] = {"arxiv_warehouse_sync", "pattern_consolidation"}
 
 # Operator pipelines: ordered sequences for resume logic.
 # Each pipeline maps to a sequence of operators that run in order.
@@ -90,6 +99,62 @@ def _run_for_job(session: Session, job: JobModel) -> RunRecordModel | None:
         return None
     return session.scalar(
         select(RunRecordModel).where(RunRecordModel.public_id == run_public_id)
+    )
+
+
+def _has_pending_cycle_independent_job(session: Session, operator_name: str) -> bool:
+    return session.scalar(
+        select(JobModel).where(
+            JobModel.cycle_id.is_(None),
+            JobModel.operator_name == operator_name,
+            JobModel.status.in_(["pending", "claimed"]),
+        )
+    ) is not None
+
+
+def _maybe_enqueue_scheduled_consolidation(
+    session: Session,
+    config: AppConfig,
+    actor: Actor,
+) -> None:
+    raw_policy = config.load_yaml(config.policy_config_path)
+    memory_policy = load_memory_policy(raw_policy)
+    if not memory_policy.enabled:
+        return
+    if _has_pending_cycle_independent_job(session, "pattern_consolidation"):
+        return
+    running = session.scalar(
+        select(PatternConsolidationRunModel)
+        .where(PatternConsolidationRunModel.status == "running")
+        .limit(1)
+    )
+    if running is not None:
+        return
+    has_observations = session.scalar(select(FailurePostmortemModel).limit(1)) is not None
+    has_observations = has_observations or (
+        session.scalar(select(VerificationReportModel).limit(1)) is not None
+    )
+    if not has_observations:
+        return
+
+    latest_run = session.scalar(
+        select(PatternConsolidationRunModel)
+        .order_by(PatternConsolidationRunModel.created_at.desc())
+        .limit(1)
+    )
+    cutoff = datetime.now(UTC) - timedelta(hours=memory_policy.consolidation_interval_hours)
+    latest_created_at = latest_run.created_at if latest_run is not None else None
+    if latest_created_at is not None and latest_created_at.tzinfo is None:
+        latest_created_at = latest_created_at.replace(tzinfo=UTC)
+    if latest_created_at is not None and latest_created_at > cutoff:
+        return
+
+    enqueue_job(
+        session,
+        actor,
+        None,
+        "pattern_consolidation",
+        {"trigger": "scheduled"},
     )
 
 
@@ -203,6 +268,7 @@ def run_worker_once(
             actor=actor, result=result, config=config,
         )
         mark_job_succeeded(session, job)
+        _maybe_enqueue_scheduled_consolidation(session, config, actor)
         # Record cycle-level progress for auditability.
         cycle.last_completed_operator = job.operator_name
         cycle.last_completed_job_id = job.id
@@ -276,8 +342,16 @@ def _run_cycle_independent_job(
         cycle_independent=True,
     )
     try:
-        operator(session, config, actor, None, job)
+        result = operator(session, config, actor, None, job)
+        apply_cycle_independent_operator_result(
+            session,
+            job=job,
+            actor=actor,
+            result=result,
+            config=config,
+        )
         mark_job_succeeded(session, job)
+        _maybe_enqueue_scheduled_consolidation(session, config, actor)
         log.info("operator_succeeded", job_id=job.public_id, operator=job.operator_name)
         return "job_succeeded"
     except Exception as exc:

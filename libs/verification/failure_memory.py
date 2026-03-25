@@ -136,6 +136,7 @@ def aggregate_failure_guidance_with_patterns(
     charter_id: int,
     pattern_svc: PatternRetrievalService | None = None,
     charter_problem: str = "",
+    current_context: dict[str, Any] | None = None,
 ) -> dict[str, list[dict[str, Any]]]:
     """Extend aggregate_failure_guidance with cross-charter canonical patterns.
 
@@ -152,6 +153,7 @@ def aggregate_failure_guidance_with_patterns(
         polarity="negative",
         min_confidence=0.5,
         limit=10,
+        current_context=current_context,
     )
     base["canonical_patterns"] = [
         {

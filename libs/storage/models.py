@@ -756,6 +756,7 @@ class CanonicalPatternModel(TimestampMixin, Base):
     evidence_count: Mapped[int] = mapped_column(Integer, default=0)
     confidence_score: Mapped[float] = mapped_column(Float, default=1.0, index=True)
     staleness_context: Mapped[dict[str, Any]] = mapped_column(JSON, default=dict)
+    curation_notes: Mapped[list[dict[str, Any]]] = mapped_column(JSON, default=list)
     status: Mapped[str] = mapped_column(String(32), index=True, default="active")
     last_validated_at: Mapped[datetime | None] = mapped_column(
         DateTime(timezone=True), nullable=True,

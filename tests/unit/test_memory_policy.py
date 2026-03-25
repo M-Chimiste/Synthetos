@@ -9,7 +9,7 @@ class TestMemoryPolicyConfig:
     def test_defaults(self) -> None:
         policy = MemoryPolicyConfig()
         assert policy.enabled is True
-        assert policy.consolidation_interval_cycles == 10
+        assert policy.consolidation_interval_hours == 24
         assert policy.min_cluster_size == 3
         assert policy.min_charters_for_pattern == 2
         assert policy.similarity_threshold == 0.75
@@ -34,9 +34,13 @@ class TestLoadMemoryPolicy:
         assert policy.min_cluster_size == 5
         assert policy.decay_factor == 0.8
         # Defaults preserved for unspecified fields
-        assert policy.consolidation_interval_cycles == 10
+        assert policy.consolidation_interval_hours == 24
 
     def test_load_empty_section(self) -> None:
         policy = load_memory_policy({})
         assert policy.enabled is True
         assert policy.min_cluster_size == 3
+
+    def test_load_legacy_interval_key(self) -> None:
+        policy = load_memory_policy({"memory": {"consolidation_interval_cycles": 12}})
+        assert policy.consolidation_interval_hours == 12
