@@ -2,7 +2,7 @@
 
 **Product:** ML Laboratory Co-Scientist
 **Repository:** `Synthetos`
-**Last Updated:** 2026-03-25
+**Last Updated:** 2026-03-27
 **Overall Status:** Phase D (Cross-Charter Procedural Memory) gap-closure shipped. Phases A-D are now implemented end-to-end. Phase 5.2 not started.
 
 ---
@@ -178,6 +178,18 @@
 ---
 
 ## What Was Done (Current Session)
+
+### External System Analysis: SakanaAI/AI-Scientist
+- Deep analysis of the AI-Scientist repository (https://github.com/SakanaAI/AI-Scientist) — all core modules, prompts, and architecture
+- Formal analysis document written to `project_docs/ai_scientist_analysis.md`
+- Identified 6 patterns to adopt: reflection loops, ensemble verification with bias control, iterative literature search, few-shot review exemplars, template-based experiments, Aider as code-editing adapter
+- Identified 8 anti-patterns to avoid (all already addressed by Synthetos architecture): no sandboxing, file-system-only state, inline prompts, hardcoded model routing, no evidence-before-hypothesis, unbounded context, no failure memory, hardcoded review model
+- Mapped extractable components to specific Synthetos locations (adapters/corpus/, libs/core/, libs/verification/, configs/execution/templates/, etc.)
+- Created prioritized action items across Phase 0-1 (immediate), Phase 2-3 (near-term), and Phase 4-5 (later)
+
+---
+
+## What Was Done (Previous Sessions)
 
 ### Phase C — Autonomous Experiment Loop
 - New `autonomous_loop_step` operator: re-entrant loop coordinator that runs one iteration per job invocation, commits state to DB, then enqueues execution pipeline + continuation job. Resume-safe by design.
