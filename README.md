@@ -128,6 +128,66 @@ uv run python -m apps.cli papers sync-arxiv --incremental
 uv run python -m apps.cli papers search "neural architecture search" --categories cs.LG --limit 10
 ```
 
+### Bulk Seed Script
+
+For the initial database load, `scripts/seed_arxiv_db.py` provides a dedicated bulk-seeding CLI with progress reporting, memory-aware batching, and category filtering:
+
+```bash
+# Basic usage — reads the Kaggle snapshot, embeds with gte-modernbert-base, loads into Postgres
+uv run python scripts/seed_arxiv_db.py \
+  --snapshot /path/to/arxiv-metadata-oai-snapshot.json \
+  --db-url postgresql://synthetos:synthetos@localhost:5432/synthetos
+
+# Use GPU for faster embedding generation
+uv run python scripts/seed_arxiv_db.py --device cuda
+
+# Filter to ML-related categories only
+uv run python scripts/seed_arxiv_db.py --categories cs.LG,cs.AI,stat.ML
+
+# Test with a small subset first
+uv run python scripts/seed_arxiv_db.py --max-records 10000
+
+# Dry run — count matching records without touching the database
+uv run python scripts/seed_arxiv_db.py --dry-run
+
+# Override the auto-detected embedding batch size
+uv run python scripts/seed_arxiv_db.py --embedding-batch-size 256
+```
+
+The embedding batch size is **auto-detected** by default based on available hardware:
+- **CUDA GPU:** reads VRAM via `torch.cuda.get_device_properties()`, reserves ~1 GB for model weights, budgets ~4 MB/sample (max 512)
+- **CPU/MPS:** reads system RAM via `os.sysconf`, reserves ~2 GB for overhead, budgets ~2 MB/sample (max 256)
+
+The startup banner shows detected memory and the chosen batch size:
+```
+============================================================
+arXiv Database Seed
+============================================================
+  Snapshot:          /data/arxiv-metadata-oai-snapshot.json
+  Embedding model:   Alibaba-NLP/gte-modernbert-base
+  Embedding device:  cuda
+  Detected memory:   NVIDIA RTX 4090 23.6 GB VRAM, 64.0 GB RAM
+  Batch size:        128
+  Embedding batch:   512  (auto)
+  Max records:       unlimited
+  Category filter:   none
+  Dry run:           False
+  Database:          postgresql://synthetos:***@localhost:5432/synthetos
+============================================================
+```
+
+| Option | Description |
+|--------|-------------|
+| `--snapshot / -s` | Path to arXiv metadata JSON (default: config/env) |
+| `--db-url` | PostgreSQL connection string (default: `LAB_DB_URL`) |
+| `--batch-size / -b` | Records per DB commit (default: 128) |
+| `--embedding-batch-size` | Texts per model forward pass (0 = auto-detect) |
+| `--max-records / -n` | Stop after N records (for testing) |
+| `--categories / -c` | Comma-separated arXiv category filter |
+| `--device / -d` | Torch device: `cpu`, `cuda`, `mps` |
+| `--dry-run` | Parse/count without writing to DB |
+| `--log-every` | Progress line interval (default: 1000) |
+
 ### CLI Commands
 
 ```bash
