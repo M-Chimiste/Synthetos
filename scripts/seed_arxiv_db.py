@@ -40,6 +40,89 @@ import structlog
 import typer
 
 # ---------------------------------------------------------------------------
+# Memory-aware embedding batch size
+# ---------------------------------------------------------------------------
+
+# Approximate peak memory per sample during a forward pass of
+# gte-modernbert-base (768-dim, ~150 M params, max 512 tokens).
+# Measured empirically: ~4 MB/sample on GPU, ~2 MB/sample on CPU.
+_GPU_MB_PER_SAMPLE = 4
+_CPU_MB_PER_SAMPLE = 2
+# Reserve this much memory for the model weights + OS/Postgres/other overhead.
+_GPU_RESERVE_MB = 1024  # ~1 GB for model weights + CUDA context
+_CPU_RESERVE_MB = 2048  # ~2 GB for model weights + system overhead
+# Clamp to sane range regardless of detection results.
+_MIN_BATCH = 8
+_MAX_BATCH_GPU = 512
+_MAX_BATCH_CPU = 256
+
+
+def _detect_embedding_batch_size(device: str) -> int:
+    """Pick an embedding batch size based on available VRAM or system RAM.
+
+    Returns a conservative default that should avoid OOM on most hardware.
+    The user can always override with ``--embedding-batch-size``.
+    """
+    if device.startswith("cuda"):
+        batch = _batch_from_gpu(device)
+        if batch is not None:
+            return batch
+    # CPU / MPS / GPU-detection failure → fall back to system RAM
+    return _batch_from_ram()
+
+
+def _batch_from_gpu(device: str) -> int | None:
+    """Derive batch size from CUDA VRAM. Returns None if unavailable."""
+    try:
+        import torch
+
+        if not torch.cuda.is_available():
+            return None
+        device_index = 0
+        if ":" in device:
+            try:
+                device_index = int(device.split(":")[1])
+            except (ValueError, IndexError):
+                pass
+        props = torch.cuda.get_device_properties(device_index)
+        total_mb = props.total_mem / (1024 * 1024)
+        free_mb = total_mb - _GPU_RESERVE_MB
+        batch = int(free_mb / _GPU_MB_PER_SAMPLE)
+        return max(_MIN_BATCH, min(batch, _MAX_BATCH_GPU))
+    except Exception:
+        return None
+
+
+def _batch_from_ram() -> int:
+    """Derive batch size from system RAM."""
+    total_mb = _get_system_ram_mb()
+    if total_mb is None:
+        return 32  # safe fallback
+    free_mb = total_mb - _CPU_RESERVE_MB
+    batch = int(free_mb / _CPU_MB_PER_SAMPLE)
+    return max(_MIN_BATCH, min(batch, _MAX_BATCH_CPU))
+
+
+def _get_system_ram_mb() -> int | None:
+    """Return total physical RAM in MB, or None if detection fails."""
+    try:
+        pages = os.sysconf("SC_PHYS_PAGES")
+        page_size = os.sysconf("SC_PAGE_SIZE")
+        if pages > 0 and page_size > 0:
+            return (pages * page_size) // (1024 * 1024)
+    except (ValueError, OSError, AttributeError):
+        pass
+    # macOS / other fallback
+    try:
+        import subprocess
+
+        out = subprocess.check_output(["sysctl", "-n", "hw.memsize"], text=True)
+        return int(out.strip()) // (1024 * 1024)
+    except Exception:
+        pass
+    return None
+
+# ---------------------------------------------------------------------------
 # Ensure project root is importable when running as ``python scripts/...``
 # ---------------------------------------------------------------------------
 _PROJECT_ROOT = Path(__file__).resolve().parent.parent
@@ -101,9 +184,9 @@ def seed(
         help="Records per database commit batch.",
     ),
     embedding_batch_size: int = typer.Option(
-        16,
+        0,
         "--embedding-batch-size",
-        help="Texts per embedding model forward pass.",
+        help="Texts per embedding model forward pass (0 = auto-detect from VRAM/RAM).",
     ),
     max_records: int | None = typer.Option(
         None,
@@ -159,14 +242,19 @@ def seed(
         else None
     )
 
+    # Build a memory summary for the banner
+    mem_summary = _memory_summary(device)
+
     typer.echo("=" * 60)
     typer.echo("arXiv Database Seed")
     typer.echo("=" * 60)
     typer.echo(f"  Snapshot:          {snapshot_path}")
     typer.echo(f"  Embedding model:   {config.embedding.model_id}")
     typer.echo(f"  Embedding device:  {config.embedding.device}")
+    typer.echo(f"  Detected memory:   {mem_summary}")
     typer.echo(f"  Batch size:        {batch_size}")
-    typer.echo(f"  Embedding batch:   {config.embedding.batch_size}")
+    typer.echo(f"  Embedding batch:   {config.embedding.batch_size}"
+               f"{'  (auto)' if embedding_batch_size <= 0 else ''}")
     typer.echo(f"  Max records:       {max_records or 'unlimited'}")
     typer.echo(f"  Category filter:   {', '.join(sorted(cat_filter)) if cat_filter else 'none'}")
     typer.echo(f"  Dry run:           {dry_run}")
@@ -363,6 +451,10 @@ def _build_config(
     get_config.cache_clear()
     config = get_config()
 
+    # Auto-detect batch size when the user didn't specify one (sentinel = 0)
+    if embedding_batch_size <= 0:
+        embedding_batch_size = _detect_embedding_batch_size(device)
+
     # Override embedding settings from CLI flags
     config._embedding = EmbeddingConfig(
         provider=config.embedding.provider,
@@ -373,6 +465,31 @@ def _build_config(
         normalize=config.embedding.normalize,
     )
     return config
+
+
+def _memory_summary(device: str) -> str:
+    """One-line summary of detected VRAM / RAM for the banner."""
+    parts: list[str] = []
+    if device.startswith("cuda"):
+        try:
+            import torch
+
+            if torch.cuda.is_available():
+                idx = 0
+                if ":" in device:
+                    try:
+                        idx = int(device.split(":")[1])
+                    except (ValueError, IndexError):
+                        pass
+                props = torch.cuda.get_device_properties(idx)
+                vram_gb = props.total_mem / (1024**3)
+                parts.append(f"GPU {props.name} {vram_gb:.1f} GB VRAM")
+        except Exception:
+            pass
+    ram_mb = _get_system_ram_mb()
+    if ram_mb is not None:
+        parts.append(f"{ram_mb / 1024:.1f} GB RAM")
+    return ", ".join(parts) if parts else "unknown"
 
 
 def _redact_url(url: str) -> str:
