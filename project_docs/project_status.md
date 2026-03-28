@@ -2,7 +2,7 @@
 
 **Product:** ML Laboratory Co-Scientist
 **Repository:** `Synthetos`
-**Last Updated:** 2026-03-27
+**Last Updated:** 2026-03-28
 **Overall Status:** Phase D (Cross-Charter Procedural Memory) gap-closure shipped. Phases A-D are now implemented end-to-end. Phase 5.2 not started.
 
 ---
@@ -178,6 +178,20 @@
 ---
 
 ## What Was Done (Current Session)
+
+### arXiv Database Seed Script
+- Created `scripts/seed_arxiv_db.py` — standalone CLI script for bulk-seeding the arXiv warehouse from a Kaggle snapshot
+- Reads line-delimited or JSON-array arXiv metadata files
+- Generates embeddings with `Alibaba-NLP/gte-modernbert-base` via `SentenceTransformerEmbeddingAdapter`
+- Bulk-upserts into `arxiv_papers` table in PostgreSQL with pgvector
+- Creates `ArxivSyncRunModel` tracking records for each seed operation
+- Supports: `--snapshot` path, `--db-url`, `--batch-size`, `--embedding-batch-size`, `--max-records` (for testing), `--categories` filtering, `--device` (cpu/cuda/mps), `--dry-run`, `--log-every`
+- Reuses existing `ArxivWarehouseService._canonicalize_snapshot_row()` and `_upsert_batch()` for consistency with the existing sync pipeline
+- Progress reporting with throughput stats (rec/s) and final summary
+
+---
+
+## What Was Done (Previous Session)
 
 ### External System Analysis: SakanaAI/AI-Scientist
 - Deep analysis of the AI-Scientist repository (https://github.com/SakanaAI/AI-Scientist) — all core modules, prompts, and architecture
