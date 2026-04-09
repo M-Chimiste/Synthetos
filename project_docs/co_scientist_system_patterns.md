@@ -1,10 +1,10 @@
 # System Patterns
 
-**Product:** ML Laboratory Co-Scientist  
-**Role:** Architect  
-**Status:** Working Draft v3  
-**Scope:** Local small-scale ML laboratory MVP  
-**Last Updated:** 2026-03-21
+**Product:** ML Laboratory Co-Scientist\
+**Role:** Architect\
+**Status:** Working Draft v4\
+**Scope:** Local small-scale ML laboratory with autonomy roadmap\
+**Last Updated:** 2026-04-09
 
 ---
 
@@ -12,15 +12,16 @@
 
 This document defines the canonical architecture for the ML Laboratory Co-Scientist.
 
-It answers five questions:
+It answers six questions:
 
 1. What is the system made of?
 2. How do the major parts relate to each other?
-3. What architectural patterns are required for the product to stay reliable, explainable, and extensible?
+3. What architectural patterns are required for discovery, paper analysis, experimentation, verification, and autonomy?
 4. How do `skill.md` packages fit into the architecture without turning the system into prompt spaghetti?
 5. How should external orchestrator agents use and monitor the lab without bypassing policy or provenance?
+6. How should we separate durable evidence artifacts from advisory review artifacts?
 
-This document is architecture-first. It defines shape, boundaries, data flow, and major patterns. It does not pin package versions; those belong in `tech_context.md`.
+This document is architecture-first.  It defines shape, boundaries, data flow, and major patterns.  It does not pin package versions; those belong in `tech_context.md`.
 
 It is downstream of `prd.md` and upstream of `phased_implementation_plan.md` and `tech_context.md`.
 
@@ -30,17 +31,18 @@ It is downstream of `prd.md` and upstream of `phased_implementation_plan.md` and
 
 The ML Laboratory Co-Scientist should be built as a **stateful research operating system**, not as a swarm of agents chatting in the dark.
 
-The core architectural decision is:
+The core architectural decision remains:
 
 > The system runs as typed operators over a shared `ResearchState`, backed by durable storage, explicit policy, modular skills, and an append-only audit trail.
 
-The product is organized around three loops:
+The revised product is organized around four loops:
 
-1. **Explore** — problem framing, source retrieval, literature screening, evidence synthesis.
-2. **Experiment** — hypothesis portfolio management, protocol compilation, code generation, sandboxed execution.
-3. **Verify** — deterministic checks, historical comparison, structured postmortems, report generation.
+1. **Discover** — research intake, retrieval planning, multi-source search, ranking, shortlist formation, and discovery exports.
+2. **Analyze** — selected-paper ingestion, typed paper graph construction, graph-aware QA, coverage verification, and paper analysis packets.
+3. **Experiment** — evidence synthesis, hypothesis portfolio management, protocol compilation, sandboxed execution, verification, and reporting.
+4. **Learn** — remediation, directional signal tracking, autonomous looping, failure memory, and cross-charter procedural patterns.
 
-Two horizontal layers now cut across all three loops:
+Two horizontal layers cut across all four loops:
 
 - **Skill layer** — `skill.md` packages that add modular behavior, context rules, and optional deterministic hooks.
 - **Orchestrator API layer** — a stable control-plane surface for external agents to create, monitor, and steer work.
@@ -55,11 +57,11 @@ The system must run on a single developer workstation without requiring cluster 
 
 ### 3.2 Shared state over agent conversation
 
-Durable state lives in structured records, artifacts, skill bindings, and audit events. Prompt history is not the source of truth.
+Durable state lives in structured records, artifacts, skill bindings, and audit events.  Prompt history is not the source of truth.
 
 ### 3.3 Task-scoped context over global context dumping
 
-Each operator and each skill should receive only the context needed for that task. The system must not hand every model the entire corpus, event log, and research history.
+Each operator and each skill should receive only the context needed for that task.
 
 ### 3.4 Metadata before full text
 
@@ -72,31 +74,42 @@ title + abstract together
 -> PDF only when necessary
 ```
 
-### 3.5 Deterministic core, probabilistic edge
+### 3.5 Two-depth paper analysis
 
-LLMs are useful for synthesis, ideation, critique, and report drafting. They should not own bookkeeping, policy, lineage, or state transitions.
+Paper understanding should run at two depths:
 
-### 3.6 Evidence before hypothesis, hypothesis before code
+- **automatic metadata-depth analysis** during discovery for ranking, relevance, and shortlist reasoning
+- **deeper full-text analysis** only for shortlisted papers or later research steps that require richer evidence
+
+### 3.6 Deterministic core, probabilistic edge
+
+LLMs are useful for synthesis, ideation, critique, remediation, and report drafting.  They should not own bookkeeping, policy, lineage, or state transitions.
+
+### 3.7 Evidence before hypothesis, hypothesis before code
 
 The system should move through durable intermediates instead of collapsing directly from retrieval into execution.
 
-### 3.7 Skills are modular overlays, not shadow architecture
+### 3.8 Mechanical failures are not research findings
 
-Skills should extend the system in explicit, inspectable ways. A skill may influence context assembly, prompting, heuristics, or deterministic helper logic, but it does not become a hidden second control plane.
+Dependency issues, timeouts, OOMs, parse failures, and invalid artifact outputs should route through a remediation path before they become first-class scientific reflections.
 
-### 3.8 API-first control plane
+### 3.9 Signal matters more than binary pass-fail
+
+Verification should not stop at baseline comparisons.  The architecture should support directional signal, frontier tracking, and autonomous decisioning.
+
+### 3.10 Skills are modular overlays, not shadow architecture
+
+Skills should extend the system in explicit, inspectable ways.  A skill may influence context assembly, prompting, heuristics, or deterministic helper logic, but it does not become a hidden second control plane.
+
+### 3.11 API-first control plane
 
 Everything the UI can do should flow through the control-plane API so humans and orchestrator agents share the same operational surface.
 
-### 3.9 Reproducibility is a first-class feature
+### 3.12 Review artifacts are advisory, not canonical evidence
 
-Every accepted claim must be traceable to evidence, prompts, code lineage, runtime environment, verification results, and approvals.
+Paper review outputs and LLM critiques may help prioritize attention, but canonical evidence must remain grounded in source records, paper analysis packets, verification artifacts, and durable state.
 
-### 3.10 Human control for irreversible or external actions
-
-The system may automate low-risk work, but it must expose telemetry, intervention points, and approval boundaries.
-
-### 3.11 Narrow now, extensible later
+### 3.13 Narrow now, extensible later
 
 The architecture should generalize cleanly later, but the first product is an ML laboratory.
 
@@ -117,6 +130,7 @@ The architecture should generalize cleanly later, but the first product is an ML
 |                    Control Plane and API Layer                     |
 |  - research cycle API                                              |
 |  - orchestrator API                                                |
+|  - discovery and analysis APIs                                     |
 |  - approvals and policy entrypoints                                |
 |  - report and artifact endpoints                                   |
 |  - event and telemetry streams                                     |
@@ -127,11 +141,12 @@ The architecture should generalize cleanly later, but the first product is an ML
               +--------------------+   +----------------------------+
               | Durable State      |   | Worker / Operator Runtime  |
               | - Postgres         |   | - intake                   |
-              | - pgvector         |   | - retrieval                |
-              | - jobs             |   | - literature               |
+              | - pgvector         |   | - discovery                |
+              | - jobs             |   | - paper analysis           |
               | - audit/events     |   | - ideation                 |
               | - skill registry   |   | - protocol compilation     |
-              +---------+----------+   | - execution                |
+              | - pattern memory   |   | - execution                |
+              +---------+----------+   | - remediation              |
                         |              | - verification             |
                         |              | - reporting                |
                         |              +-------------+--------------+
@@ -141,9 +156,10 @@ The architecture should generalize cleanly later, but the first product is an ML
               | Artifact Store     |   | Skill Runtime              |
               | local filesystem   |   | - skill discovery          |
               | reports, runs,     |   | - validation               |
-              | logs, literature,  |   | - binding / resolution     |
-              | patches            |   | - execution records        |
-              +---------+----------+   +-------------+--------------+
+              | discovery exports, |   | - binding / resolution     |
+              | paper graphs,      |   | - execution records        |
+              | patches            |   +-------------+--------------+
+              +---------+----------+                 |
                         |                            |
                         +-------------+--------------+
                                       |
@@ -159,9 +175,10 @@ The architecture should generalize cleanly later, but the first product is an ML
                          | External / Local Adapters   |
                          | - internal corpus           |
                          | - arXiv metadata warehouse  |
-                         | - targeted external search  |
+                         | - Semantic Scholar/OpenAlex |
                          | - HTML / PDF fetchers       |
                          | - LLM / embeddings gateway  |
+                         | - graph / chunk utilities   |
                          | - git                       |
                          | - container runtime         |
                          +-----------------------------+
@@ -190,20 +207,26 @@ That is what makes the lab debuggable.
 
 ### 5.1 Shared `ResearchState` as source of truth
 
-Each research cycle is represented by a durable `ResearchState`. Operators and skills do not own hidden state.
+Each research cycle is represented by a durable `ResearchState`.  Operators and skills do not own hidden state.
 
 A `ResearchState` should reference, at minimum:
 
 - `ResearchCharter`
 - scoped problem definition
-- source retrieval sessions
-- `PaperCard` or `SourceRecord` entities
+- discovery sessions and retrieval plans
+- `SourceRecord` / `PaperCard` entities
+- `DiscoveryView` artifacts
+- `PaperAnalysisPacket` entities
+- `PaperReviewArtifact` entities
 - `EvidenceCard` entities
 - `HypothesisCard` portfolio
 - `ExperimentSpec` queue
 - `RunRecord` history
 - `VerificationReport` history
 - `FailurePostmortem` history
+- `RemediationAction` history
+- `MetricFrontier` state
+- `CanonicalPattern` links
 - `ReportBundle` history
 - `SkillBinding` and `SkillExecutionRecord` history
 - budget state
@@ -226,8 +249,9 @@ A typical cycle might move through states like:
 ```text
 created
 -> chartered
--> retrieval_ready
--> literature_screened
+-> discovery_ready
+-> discovery_screened
+-> analysis_ready
 -> evidence_ready
 -> portfolio_ready
 -> protocol_ready
@@ -241,16 +265,19 @@ Pattern rule: an operator may only move the cycle to an allowed next state and m
 
 ### 5.3 Event-sourced audit trail
 
-The system should keep an append-only audit log of domain events. This is not full event sourcing for every read model, but it is a durable event trail for every meaningful action.
+The system should keep an append-only audit log of domain events.  This is not full event sourcing for every read model, but it is a durable event trail for every meaningful action.
 
 Example event types:
 
 - `research_charter_created`
-- `source_query_planned`
+- `discovery_query_planned`
+- `source_retrieval_executed`
 - `paper_title_abstract_screened`
 - `paper_shortlisted`
+- `paper_analysis_requested`
+- `paper_analysis_completed`
+- `paper_review_completed`
 - `fulltext_fetch_requested`
-- `fulltext_fetch_approved`
 - `evidence_extracted`
 - `skill_bound_to_operator`
 - `skill_executed`
@@ -258,8 +285,12 @@ Example event types:
 - `experiment_spec_created`
 - `run_started`
 - `run_failed`
+- `run_remediation_attempted`
 - `run_verified`
+- `directional_signal_recorded`
+- `frontier_updated`
 - `postmortem_created`
+- `canonical_pattern_updated`
 - `report_bundle_created`
 - `approval_requested`
 - `approval_recorded`
@@ -275,13 +306,15 @@ Why this pattern exists:
 
 ### 5.4 Ports and adapters / hexagonal architecture
 
-External systems must sit behind adapters. Core research logic should not know the details of a source API, the LLM provider, or the container runtime.
+External systems must sit behind adapters.  Core research logic should not know the details of a source API, the LLM provider, or the container runtime.
 
 The core should depend on interfaces such as:
 
-- `LiteratureAdapter`
+- `DiscoveryAdapter`
 - `CorpusAdapter`
 - `ExternalSearchAdapter`
+- `PaperIngestionAdapter`
+- `GraphExtractionAdapter`
 - `LLMAdapter`
 - `EmbeddingAdapter`
 - `ExecutionAdapter`
@@ -302,7 +335,8 @@ The literature subsystem must preserve the difference between:
 
 1. metadata-only evidence
 2. full-text evidence
-3. implementation details extracted from deeper reading
+3. structured analysis artifacts
+4. advisory review artifacts
 
 A paper should move through lifecycle states such as:
 
@@ -312,19 +346,92 @@ retrieved
 -> shortlisted
 -> html_fetched
 -> pdf_fetched
+-> paper_analysis_completed
 -> evidence_extracted
 ```
 
 Pattern rule: metadata screening happens by default; deeper fetch is an exception that requires a reason.
 
-Allowed reasons:
+### 5.6 Two-depth paper analysis pattern
 
-- high triage score
-- conflict resolution
-- implementation detail needed for experiment design
-- explicit human or orchestrator request allowed by policy
+Paper analysis should not be all-or-nothing.
 
-### 5.6 Portfolio search, not greedy search
+**Depth 1: metadata analysis**
+
+Runs automatically during discovery and produces lightweight reasoning over:
+
+- title
+- abstract
+- authors
+- venue
+- year
+- source
+- likely method family
+- likely contribution type
+- shortlist rationale
+
+**Depth 2: full analysis**
+
+Runs only for shortlisted papers or later research steps that require richer evidence.  Produces:
+
+- structure-aware chunks
+- typed paper graph
+- graph-aware QA index
+- reproducibility notes
+- coverage diagnostics
+- linked figures and tables
+
+Why this pattern exists:
+
+- preserves the metadata-first funnel
+- controls cost and latency
+- allows deep analysis to re-enter the loop later for validation or regeneration
+
+### 5.7 Separate-but-linked artifact pattern for analysis and review
+
+Paper analysis and paper review should be stored as separate artifact types.
+
+`` should represent:
+
+- structured extraction
+- provenance-linked graph state
+- coverage diagnostics
+- locateable evidence
+- reproducibility cues
+
+`` should represent:
+
+- strengths and weaknesses
+- questions to investigate
+- advisory critique
+- optional scores or reviewer-style judgments
+
+Pattern rules:
+
+- both artifacts may reference the same paper and chunk provenance
+- both may appear in the same report bundle
+- review artifacts must not replace analysis packets as canonical paper-grounded evidence
+
+### 5.8 Retrieval view pattern
+
+The system should expose retrieval **views** rather than an unbounded menu of ranking modes.
+
+Required v1 views:
+
+- **Stable** — precise, reproducible, confidence-leaning retrieval
+- **Discovery** — novelty- and diversity-leaning retrieval for adjacent work and overlooked ideas
+
+Optional internal preset:
+
+- **Balanced** may exist as an internal or API-only preset in v1 but need not be a mandatory user-facing mode
+
+Why this pattern exists:
+
+- simplifies UX and testing
+- preserves two clearly distinct researcher workflows
+- avoids early tuning sprawl
+
+### 5.9 Portfolio search, not greedy search
 
 The system should maintain a ranked portfolio of hypotheses and experiment specs rather than following one proposal to completion before considering alternatives.
 
@@ -333,18 +440,10 @@ This means:
 - multiple hypotheses can survive review
 - multiple experiment specs can be queued
 - failure memory informs future ranking
+- directional signal informs future ranking
 - the scheduler can pick the next experiment by expected value, not creation order
 
-Suggested ranking factors:
-
-- expected information gain
-- implementation feasibility
-- estimated runtime and cost
-- novelty relative to internal history and prior literature
-- risk of invalid evaluation
-- fit to the charter
-
-### 5.7 Skill package pattern
+### 5.10 Skill package pattern
 
 A skill is a modular behavior pack rooted in a `skill.md` file.
 
@@ -366,10 +465,10 @@ skills/
   literature/
     title_abstract_triage/
       skill.md
-      hooks.py                # optional
-      fixtures/               # optional
-      tests/                  # optional
-      schemas/                # optional
+      hooks.py
+      fixtures/
+      tests/
+      schemas/
 ```
 
 Pattern rules:
@@ -380,14 +479,24 @@ Pattern rules:
 - skills may not bypass policy, approvals, or durable state writes
 - every skill execution must emit a `SkillExecutionRecord`
 
-Why this pattern exists:
+### 5.11 Skill trust tier pattern
 
-- allows custom and modular behavior
-- keeps domain-specific instructions inspectable and reusable
-- prevents skill logic from dissolving into random prompts in application code
-- makes external agent compatibility easier
+The first local release should use trust tiers rather than mandatory signing.
 
-### 5.8 Ephemeral workspaces with durable lineage
+Suggested trust tiers:
+
+- **first-party trusted** — enabled by default
+- **user-local trusted** — explicit local opt-in
+- **third-party untrusted** — manifest-visible but blocked from higher-risk behavior until approved
+
+Higher-risk capabilities should require stronger trust, especially:
+
+- Python hooks
+- filesystem write access beyond allowed artifact paths
+- network access
+- run-control mutations
+
+### 5.12 Ephemeral workspaces with durable lineage
 
 Every proposed experiment should execute in its own isolated workspace, ideally backed by a git worktree or equivalent branch directory.
 
@@ -402,8 +511,9 @@ Each run should capture:
 - seeds
 - dataset hash or cache reference
 - produced artifacts and metrics
+- remediation lineage if applicable
 
-### 5.9 Containerized execution sandbox
+### 5.13 Containerized execution sandbox
 
 Generated or modified code must not execute directly on the host environment.
 
@@ -418,7 +528,30 @@ The execution pattern for the MVP should be:
 - allow GPU passthrough only through explicit runtime policy
 - capture stdout, stderr, exit code, and resource usage
 
-### 5.10 Deterministic verification before promotion
+### 5.14 Auto-remediation pattern
+
+Mechanical failures should route through a remediation subsystem before full postmortem handling.
+
+The remediation pattern should be:
+
+```text
+run failure
+-> deterministic failure classification
+-> focused LLM remediation when class is known
+-> broader debug remediation when needed
+-> bounded retry budget
+-> success updates run lineage
+-> exhaustion falls through to postmortem
+```
+
+Pattern rules:
+
+- remediation actions are durable artifacts
+- remediation is policy-gated
+- remediation history must be visible in reports and run detail
+- successful remediation should not count the same way as an unrecoverable research failure
+
+### 5.15 Deterministic verification before promotion
 
 Verification should be its own subsystem, not an optional postscript.
 
@@ -433,9 +566,77 @@ Before a run is promoted from promising to accepted, the system should perform d
 - output contract validation
 - postmortem creation on failure or rejection
 
-LLMs may summarize or interpret verification results, but they do not replace the verification itself.
+### 5.16 Directional signal pattern
 
-### 5.11 Policy engine for budgets and approvals
+After core verification, the system should classify the research direction of a successful run.
+
+Suggested signals:
+
+- `advancing`
+- `stalled`
+- `regressing`
+- `noisy`
+- `breakthrough`
+
+Signal classification should use:
+
+- current metric delta
+- recent comparable run history
+- significance thresholds
+- constraint metric checks
+- frontier comparison
+
+Why this pattern exists:
+
+- enables better next-step decisions
+- supports autonomy without blind looping
+- turns repeated experimentation into a research trajectory rather than isolated runs
+
+### 5.17 Frontier tracking pattern
+
+The system should maintain a metric frontier per charter and hypothesis line.
+
+A frontier record should capture:
+
+- best-known metric value
+- run that achieved it
+- direction of improvement
+- runs since last improvement
+- constraint violations if relevant
+
+This record powers:
+
+- stall detection
+- breakthrough detection
+- completion summaries
+- autonomy decisions
+
+### 5.18 Autonomous loop pattern
+
+When autonomous mode is enabled, the system should operate as a budget-aware re-entrant loop rather than a one-shot chain.
+
+Pattern:
+
+```text
+pick hypothesis
+-> compile or update experiment spec
+-> execute
+-> remediate if mechanical failure
+-> verify
+-> classify directional signal
+-> continue / vary / pivot / regenerate
+-> stop on budget or termination condition
+-> emit completion report
+```
+
+Pattern rules:
+
+- budgets must be enforced before each costly action
+- repetition detection should prevent useless loops
+- context summarization should prevent prompt overflow
+- the loop should always end with a readable completion artifact
+
+### 5.19 Policy engine for budgets and approvals
 
 A separate policy layer should decide whether an operator, skill, or orchestrator action may proceed.
 
@@ -443,14 +644,36 @@ The policy layer must handle:
 
 - compute budget ceilings
 - full-text read ceilings
+- reranker budget controls
 - allowed hardware profiles
 - network access permissions
 - long-running job thresholds
 - model usage policy
+- remediation fix permissions
 - skill capability policy
+- autonomy mode
+- checkpoint review behavior
 - orchestrator permission scopes
 
-### 5.12 External orchestrator API pattern
+### 5.20 Human-gated checkpoint pattern
+
+The first shipped release should support configurable checkpoint gates.
+
+Recommended gate types:
+
+- after every run
+- after every N runs
+- before cost or hardware escalation
+- before result promotion
+- before network-enabled execution
+
+This allows:
+
+- minimal gating in full automation mode
+- tighter cost control when desired
+- safer rollout of autonomy without redesigning the core
+
+### 5.21 External orchestrator API pattern
 
 External orchestrators must interact with the lab through the control-plane API, not by writing directly to the database or manipulating workspaces.
 
@@ -461,7 +684,7 @@ The API pattern should be:
 - stable JSON payloads and ids
 - explicit actor identity for every action
 - policy checks before side effects
-- artifact and report retrieval via signed or internal local paths exposed through the API
+- artifact and report retrieval through API-managed handles
 
 Core orchestrator actions should include:
 
@@ -473,19 +696,15 @@ Core orchestrator actions should include:
 - pause, cancel, or resume allowed work
 - approve or reject gated actions where policy allows
 
-Why this pattern exists:
-
-- makes the lab usable by higher-level agent systems
-- avoids brittle UI automation
-- keeps all control and monitoring in one durable surface
-
-### 5.13 Derived graph views, not a graph database in v1
+### 5.22 Derived graph views, not a graph database in v1
 
 The system should store core entities in relational tables and derive graph views when needed.
 
 Examples of graph views:
 
 - citation relationships
+- discovery clusters
+- paper-analysis mind graphs
 - evidence-to-hypothesis links
 - hypothesis-to-experiment lineage
 - repeated method families
@@ -499,23 +718,23 @@ Examples of graph views:
 
 This section defines the canonical architectural stack shape for the MVP.
 
-| Area | Default choice | Why this is the default |
-|---|---|---|
-| Core language | Python | Best fit for ML workflows, orchestration, adapters, and scientific tooling |
-| API / control plane | FastAPI-style Python service | Good typed contracts, async support, OpenAPI generation, local simplicity |
-| Durable state | PostgreSQL | Strong transactional model, row locking, JSON, and good fit for queue + state |
-| Vector retrieval | pgvector in PostgreSQL | Keeps vector search close to canonical state in v1 |
-| Full-text / lexical retrieval | PostgreSQL full-text search | Good enough for metadata-first paper search in v1 |
-| Artifact store | Local filesystem | Fits local-first deployment and keeps artifacts inspectable |
-| Job queue | Database-backed queue | Simpler than a separate queue service in a single-user MVP |
-| Execution isolation | Docker or Podman containers | Practical local sandbox for generated code |
-| Workspace isolation | Git worktrees | Clean per-experiment code isolation with clear lineage |
-| UI surface | Web UI plus CLI | We want a real phase-1 UI, not CLI only |
-| LLM access | Provider-agnostic gateway adapter | Prevents coupling to a single model vendor |
-| Embeddings | Provider-agnostic embedding adapter | Allows hosted and local options |
-| Skill packages | `skill.md` rooted packages | Human-readable, coding-agent-friendly extension surface |
-| Orchestrator integration | REST + SSE over the same control plane | Headless-first, simple, observable, and easy to test |
-| Reporting | Markdown rendered in the UI | Easy to diff, store, and inspect |
+| Area                          | Default choice                                                       | Why this is the default                                                       |
+| ----------------------------- | -------------------------------------------------------------------- | ----------------------------------------------------------------------------- |
+| Core language                 | Python                                                               | Best fit for ML workflows, orchestration, adapters, and scientific tooling    |
+| API / control plane           | FastAPI-style Python service                                         | Good typed contracts, async support, OpenAPI generation, local simplicity     |
+| Durable state                 | PostgreSQL                                                           | Strong transactional model, row locking, JSON, and good fit for queue + state |
+| Vector retrieval              | pgvector in PostgreSQL                                               | Keeps vector search close to canonical state in v1                            |
+| Full-text / lexical retrieval | PostgreSQL full-text search plus local lexical indexing where useful | Good fit for metadata-first paper search in v1                                |
+| Artifact store                | Local filesystem                                                     | Fits local-first deployment and keeps artifacts inspectable                   |
+| Job queue                     | Database-backed queue                                                | Simpler than a separate queue service in a single-user MVP                    |
+| Execution isolation           | Docker or Podman containers                                          | Practical local sandbox for generated code                                    |
+| Workspace isolation           | Git worktrees                                                        | Clean per-experiment code isolation with clear lineage                        |
+| UI surface                    | Web UI plus CLI                                                      | We want a real phase-1 UI, not CLI only                                       |
+| LLM access                    | Provider-agnostic gateway adapter                                    | Prevents coupling to a single model vendor                                    |
+| Embeddings                    | Provider-agnostic embedding adapter                                  | Allows hosted and local options                                               |
+| Skill packages                | `skill.md` rooted packages                                           | Human-readable, coding-agent-friendly extension surface                       |
+| Orchestrator integration      | REST + SSE over the same control plane                               | Headless-first, simple, observable, and easy to test                          |
+| Reporting                     | Markdown rendered in the UI                                          | Easy to diff, store, and inspect                                              |
 
 ---
 
@@ -536,7 +755,7 @@ Responsibility:
 Responsibility:
 
 - persist all durable entities and relationships
-- support retrieval over sources, evidence, hypotheses, runs, notes, reports, and failures
+- support retrieval over sources, discovery state, evidence, hypotheses, runs, notes, reports, and failures
 - maintain audit history and job records
 
 Primary record types:
@@ -545,12 +764,19 @@ Primary record types:
 - `ResearchState`
 - `ProblemProfile`
 - `PaperCard`
+- `DiscoverySession`
+- `DiscoveryView`
+- `PaperAnalysisPacket`
+- `PaperReviewArtifact`
 - `EvidenceCard`
 - `HypothesisCard`
 - `ExperimentSpec`
 - `RunRecord`
 - `VerificationReport`
 - `FailurePostmortem`
+- `RemediationAction`
+- `MetricFrontier`
+- `CanonicalPattern`
 - `ReportBundle`
 - `SkillDefinition`
 - `SkillBinding`
@@ -559,16 +785,29 @@ Primary record types:
 - `DomainEvent`
 - `OrchestratorClient`
 
-### 7.3 Source Intake
+### 7.3 Discovery
 
 Responsibility:
 
 - retrieve internal corpus metadata and selected content
 - maintain an arXiv metadata warehouse
 - perform targeted external retrieval
+- deduplicate and rank results
+- maintain explicit discovery state and outputs
 - fetch HTML or PDF only when explicitly escalated
 
-### 7.4 Literature Intelligence
+### 7.4 Paper Analysis
+
+Responsibility:
+
+- ingest selected papers
+- create structure-aware chunks
+- extract typed graph nodes and relations
+- support graph-aware QA and locate workflows
+- compute coverage verification
+- emit paper analysis packets and optional advisory review artifacts
+
+### 7.5 Literature Intelligence
 
 Responsibility:
 
@@ -578,7 +817,7 @@ Responsibility:
 - extract structured evidence from metadata or deeper reads
 - preserve provenance and escalation rationale
 
-### 7.5 Ideation and Review
+### 7.6 Ideation and Review
 
 Responsibility:
 
@@ -586,7 +825,7 @@ Responsibility:
 - critique for novelty, weakness, redundancy, and likely failure modes
 - rank the portfolio before protocol compilation
 
-### 7.6 Protocol Compiler
+### 7.7 Protocol Compiler
 
 Responsibility:
 
@@ -594,7 +833,7 @@ Responsibility:
 - define controls, baseline, metric, artifacts, stop conditions, and expected outputs
 - reject under-specified ideas before code generation begins
 
-### 7.7 Skill Registry and Runtime
+### 7.8 Skill Registry and Runtime
 
 Responsibility:
 
@@ -604,9 +843,7 @@ Responsibility:
 - record skill activation and execution history
 - expose skill catalog and status through UI and API
 
-Pattern note: the skill runtime is part of the core product surface. It is not an afterthought bolted onto prompts.
-
-### 7.8 Build and Execution Lab
+### 7.9 Build and Execution Lab
 
 Responsibility:
 
@@ -616,7 +853,17 @@ Responsibility:
 - execute runs within policy limits
 - capture outputs into `RunRecord`
 
-### 7.9 Verification
+### 7.10 Remediation
+
+Responsibility:
+
+- classify mechanical failures
+- assemble remediation context
+- apply bounded fix attempts
+- update run lineage and retry plans
+- hand off unresolved failures to postmortem generation
+
+### 7.11 Verification and Signal
 
 Responsibility:
 
@@ -624,17 +871,27 @@ Responsibility:
 - rerun or replay where required
 - run leakage and evaluation checks
 - create `VerificationReport`
+- classify directional signal
+- maintain frontier state
 - create `FailurePostmortem` records when needed
 
-### 7.10 Reporting and Lab Notebook
+### 7.12 Reporting and Lab Notebook
 
 Responsibility:
 
 - generate concise human-readable summaries
 - produce markdown report bundles per cycle
-- summarize literature screening, selected papers, experiments, verification, and open questions
+- summarize discovery, selected papers, experiments, verification, and open questions
 
-### 7.11 Approvals and Policy
+### 7.13 Pattern Memory
+
+Responsibility:
+
+- consolidate reusable positive and negative patterns across charters
+- preserve evidence counts and staleness context
+- expose patterns for retrieval into future operators
+
+### 7.14 Approvals and Policy
 
 Responsibility:
 
@@ -643,7 +900,7 @@ Responsibility:
 - persist approval history
 - expose pending approvals to the user and, where permitted, orchestrators
 
-### 7.12 Orchestrator Gateway
+### 7.15 Orchestrator Gateway
 
 Responsibility:
 
@@ -663,15 +920,25 @@ Pattern note: in v1 this is a logical boundary inside the control-plane service,
 
 ```text
 SourceRecord / PaperCard
-    -> EvidenceCard
-        -> HypothesisCard
-            -> ExperimentSpec
-                -> RunRecord
-                    -> VerificationReport
-                        -> ReportBundle / AcceptedFinding
+    -> DiscoveryView
+    -> PaperAnalysisPacket
+        -> EvidenceCard
+            -> HypothesisCard
+                -> ExperimentSpec
+                    -> RunRecord
+                        -> VerificationReport
+                            -> ReportBundle / AcceptedFinding
 ```
 
-### 8.2 Skill and orchestration lineage
+### 8.2 Advisory review lineage
+
+```text
+PaperCard
+    -> PaperReviewArtifact
+        -> ReportBundle
+```
+
+### 8.3 Skill and orchestration lineage
 
 ```text
 SkillDefinition
@@ -685,13 +952,26 @@ OrchestratorClient
             -> DomainEvent / ApprovalEvent / Job
 ```
 
-### 8.3 Important lineage rules
+### 8.4 Learning lineage
+
+```text
+RunRecord
+    -> RemediationAction
+    -> VerificationReport
+        -> DirectionalSignal
+        -> MetricFrontier
+        -> FailurePostmortem
+            -> CanonicalPattern
+```
+
+### 8.5 Important lineage rules
 
 - A `HypothesisCard` must cite one or more `EvidenceCard`s.
 - An `ExperimentSpec` must reference the `HypothesisCard` it operationalizes.
 - A `RunRecord` must reference the exact `ExperimentSpec`, workspace lineage, and bound skills used.
 - A promoted claim must reference at least one `VerificationReport`.
 - A `FailurePostmortem` must reference the failed or rejected run and describe classification and next-step insight.
+- A `RemediationAction` must reference the run, attempt number, fix type, and resulting retry.
 - A `SkillExecutionRecord` must reference the skill version, operator, research cycle, and outputs it influenced.
 - Every orchestrator action must be attributable to an actor identity and appear in the audit trail.
 
@@ -739,23 +1019,38 @@ problem statement
 -> baseline planning
 ```
 
-### 10.2 Literature triage pattern
+### 10.2 Discovery pattern
 
 ```text
 problem context + baseline context
 -> query planning
--> arXiv metadata retrieval
 -> internal corpus retrieval
+-> arXiv metadata retrieval
 -> targeted external retrieval
 -> dedupe
 -> title + abstract screening together
 -> shortlist ranking
+-> stable or discovery view generation
 -> optional HTML fetch with reason
 -> optional PDF fetch with reason
--> evidence extraction
+-> discovery exports
 ```
 
-### 10.3 Skill selection and execution pattern
+### 10.3 Two-depth paper analysis pattern
+
+```text
+automatic metadata analysis during discovery
+-> shortlisted paper selected
+-> ingest full text when justified
+-> structure-aware chunking
+-> typed graph extraction
+-> graph-aware QA support
+-> coverage verification
+-> paper analysis packet
+-> optional advisory paper review artifact
+```
+
+### 10.4 Skill selection and execution pattern
 
 ```text
 operator role + research state + policy
@@ -767,9 +1062,9 @@ operator role + research state + policy
 -> operator output
 ```
 
-Important rule: no skill executes as invisible prompt glue. It must leave lineage.
+Important rule: no skill executes as invisible prompt glue.  It must leave lineage.
 
-### 10.4 Hypothesis to experiment pattern
+### 10.5 Hypothesis to experiment pattern
 
 ```text
 evidence cards
@@ -785,19 +1080,48 @@ evidence cards
 
 Important rule: no direct “paper insight -> code run” shortcut should bypass `ExperimentSpec`.
 
-### 10.5 Verification and promotion pattern
+### 10.6 Remediation and retry pattern
+
+```text
+failed run
+-> classify failure
+-> choose focused or broad remediation
+-> apply permitted fix
+-> restage if needed
+-> retry within budget
+-> hand off to postmortem if exhausted
+```
+
+### 10.7 Verification and promotion pattern
 
 ```text
 completed run
+-> self-critic or quick pre-check where configured
 -> baseline comparison
 -> historical comparison
 -> metric sanity checks
 -> rerun or replay checks
 -> verification report
+-> directional signal classification
+-> frontier update
 -> promoted finding or failure postmortem
 ```
 
-### 10.6 External orchestrator control pattern
+### 10.8 Autonomous loop pattern
+
+```text
+pick hypothesis
+-> compile or update experiment spec
+-> execute
+-> remediate if needed
+-> verify
+-> classify signal
+-> continue / vary / pivot / regenerate
+-> stop on budget or policy boundary
+-> emit completion report
+```
+
+### 10.9 External orchestrator control pattern
 
 ```text
 orchestrator authenticates
@@ -828,9 +1152,11 @@ The system of record should be:
 ```text
 /data
   /artifacts
+    /discovery
+    /paper_analysis
+    /paper_reviews
     /runs
     /reports
-    /literature
     /patches
     /postmortems
   /cache
@@ -850,6 +1176,9 @@ Artifacts should be treated as durable evidence, not temporary scratch by defaul
 
 This includes:
 
+- discovery exports
+- paper analysis packets
+- paper review artifacts
 - run logs
 - metric snapshots
 - generated patches
@@ -857,6 +1186,7 @@ This includes:
 - extracted evidence summaries
 - rendered reports
 - failure postmortems
+- remediation histories
 - skill execution diagnostics
 
 ---
@@ -866,8 +1196,9 @@ This includes:
 The retrieval system should combine:
 
 - lexical search over title, abstract, authors, tags, notes, and postmortems
-- vector search over semantic embeddings
-- structured filters such as source type, recency, problem relevance, and read state
+- vector search over semantic embeddings where useful
+- structured filters such as source type, recency, relevance, and read state
+- explicit retrieval views for stable and discovery modes
 
 At minimum there should be separate logical search views for:
 
@@ -876,6 +1207,7 @@ At minimum there should be separate logical search views for:
 - internal corpus documents
 - historical run reports and failure memory
 - skill catalog and examples
+- canonical pattern memory
 
 ---
 
@@ -903,11 +1235,12 @@ create isolated worktree
 -> optionally keep patch for review
 ```
 
-Run failures should be classified rather than lumped together. Examples:
+Run failures should be classified rather than lumped together.  Examples:
 
 - build failure
 - dependency failure
 - OOM or resource limit
+- timeout
 - runtime exception
 - metric parse failure
 - invalid artifact output
@@ -926,9 +1259,10 @@ A promoted result should generally have:
 - confirmation that the intended split or evaluation surface was used
 - confirmation that no configured leakage or contamination signals were detected
 - required artifacts present and parseable
-- a rerun or replay note
+- a rerun or replay note where policy requires it
 - a reviewer summary describing whether the improvement is robust, tentative, or likely spurious
 - a postmortem if the result is rejected or inconclusive
+- a directional signal and frontier update if the run is valid
 
 ---
 
@@ -953,7 +1287,8 @@ The product should feel like a researcher’s control tower, not a black box.
 The user should be able to clearly review and approve or reject:
 
 - deeper reads beyond budget
-- expensive or long-running experiments
+- expensive or long-running experiments when configured
+- profile escalations and resource step-ups
 - network-enabled runs
 - promotion of headline claims
 - sensitive orchestrator-issued actions where policy requires confirmation
@@ -965,8 +1300,9 @@ Every surfaced object should answer “why is this here?”
 Examples:
 
 - a shortlisted paper should show title/abstract score and escalation reason
+- a paper-analysis node should show the source chunk and confidence
 - a hypothesis should show supporting evidence and critique summary
-- a promoted run should show baseline and historical comparison
+- a promoted run should show baseline, historical, and frontier comparison
 - a skill should show when and why it was bound to an operator
 - an orchestrator action should show actor, scope, and result
 
@@ -988,31 +1324,39 @@ repo/
     core/
     orchestration/
     storage/
-    retrieval/
+    discovery/
+    analysis/
     literature/
     ideation/
     protocols/
     execution/
+    remediation/
     verification/
     reporting/
+    memory/
     skills/
     adapters/
       arxiv/
       corpus/
       external_search/
+      paper_ingestion/
+      graph/
       llm/
       embeddings/
       git/
       container/
   prompts/
     planning/
-    literature/
+    discovery/
+    analysis/
     ideation/
     coding/
+    remediation/
     verification/
     reporting/
   skills/
     literature/
+    analysis/
     ideation/
     coding/
     verification/
@@ -1053,12 +1397,17 @@ Structure rules:
 - **ADR-004** — Use a database-backed job queue instead of a separate workflow engine in v1.
 - **ADR-005** — Treat title + abstract together as the default literature surface.
 - **ADR-006** — Prefer HTML or machine-readable full text before PDF when escalating paper reads.
-- **ADR-007** — Support modular skill packages rooted in `skill.md`.
-- **ADR-008** — Expose a versioned REST + SSE orchestrator API from the control plane.
-- **ADR-009** — Execute generated code inside isolated containers and separate workspaces.
-- **ADR-010** — Baseline first, always.
-- **ADR-011** — Verification is separate from generation.
-- **ADR-012** — Keep a real phase-1 UI instead of CLI only.
+- **ADR-007** — Use two-depth paper analysis: metadata by default, full analysis by escalation.
+- **ADR-008** — Store paper analysis packets separately from advisory paper review artifacts.
+- **ADR-009** — Expose stable and discovery retrieval views as the required v1 retrieval modes.
+- **ADR-010** — Support modular skill packages rooted in `skill.md`.
+- **ADR-011** — Use trust tiers rather than mandatory skill signing in the first local release.
+- **ADR-012** — Expose a versioned REST + SSE orchestrator API from the control plane.
+- **ADR-013** — Execute generated code inside isolated containers and separate workspaces.
+- **ADR-014** — Route mechanical failures through auto-remediation before full postmortem.
+- **ADR-015** — Verification is separate from generation.
+- **ADR-016** — Directional signal and frontier tracking are first-class architectural concepts.
+- **ADR-017** — Keep a real phase-1 UI instead of CLI only.
 
 ---
 
@@ -1074,7 +1423,8 @@ The following approaches should be considered out of scope or explicitly rejecte
 6. Hiding custom behavior in undocumented ad hoc prompt fragments instead of skills, configs, or code.
 7. Letting external orchestrators write directly to the database or execution runtime.
 8. Jumping from hypothesis directly to code patch without protocolization.
-9. Using notebooks as the product backbone.
+9. Treating advisory paper review scores as trusted acceptance signals.
+10. Using notebooks as the product backbone.
 
 ---
 
@@ -1086,19 +1436,24 @@ The following approaches should be considered out of scope or explicitly rejecte
 - scoped research problems
 - internal corpus retrieval
 - arXiv metadata warehouse and literature triage
+- stable and discovery retrieval modes
+- selected paper analysis and graph-aware QA
 - skill registry and first-party skills
 - orchestrator API and event stream
 - experiment execution and verification loop
 
-### Phase 2 — Better memory, richer UI, broader skill catalog
+### Phase 2 — Better memory and autonomy
 
-- stronger dashboard and timeline views
-- richer historical comparison
-- more robust skill packaging and validation
-- broader first-party skill library
+- auto-remediation
+- directional signal and frontier views
+- richer dashboard and timeline views
+- checkpoint gating and configurable autonomy
+- more robust skill packaging and trust controls
 
-### Phase 3 — Optional scale-up
+### Phase 3 — Cross-charter learning and optional scale-up
 
+- canonical pattern memory
+- stronger autonomy loops
 - optional remote workers
 - object storage replacement for filesystem artifacts
 - more advanced retrieval and ranking models
@@ -1107,16 +1462,75 @@ The following approaches should be considered out of scope or explicitly rejecte
 
 ---
 
-## 20. Open Questions
+## 20. Resolved Follow-up Decisions
 
-- Should third-party skills require signing or trust prompts in the first local release?
-- Should orchestrator approvals ever count as equivalent to a human approval for specific scopes?
-- When should we add WebSocket support in addition to SSE, if ever?
-- Which parts of failure reflection should be standardized in shared core versus left to skill packages?
-- How much skill-specific deterministic code should be allowed before a behavior should become part of the shared core?
+### 20.1 When should paper review artifacts be generated?
 
----
+Paper review artifacts should be generated **only for papers that have been escalated to full-text analysis**.
+
+Recommended rule:
+
+- metadata-only discovery does **not** generate review artifacts
+- once a paper is pulled into full-text analysis, the system may generate:
+  - a `PaperAnalysisPacket` as the canonical structural artifact
+  - a linked `PaperReviewArtifact` as the advisory evaluative artifact
+
+This keeps review generation aligned with deeper evidence and avoids spending model budget on lightly screened papers.
+
+### 20.2 When should reranking be automatic versus explicitly user-controlled?
+
+Reranking should be **automatic by default**, but always **budget-aware and gracefully degradable**.
+
+Recommended v1 behavior:
+
+- in **Stable** mode, automatically rerank the top candidate set when the reranker is available and the policy budget allows it
+- in **Discovery** mode, also allow automatic reranking, but keep diversity and novelty signals in the final ordering so reranking does not collapse the result set into near-duplicates
+- if the reranker is unavailable, too slow, or outside the active cost/latency budget, the system should fall back automatically to first-stage ranking without blocking the workflow
+- user control should exist as an **override**, not as the primary way the system operates
+
+Why this is the best v1 stance:
+
+- the user should not have to micromanage retrieval quality knobs for ordinary use
+- automatic reranking improves default quality when affordable
+- graceful fallback prevents the system from making retrieval fragile or too expensive
+
+### 20.3 How much human verification should be required before a canonical pattern can influence autonomous planning?
+
+Use a **light-touch default**.
+
+Recommended stance:
+
+- human verification should **not** be required before a canonical pattern can begin influencing autonomous planning
+- patterns may influence planning automatically once they meet minimum internal thresholds such as:
+  - sufficient supporting evidence count
+  - acceptable confidence
+  - compatible environment or staleness context
+- human verification should remain optional for:
+  - promoting a pattern to a higher-trust tier
+  - allowing a pattern to influence higher-risk or higher-cost actions
+  - curating stale or disputed patterns
+
+This matches the experimental goal: test how far useful automation can go without putting a heavy human bottleneck back into the loop.
+
+### 20.4 When should checkpoint gates default on versus off for new users?
+
+Checkpoint gates should be **off by default unless enabled by configuration or profile**.
+
+Recommended rule:
+
+- checkpoint behavior is determined by policy configuration, user preferences, or chosen operating profile
+- the architecture should not hardcode checkpoint gates as globally on for all new users
+- onboarding profiles may still choose safer defaults, but the core system should treat checkpointing as a configurable behavior
+
+This keeps the autonomy layer clean and consistent: gating is a policy decision, not an architectural assumption.
 
 ## 21. Recommended Next Step
 
-The next document should be `phased_implementation_plan.md`, which turns this architecture into a build sequence.
+The next document should be `phased_implementation_plan.md`, which turns this revised architecture into a build sequence covering:
+
+- discovery and paper-analysis vertical slices
+- automatic reranking and graceful retrieval fallback
+- remediation and directional signal milestones
+- autonomous loop checkpointing and budget control
+- canonical pattern thresholds, trust tiers, and orchestrator policy surfaces
+
