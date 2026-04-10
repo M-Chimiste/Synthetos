@@ -283,7 +283,7 @@ Responsibilities:
 
 Responsibilities:
 
-- render cycle dashboard
+- render charter and cycle dashboards
 - render discovery views and reports
 - render paper analysis packets and review artifacts
 - show run telemetry, frontier state, and approvals
@@ -295,7 +295,7 @@ Responsibilities:
 
 - local developer control
 - debugging and fixture workflows
-- direct cycle creation and replay helpers
+- direct charter and cycle creation plus replay helpers
 - skill validation commands
 - pattern inspection and export helpers
 
@@ -341,7 +341,7 @@ In v1 this can be a library/module plus scheduled worker jobs, not a separate se
 
 PostgreSQL is the system of record for:
 
-- research cycles and state transitions
+- research charters, research cycles, and state transitions
 - jobs and job claims
 - domain events and audit history
 - papers and source records
@@ -1280,7 +1280,7 @@ The first implementation sequence should be:
 3. worker runtime + job queue + event stream
 4. minimal web UI
 5. skill loader + validation + catalog endpoints
-6. research cycle creation and discovery pipeline
+6. research charter creation, cycle creation, and discovery pipeline
 7. arXiv metadata warehouse and external source adapters
 8. stable and discovery retrieval views
 9. automatic reranking with graceful fallback
