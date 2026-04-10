@@ -97,7 +97,7 @@ The canonical local stack for the first implementation is:
 - **Telemetry stream:** domain events persisted in Postgres and exposed through SSE first
 - **CLI:** Typer-based Python CLI
 - **Embeddings:** gte-modernbert (768 dimensions)
-- **Full-text extraction:** Marker (github.com/datalab-to/marker) for shortlisted papers
+- **Full-text extraction:** Docling for shortlisted papers
 
 ### 3.4 Database stance
 
@@ -431,7 +431,7 @@ Technical stance:
 - pre-computed embeddings already exist for the full corpus
 - support incremental sync from a bulk metadata harvester for new papers
 - when a paper is shortlisted for full-text analysis, try HTML first
-- if HTML is unavailable or low quality, download the PDF and process it with Marker (github.com/datalab-to/marker)
+- if HTML is unavailable or low quality, download the PDF and process it with Docling
 - normalize either full-text path into the same internal content representation for downstream chunking and analysis
 - treat HTML fetch and PDF fetch as separate escalation operations with explicit provenance
 

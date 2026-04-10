@@ -26,7 +26,7 @@ Two horizontal layers: **Skill system** (optional add-on tools/context that augm
 - **Operator-over-shared-state**, not agent messaging. Typed operators read/write a shared `ResearchState` -- no hidden prompt history as memory.
 - **ResearchCharter** = the project definition. **ResearchCycle** = one bounded research loop within a charter. **ResearchState** = logical aggregate of everything that has occurred within a charter across its cycles (not a single DB row).
 - **One active charter at a time** due to GPU constraints. Users can swap between charters but not run them concurrently.
-- **Metadata-first literature triage**: title+abstract screening before full text. Shortlisted papers use an HTML-first full-text path, with PDF + [Marker](https://github.com/datalab-to/marker) as fallback when HTML is unavailable or low quality.
+- **Metadata-first literature triage**: title+abstract screening before full text. Shortlisted papers use an HTML-first full-text path, with PDF + Docling as fallback when HTML is unavailable or low quality.
 - **Task-scoped context assembly**: each operator gets a scoped `ContextPack` with token budget, allowed sources, deterministic ordering.
 - **Portfolio search**: ranked hypothesis portfolio, not greedy single-path.
 - **Hexagonal architecture**: all external systems behind adapter interfaces. Core domain code must not depend on vendor SDKs.
@@ -78,7 +78,7 @@ tests/          -- unit/ integration/ e2e/ fixtures/
 
 ## Internal Corpus
 
-The "internal corpus" is a seeded local arXiv metadata mirror. The arXiv metadata corpus is already downloaded and embedded (gte-modernbert, 768-dim), then incrementally updated through harvesting. Full text is fetched only for shortlisted papers, using HTML first and PDF + [Marker](https://github.com/datalab-to/marker) as fallback.
+The "internal corpus" is a seeded local arXiv metadata mirror. The arXiv metadata corpus is already downloaded and embedded (gte-modernbert, 768-dim), then incrementally updated through harvesting. Full text is fetched only for shortlisted papers, using HTML first and PDF + Docling as fallback.
 
 ## Development Commands (Planned)
 

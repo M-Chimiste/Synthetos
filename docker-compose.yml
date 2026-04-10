@@ -1,0 +1,21 @@
+services:
+  postgres:
+    image: pgvector/pgvector:pg17
+    container_name: synthetos-postgres
+    environment:
+      POSTGRES_USER: synthetos
+      POSTGRES_PASSWORD: synthetos
+      POSTGRES_DB: synthetos
+    ports:
+      - "5432:5432"
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+      - ./docker/init-extensions.sql:/docker-entrypoint-initdb.d/01-extensions.sql
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U synthetos"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+
+volumes:
+  pgdata:

@@ -47,7 +47,7 @@ Treat these as defaults unless a repository document explicitly changes them:
 - Keep orchestration explicit with state transitions and append-only domain events.
 - Assume only one active charter at a time because GPU-heavy work is not meant to run concurrently.
 - Prefer metadata-first literature triage before full-text ingestion.
-- Use an HTML-first full-text path for shortlisted papers, with PDF plus Marker as fallback when HTML is unavailable or low quality.
+- Use an HTML-first full-text path for shortlisted papers, with PDF plus Docling as fallback when HTML is unavailable or low quality.
 - Build task-scoped context packs instead of passing entire project state into every step.
 - Keep the core deterministic and typed; use LLMs at the probabilistic edge.
 - Put every external dependency behind adapters.
