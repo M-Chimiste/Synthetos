@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import os
-from typing import TypeVar
+from typing import Any, TypeVar, cast
 
 from google import genai
 from google.genai import types as genai_types
@@ -64,7 +64,7 @@ class GoogleAdapter:
         try:
             resp = await self._client.aio.models.generate_content(
                 model=self.model,
-                contents=contents,
+                contents=cast(list[Any], contents),
                 config=config,
             )
         except Exception as exc:
@@ -119,7 +119,7 @@ class GoogleAdapter:
         try:
             resp = await self._client.aio.models.generate_content(
                 model=self.model,
-                contents=contents,
+                contents=cast(list[Any], contents),
                 config=config,
             )
         except Exception as exc:

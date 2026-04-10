@@ -109,3 +109,95 @@ export function useDiscoverSkills() {
     },
   });
 }
+
+// ---- Discovery hooks ----
+
+export function useDiscoverySessions(charterId?: string) {
+  return useQuery({
+    queryKey: ["discovery", "sessions", charterId ?? "all"],
+    queryFn: () => api.fetchDiscoverySessions(charterId),
+  });
+}
+
+export function useDiscoverySession(sessionId: string) {
+  return useQuery({
+    queryKey: ["discovery", "session", sessionId],
+    queryFn: () => api.fetchDiscoverySession(sessionId),
+    enabled: !!sessionId,
+    refetchInterval: 3_000,
+  });
+}
+
+export function useDiscoveryProfile(sessionId: string) {
+  return useQuery({
+    queryKey: ["discovery", "profile", sessionId],
+    queryFn: () => api.fetchDiscoveryProfile(sessionId),
+    enabled: !!sessionId,
+  });
+}
+
+export function useDiscoveryPapers(
+  sessionId: string,
+  opts: {
+    view?: "stable" | "discovery";
+    triage_status?: string;
+    min_score?: number;
+    offset?: number;
+    limit?: number;
+  } = {},
+) {
+  return useQuery({
+    queryKey: ["discovery", "papers", sessionId, opts],
+    queryFn: () => api.fetchDiscoveryPapers(sessionId, opts),
+    enabled: !!sessionId,
+  });
+}
+
+export function useStartDiscovery() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: ({
+      charterId,
+      body,
+    }: {
+      charterId: string;
+      body: api.CreateDiscoveryRequest;
+    }) => api.startDiscovery(charterId, body),
+    onSuccess: (_data, vars) => {
+      void qc.invalidateQueries({ queryKey: ["discovery", "sessions"] });
+      void qc.invalidateQueries({ queryKey: ["state", vars.charterId] });
+      void qc.invalidateQueries({ queryKey: ["cycles", vars.charterId] });
+    },
+  });
+}
+
+export function useTriagePaper() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: ({
+      sessionId,
+      paperId,
+      triageStatus,
+      triageReason,
+    }: {
+      sessionId: string;
+      paperId: string;
+      triageStatus: string;
+      triageReason?: string;
+    }) => api.triagePaper(sessionId, paperId, triageStatus, triageReason),
+    onSuccess: (_data, vars) => {
+      void qc.invalidateQueries({
+        queryKey: ["discovery", "papers", vars.sessionId],
+      });
+    },
+  });
+}
+
+export function useDiscoveryReport(sessionId: string) {
+  return useQuery({
+    queryKey: ["discovery", "report", sessionId],
+    queryFn: () => api.fetchDiscoveryReport(sessionId),
+    enabled: !!sessionId,
+    retry: false,
+  });
+}

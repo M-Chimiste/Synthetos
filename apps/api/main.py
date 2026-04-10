@@ -10,7 +10,16 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 from sqlalchemy.exc import NoResultFound
 
-from apps.api.routers import charters, cycles, events, health, jobs, skills, state
+from apps.api.routers import (
+    charters,
+    cycles,
+    discovery,
+    events,
+    health,
+    jobs,
+    skills,
+    state,
+)
 from libs.core.config import get_settings
 from libs.core.logging import get_logger, setup_logging
 from libs.core.state_machine import InvalidTransitionError
@@ -76,18 +85,14 @@ def create_app() -> FastAPI:
         )
 
     @app.exception_handler(NoResultFound)
-    async def no_result_handler(
-        _request: Request, _exc: NoResultFound
-    ) -> JSONResponse:
+    async def no_result_handler(_request: Request, _exc: NoResultFound) -> JSONResponse:
         return JSONResponse(
             status_code=404,
             content={"detail": "Resource not found"},
         )
 
     @app.exception_handler(Exception)
-    async def general_exception_handler(
-        _request: Request, exc: Exception
-    ) -> JSONResponse:
+    async def general_exception_handler(_request: Request, exc: Exception) -> JSONResponse:
         log.error("unhandled_exception", error=str(exc), exc_info=True)
         return JSONResponse(
             status_code=500,
@@ -106,6 +111,7 @@ def create_app() -> FastAPI:
     app.include_router(events.router, prefix=api_prefix)
     app.include_router(jobs.router, prefix=api_prefix)
     app.include_router(skills.router, prefix=api_prefix)
+    app.include_router(discovery.router, prefix=api_prefix)
 
     return app
 

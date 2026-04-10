@@ -38,6 +38,16 @@ def _echo_operator(op_input: OperatorInput) -> OperatorResult:
 register_operator("echo", _echo_operator)
 
 
+def _register_discovery_operators() -> None:
+    """Register the Phase 1 discovery operator chain."""
+    from libs.discovery.operators import register as register_discovery
+
+    register_discovery(register_operator)
+
+
+_register_discovery_operators()
+
+
 def execute(op_input: OperatorInput) -> OperatorResult:
     """Dispatch a job to its registered operator handler.
 

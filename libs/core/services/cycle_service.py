@@ -50,9 +50,7 @@ async def create_cycle(
 
 async def get_cycle(session: AsyncSession, cycle_id: UUID) -> CycleRead | None:
     """Fetch a cycle by ID."""
-    result = await session.execute(
-        select(ResearchCycle).where(ResearchCycle.id == cycle_id)
-    )
+    result = await session.execute(select(ResearchCycle).where(ResearchCycle.id == cycle_id))
     cycle = result.scalar_one_or_none()
     if cycle is None:
         return None
@@ -95,9 +93,7 @@ async def transition_cycle(
 
     Raises InvalidTransitionError if the transition is not allowed.
     """
-    result = await session.execute(
-        select(ResearchCycle).where(ResearchCycle.id == cycle_id)
-    )
+    result = await session.execute(select(ResearchCycle).where(ResearchCycle.id == cycle_id))
     cycle = result.scalar_one()
 
     current = CycleStatus(cycle.status)

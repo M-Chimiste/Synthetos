@@ -44,9 +44,7 @@ async def list_cycles_endpoint(
     db: AsyncSession = Depends(get_db),
 ) -> PaginatedResponse[CycleRead]:
     """List research cycles with optional charter filter and pagination."""
-    items, total = await list_cycles(
-        db, charter_id=charter_id, offset=offset, limit=limit
-    )
+    items, total = await list_cycles(db, charter_id=charter_id, offset=offset, limit=limit)
     return PaginatedResponse(items=items, total=total, offset=offset, limit=limit)
 
 

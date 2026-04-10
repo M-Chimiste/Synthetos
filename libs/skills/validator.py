@@ -47,8 +47,7 @@ def validate_skill(
         hooks_path = source_path.parent / "hooks.py"
         if not hooks_path.exists():
             warnings.append(
-                f"Skill '{manifest.id}' declares python.hooks capability "
-                "but hooks.py not found"
+                f"Skill '{manifest.id}' declares python.hooks capability but hooks.py not found"
             )
 
     # Warn about missing version

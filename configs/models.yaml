@@ -44,6 +44,17 @@ roles:
     model: claude-sonnet-4-20250514
     temperature: 0.5
 
+# Embeddings router profiles -- used by EmbeddingsRouter
+# The corpus is pre-embedded with Alibaba-NLP/gte-modernbert-base, so any
+# query-time profile MUST serve the same checkpoint or cosine results will
+# be garbage. The dimension is locked to 768.
+embeddings:
+  default:
+    provider: local
+    model: Alibaba-NLP/gte-modernbert-base
+    base_url: http://localhost:8080/v1   # text-embeddings-inference / vllm
+    dimension: 768
+
 # Provider configurations
 providers:
   anthropic:

@@ -8,6 +8,8 @@ from uuid_utils import uuid7
 
 import apps.worker.main as worker_main
 from libs.core.types import CycleStatus
+from libs.storage.models.discovery import DiscoverySession
+from libs.storage.models.jobs import Job
 from libs.storage.models.research import ResearchCycle
 
 
@@ -76,3 +78,58 @@ def test_persist_operator_events_writes_each_event(monkeypatch) -> None:
         "operator_step_started",
         "operator_step_finished",
     ]
+
+
+def test_mark_discovery_job_failed_marks_session(monkeypatch) -> None:
+    job = Job(
+        id=uuid7(),
+        cycle_id=uuid7(),
+        job_type="discovery_finalize",
+        status="failed",
+        payload={"session_id": str(uuid7())},
+        result=None,
+        error=None,
+        claimed_by=None,
+        claimed_at=None,
+        heartbeat_at=None,
+        priority=0,
+        created_at=datetime.now(UTC),
+        completed_at=None,
+    )
+    discovery = DiscoverySession(
+        id=uuid7(),
+        cycle_id=uuid7(),
+        charter_id=uuid7(),
+        profile_id=uuid7(),
+        status="running",
+        view="both",
+        stats={},
+        step_log=[],
+        report_artifact_path=None,
+        error=None,
+        created_at=datetime.now(UTC),
+        updated_at=datetime.now(UTC),
+        started_at=datetime.now(UTC),
+        completed_at=None,
+    )
+    calls: list[tuple[str, str]] = []
+
+    monkeypatch.setattr(worker_main, "session_id_from_payload", lambda _input: discovery.id)
+    monkeypatch.setattr(worker_main, "load_session", lambda _session, _session_id: discovery)
+
+    def fake_mark_failed(_discovery, *, step: str, error: str, detail: dict[str, str]) -> bool:
+        calls.append((step, error))
+        assert detail["job_type"] == "discovery_finalize"
+        return True
+
+    monkeypatch.setattr(worker_main, "mark_failed", fake_mark_failed)
+
+    session_id, changed = worker_main._mark_discovery_job_failed(
+        object(),
+        job=job,
+        error="report write failed",
+    )
+
+    assert changed is True
+    assert session_id == discovery.id
+    assert calls == [("finalize", "report write failed")]

@@ -50,9 +50,7 @@ async def create_charter(
 
 async def get_charter(session: AsyncSession, charter_id: UUID) -> CharterRead | None:
     """Fetch a charter by ID."""
-    result = await session.execute(
-        select(ResearchCharter).where(ResearchCharter.id == charter_id)
-    )
+    result = await session.execute(select(ResearchCharter).where(ResearchCharter.id == charter_id))
     charter = result.scalar_one_or_none()
     if charter is None:
         return None
@@ -63,9 +61,7 @@ async def list_charters(
     session: AsyncSession, *, offset: int = 0, limit: int = 50
 ) -> tuple[list[CharterRead], int]:
     """List charters with pagination."""
-    count_result = await session.execute(
-        select(ResearchCharter.id)
-    )
+    count_result = await session.execute(select(ResearchCharter.id))
     total = len(count_result.all())
 
     result = await session.execute(
@@ -84,9 +80,7 @@ async def update_charter(
     data: CharterUpdate,
 ) -> CharterRead | None:
     """Update an existing charter."""
-    result = await session.execute(
-        select(ResearchCharter).where(ResearchCharter.id == charter_id)
-    )
+    result = await session.execute(select(ResearchCharter).where(ResearchCharter.id == charter_id))
     charter = result.scalar_one_or_none()
     if charter is None:
         return None

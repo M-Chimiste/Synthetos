@@ -49,7 +49,16 @@ function CharterDetailPage() {
             <h1 className="text-2xl font-semibold">{c.title}</h1>
             <p className="mt-1 text-gray-500">{c.description}</p>
           </div>
-          <StatusBadge status={c.status} />
+          <div className="flex items-center gap-3">
+            <StatusBadge status={c.status} />
+            <Link
+              to="/charters/$charterId/discovery/new"
+              params={{ charterId }}
+              className="rounded-md bg-gray-900 px-3 py-1.5 text-sm font-medium text-white hover:bg-gray-700"
+            >
+              Start discovery
+            </Link>
+          </div>
         </div>
       </div>
 

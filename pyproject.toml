@@ -24,9 +24,13 @@ dependencies = [
     "google-genai>=1.12,<2",
     "pyyaml>=6.0,<7",
     "python-frontmatter>=1.1,<2",
+    "pgvector>=0.3,<1",
 ]
 
 [project.optional-dependencies]
+reranker = [
+    "sentence-transformers>=3,<5",
+]
 dev = [
     "ruff>=0.11,<1",
     "pyright>=1.1,<2",
@@ -65,6 +69,7 @@ select = [
 
 [tool.ruff.lint.per-file-ignores]
 "apps/api/**" = ["B008"]  # Depends() / Query() in function defaults is idiomatic FastAPI
+"apps/cli/**" = ["B008"]  # typer.Option() / typer.Argument() in defaults is idiomatic Typer
 
 [tool.ruff.lint.isort]
 known-first-party = ["apps", "libs"]

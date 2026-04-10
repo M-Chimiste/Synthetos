@@ -34,6 +34,12 @@ from libs.core.services.job_service import (
 )
 from libs.core.state_machine import validate_transition
 from libs.core.types import ActorType, CycleStatus, JobStatus
+from libs.discovery.operators._common import (
+    DiscoveryStateError,
+    load_session,
+    mark_failed,
+    session_id_from_payload,
+)
 from libs.storage.base import get_sync_session_factory
 from libs.storage.models.research import ResearchCycle
 
@@ -140,6 +146,42 @@ def _persist_operator_events(
             actor_type=ActorType.worker,
             actor_id=worker_id,
         )
+
+
+def _mark_discovery_job_failed(
+    session: Session,
+    *,
+    job: Job,
+    error: str,
+) -> tuple[UUID | None, bool]:
+    """Mark the linked discovery session failed for a failed discovery job."""
+    if not job.job_type.startswith("discovery_"):
+        return None, False
+
+    try:
+        session_id = session_id_from_payload(
+            OperatorInput(
+                cycle_id=job.cycle_id or UUID(int=0),
+                charter_id=UUID(int=0),
+                job_id=job.id,
+                job_type=job.job_type,
+                payload=job.payload or {},
+            )
+        )
+        discovery = load_session(session, session_id)
+    except (DiscoveryStateError, ValueError):
+        return None, False
+
+    changed = mark_failed(
+        discovery,
+        step=job.job_type.removeprefix("discovery_"),
+        error=error,
+        detail={
+            "job_id": str(job.id),
+            "job_type": job.job_type,
+        },
+    )
+    return session_id, changed
 
 
 def run(*, poll_interval: float = _DEFAULT_POLL_INTERVAL) -> None:
@@ -286,7 +328,33 @@ def run(*, poll_interval: float = _DEFAULT_POLL_INTERVAL) -> None:
                         worker_id=worker_id,
                     )
                 else:
+                    _persist_operator_events(
+                        session,
+                        charter_id=charter_id,
+                        cycle_id=current_job.cycle_id,
+                        events=result.events,
+                        worker_id=worker_id,
+                    )
+                    discovery_session_id, discovery_failure_changed = _mark_discovery_job_failed(
+                        session,
+                        job=current_job,
+                        error=result.error or "unknown error",
+                    )
                     fail_job(session, current_job.id, result.error or "unknown error")
+                    if discovery_failure_changed:
+                        emit_event_sync(
+                            session,
+                            event_type="discovery.session_failed",
+                            charter_id=charter_id,
+                            cycle_id=current_job.cycle_id,
+                            payload={
+                                "session_id": str(discovery_session_id),
+                                "operator": current_job.job_type,
+                                "error": result.error,
+                            },
+                            actor_type=ActorType.worker,
+                            actor_id=worker_id,
+                        )
                     emit_event_sync(
                         session,
                         event_type="job_failed",

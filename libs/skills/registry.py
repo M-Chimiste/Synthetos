@@ -12,14 +12,10 @@ from libs.skills.loader import DiscoveredSkill
 from libs.storage.models.skills import SkillDefinition
 
 
-async def upsert_skill(
-    session: AsyncSession, skill: DiscoveredSkill
-) -> SkillDefinitionRead:
+async def upsert_skill(session: AsyncSession, skill: DiscoveredSkill) -> SkillDefinitionRead:
     """Insert or update a skill definition from a discovered skill."""
     result = await session.execute(
-        select(SkillDefinition).where(
-            SkillDefinition.skill_id == skill.manifest.id
-        )
+        select(SkillDefinition).where(SkillDefinition.skill_id == skill.manifest.id)
     )
     existing = result.scalar_one_or_none()
 
@@ -75,9 +71,7 @@ async def list_skills(
     return skills, total
 
 
-async def get_skill(
-    session: AsyncSession, skill_id: str
-) -> SkillDefinitionRead | None:
+async def get_skill(session: AsyncSession, skill_id: str) -> SkillDefinitionRead | None:
     """Fetch a skill definition by its skill_id string."""
     result = await session.execute(
         select(SkillDefinition).where(SkillDefinition.skill_id == skill_id)

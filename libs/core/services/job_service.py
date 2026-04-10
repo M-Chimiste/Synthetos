@@ -83,11 +83,7 @@ def get_job(session: Session, job_id: UUID) -> Job | None:
 
 def start_job(session: Session, job_id: UUID) -> Job:
     """Mark a claimed job as running."""
-    session.execute(
-        update(Job)
-        .where(Job.id == job_id)
-        .values(status=JobStatus.running)
-    )
+    session.execute(update(Job).where(Job.id == job_id).values(status=JobStatus.running))
     session.flush()
     job = session.get(Job, job_id)
     assert job is not None, f"Job {job_id} not found after start"

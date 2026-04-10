@@ -50,15 +50,11 @@ async def assemble_research_state(
     ]
 
     # Active cycle: first non-closed cycle
-    active_cycle = next(
-        (s for s in cycle_summaries if s.status != CycleStatus.closed), None
-    )
+    active_cycle = next((s for s in cycle_summaries if s.status != CycleStatus.closed), None)
 
     # Count events
     event_count_result = await session.execute(
-        select(func.count(DomainEvent.id)).where(
-            DomainEvent.charter_id == charter_id
-        )
+        select(func.count(DomainEvent.id)).where(DomainEvent.charter_id == charter_id)
     )
     total_events = event_count_result.scalar() or 0
 

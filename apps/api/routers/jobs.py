@@ -57,9 +57,7 @@ async def list_jobs(
     count_result = await db.execute(count_query)
     total = len(count_result.all())
 
-    result = await db.execute(
-        query.order_by(Job.created_at.desc()).offset(offset).limit(limit)
-    )
+    result = await db.execute(query.order_by(Job.created_at.desc()).offset(offset).limit(limit))
     items = [JobRead.model_validate(j) for j in result.scalars().all()]
     return PaginatedResponse(items=items, total=total, offset=offset, limit=limit)
 
