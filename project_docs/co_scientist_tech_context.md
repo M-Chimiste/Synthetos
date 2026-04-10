@@ -1,6 +1,6 @@
 # Tech Context
 
-**Product:** ML Laboratory Co-Scientist\
+**Product:** Synthetos (ML Laboratory Co-Scientist)\
 **Role:** Engineer\
 **Status:** Working Draft v5\
 **Scope:** Local small-scale ML laboratory with autonomy roadmap\
@@ -90,10 +90,13 @@ The canonical local stack for the first implementation is:
 - **Durable state:** PostgreSQL + `pgvector` + Apache AGE
 - **Queue:** Postgres-backed jobs table with row-claim semantics
 - **Artifact store:** local filesystem
-- **Execution backplane:** Docker Engine or Podman
+- **Execution backplane:** Docker Engine (sibling containers, not DinD)
+- **GPU:** NVIDIA Container Toolkit with GPU passthrough (2x RTX 6000 Blackwell)
 - **Workspace isolation:** git worktrees
 - **Telemetry stream:** domain events persisted in Postgres and exposed through SSE first
 - **CLI:** Typer-based Python CLI
+- **Embeddings:** gte-modernbert (768 dimensions)
+- **Full-text extraction:** Marker (github.com/datalab-to/marker) for shortlisted papers
 
 ### 3.4 Database stance
 
@@ -137,33 +140,31 @@ The MVP should not require these services to be usable:
 
 ### 4.1 Development mode
 
-During normal development, the system should run primarily in Docker Compose or an equivalent local container-compose workflow:
+During normal development:
 
-- infrastructure in containers
-- application services in containers
-- source code bind-mounted into those containers for hot reload where available
+- infrastructure (Postgres) runs in Docker Compose containers
+- application services (API, worker, web) run on the host with hot reload
+- experiment containers are spawned as sibling Docker containers with GPU passthrough
 
 That means:
 
-- Postgres runs in local containers
-- optional local model servers can run in containers or on host
-- API runs in a backend service container
-- worker runs in the same backend image, with container-runtime access so it can launch isolated experiment containers
-- web frontend runs in a Vite dev container
+- Postgres runs in a local container via docker-compose
+- optional local model servers (LMStudio, Ollama, VLLM) run on the host
+- API runs on host via `uv run uvicorn`
+- worker runs on host via `uv run python -m apps.worker`, with Docker SDK access to launch experiment containers
+- web frontend runs on host via `npm run dev` (Vite)
 
-A host-run fallback remains useful for debugging, but it is not the primary developer path.
+The worker uses the Docker SDK to create experiment containers directly on the host Docker daemon, enabling GPU passthrough without Docker-in-Docker complexity.
 
 ### 4.2 Reproducible demo mode
 
 A second startup path should exist for demos and onboarding:
 
-- bring up Postgres
-- bring up API
-- bring up worker
-- bring up frontend
-- optionally bring up a local model server
-
-Docker Compose profiles are sufficient for this once the first vertical slice is stable.
+- `docker compose up postgres` for infrastructure
+- `uv run uvicorn apps.api:app` for API
+- `uv run python -m apps.worker` for worker
+- `npm run dev` for frontend
+- optionally start a local model server (LMStudio, Ollama, or VLLM)
 
 ### 4.3 Dynamic experiment execution
 
@@ -420,13 +421,14 @@ At minimum, discovery should persist:
 
 ### 8.2 arXiv strategy
 
-Use Postgres as the local warehouse for arXiv metadata.
+arXiv is the primary internal corpus. The full arXiv dataset is already downloaded and embedded using gte-modernbert (768 dimensions).
 
 Technical stance:
 
 - store title, abstract, categories, authors, dates, ids, and links in Postgres
-- support incremental sync from a bulk metadata harvester
-- allow targeted API search when needed
+- pre-computed embeddings already exist for the full corpus
+- support incremental sync from a bulk metadata harvester for new papers
+- when a paper is shortlisted for full-text analysis, download and process with Marker (github.com/datalab-to/marker)
 - treat HTML fetch and PDF fetch as separate escalation operations
 
 ### 8.3 External source strategy
@@ -859,12 +861,14 @@ Suggested logical roles:
 
 ### 12.2 Hosted and local model support
 
-The gateway should support both:
+The gateway must support all of the following from day one:
 
-- hosted provider adapters
-- local inference adapters
+- **Local (OpenAI-compatible API):** LMStudio, Ollama, VLLM-compatible endpoints
+- **Hosted frontier:** OpenAI, Anthropic (native SDK), Google (native SDK)
 
 A cycle, operator, or skill may prefer one model route, but the control plane should own the final routing decision.
+
+**Structured output** is critical: most generated data should be validated via structured output (JSON mode / tool-use based). The gateway must support structured output across all providers.
 
 ### 12.3 Recording requirements
 

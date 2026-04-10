@@ -1,6 +1,6 @@
 # System Patterns
 
-**Product:** ML Laboratory Co-Scientist\
+**Product:** Synthetos (ML Laboratory Co-Scientist)\
 **Role:** Architect\
 **Status:** Working Draft v4\
 **Scope:** Local small-scale ML laboratory with autonomy roadmap\
@@ -208,6 +208,10 @@ That is what makes the lab debuggable.
 ### 5.1 Shared `ResearchState` as source of truth
 
 Each research cycle is represented by a durable `ResearchState`.  Operators and skills do not own hidden state.
+
+`ResearchCharter` is the project definition.  `ResearchState` is a logical aggregate of everything that has occurred within a charter -- it is not a single database row but an aggregate assembled from all associated artifacts and records.
+
+The system supports one active charter at a time due to GPU constraints.  Users can swap between charters but should not run them concurrently.
 
 A `ResearchState` should reference, at minimum:
 

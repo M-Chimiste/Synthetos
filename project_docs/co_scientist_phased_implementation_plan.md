@@ -1,6 +1,6 @@
 # Phased Implementation Plan
 
-**Product:** ML Laboratory Co-Scientist\
+**Product:** Synthetos (ML Laboratory Co-Scientist)\
 **Role:** Planner\
 **Status:** Working Draft v4\
 **Scope:** Local small-scale ML laboratory with autonomy roadmap\
@@ -66,6 +66,7 @@ The following entities should be treated as first-class from the start:
 
 - `ResearchCharter`
 - `ResearchState`
+- `ProblemProfile`
 - `DiscoverySession`
 - `DiscoveryView`
 - `PaperCard`

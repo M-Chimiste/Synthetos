@@ -1,6 +1,6 @@
 # Product Requirements Document
 
-**Product:** ML Laboratory Co-Scientist  
+**Product:** Synthetos (ML Laboratory Co-Scientist)  
 **Role:** Product Manager  
 **Status:** Working Draft v4  
 **Scope:** Local small-scale ML laboratory with autonomy roadmap  
