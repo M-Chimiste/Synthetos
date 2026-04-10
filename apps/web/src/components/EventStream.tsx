@@ -1,9 +1,10 @@
+import type { DomainEvent } from "../api/client";
 import { useEffect, useRef, useState } from "react";
 
 interface SSEEvent {
   id: string;
-  type: string;
-  data: string;
+  eventType: string;
+  payload: string;
   timestamp: string;
 }
 
@@ -33,11 +34,17 @@ export default function EventStream({
     source.onopen = () => setConnected(true);
 
     source.onmessage = (e) => {
+      let raw: DomainEvent;
+      try {
+        raw = JSON.parse(e.data) as DomainEvent;
+      } catch {
+        return;
+      }
       const parsed: SSEEvent = {
-        id: e.lastEventId || crypto.randomUUID(),
-        type: e.type,
-        data: e.data,
-        timestamp: new Date().toISOString(),
+        id: raw.id || e.lastEventId || crypto.randomUUID(),
+        eventType: raw.event_type,
+        payload: raw.payload ? JSON.stringify(raw.payload) : "{}",
+        timestamp: raw.created_at ?? new Date().toISOString(),
       };
       lastEventIdRef.current = parsed.id;
       setEvents((prev) => [...prev.slice(-199), parsed]);
@@ -81,8 +88,8 @@ export default function EventStream({
             <span className="text-gray-500">
               {new Date(evt.timestamp).toLocaleTimeString()}
             </span>{" "}
-            <span className="text-cyan-400">[{evt.type}]</span>{" "}
-            <span className="text-gray-300">{evt.data}</span>
+            <span className="text-cyan-400">[{evt.eventType}]</span>{" "}
+            <span className="text-gray-300">{evt.payload}</span>
           </div>
         ))}
         <div ref={bottomRef} />

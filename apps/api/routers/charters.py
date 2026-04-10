@@ -6,6 +6,7 @@ from typing import TYPE_CHECKING
 
 from fastapi import APIRouter, Depends, HTTPException
 
+from apps.api.auth import require_scope
 from apps.api.deps import get_db
 from libs.core.services.charter_service import (
     create_charter,
@@ -27,6 +28,7 @@ router = APIRouter(prefix="/charters", tags=["charters"])
 @router.post("", response_model=CharterRead, status_code=201)
 async def create_charter_endpoint(
     body: CharterCreate,
+    _: None = Depends(require_scope("charters.write")),
     db: AsyncSession = Depends(get_db),
 ) -> CharterRead:
     """Create a new research charter."""
@@ -37,6 +39,7 @@ async def create_charter_endpoint(
 async def list_charters_endpoint(
     offset: int = 0,
     limit: int = 50,
+    _: None = Depends(require_scope("charters.read")),
     db: AsyncSession = Depends(get_db),
 ) -> PaginatedResponse[CharterRead]:
     """List research charters with pagination."""
@@ -47,6 +50,7 @@ async def list_charters_endpoint(
 @router.get("/{charter_id}", response_model=CharterRead)
 async def get_charter_endpoint(
     charter_id: UUID,
+    _: None = Depends(require_scope("charters.read")),
     db: AsyncSession = Depends(get_db),
 ) -> CharterRead:
     """Fetch a single charter by ID."""
@@ -60,6 +64,7 @@ async def get_charter_endpoint(
 async def update_charter_endpoint(
     charter_id: UUID,
     body: CharterUpdate,
+    _: None = Depends(require_scope("charters.write")),
     db: AsyncSession = Depends(get_db),
 ) -> CharterRead:
     """Update an existing charter."""

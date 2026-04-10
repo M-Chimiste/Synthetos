@@ -68,14 +68,12 @@ async def list_cycles(
 ) -> tuple[list[CycleRead], int]:
     """List cycles with optional charter filter and pagination."""
     query = select(ResearchCycle)
+    count_query = select(ResearchCycle.id)
     if charter_id is not None:
         query = query.where(ResearchCycle.charter_id == charter_id)
+        count_query = count_query.where(ResearchCycle.charter_id == charter_id)
 
-    count_result = await session.execute(
-        select(ResearchCycle.id).where(
-            ResearchCycle.charter_id == charter_id if charter_id else True
-        )
-    )
+    count_result = await session.execute(count_query)
     total = len(count_result.all())
 
     result = await session.execute(

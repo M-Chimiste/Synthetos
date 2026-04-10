@@ -82,10 +82,11 @@ export function useResearchState(charterId: string) {
 
 // ---- Job hooks ----
 
-export function useJobs() {
+export function useJobs(cycleId?: string, enabled = true) {
   return useQuery({
-    queryKey: ["jobs"],
-    queryFn: api.fetchJobs,
+    queryKey: ["jobs", cycleId ?? "all"],
+    queryFn: () => api.fetchJobs(cycleId),
+    enabled,
     refetchInterval: 5_000,
   });
 }

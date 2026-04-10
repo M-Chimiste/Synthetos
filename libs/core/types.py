@@ -56,6 +56,7 @@ class JobStatus(StrEnum):
 
     pending = "pending"
     claimed = "claimed"
+    paused = "paused"
     running = "running"
     completed = "completed"
     failed = "failed"

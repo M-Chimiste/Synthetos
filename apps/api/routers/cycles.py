@@ -6,6 +6,7 @@ from typing import TYPE_CHECKING
 
 from fastapi import APIRouter, Depends, HTTPException
 
+from apps.api.auth import require_scope
 from apps.api.deps import get_db
 from libs.core.services.cycle_service import (
     create_cycle,
@@ -27,6 +28,7 @@ router = APIRouter(prefix="/cycles", tags=["cycles"])
 @router.post("", response_model=CycleRead, status_code=201)
 async def create_cycle_endpoint(
     body: CycleCreate,
+    _: None = Depends(require_scope("cycles.write")),
     db: AsyncSession = Depends(get_db),
 ) -> CycleRead:
     """Create a new research cycle."""
@@ -38,6 +40,7 @@ async def list_cycles_endpoint(
     charter_id: UUID | None = None,
     offset: int = 0,
     limit: int = 50,
+    _: None = Depends(require_scope("cycles.read")),
     db: AsyncSession = Depends(get_db),
 ) -> PaginatedResponse[CycleRead]:
     """List research cycles with optional charter filter and pagination."""
@@ -50,6 +53,7 @@ async def list_cycles_endpoint(
 @router.get("/{cycle_id}", response_model=CycleRead)
 async def get_cycle_endpoint(
     cycle_id: UUID,
+    _: None = Depends(require_scope("cycles.read")),
     db: AsyncSession = Depends(get_db),
 ) -> CycleRead:
     """Fetch a single cycle by ID."""
@@ -63,6 +67,7 @@ async def get_cycle_endpoint(
 async def transition_cycle_endpoint(
     cycle_id: UUID,
     body: CycleTransition,
+    _: None = Depends(require_scope("cycles.write")),
     db: AsyncSession = Depends(get_db),
 ) -> CycleRead:
     """Transition a cycle to a new status.

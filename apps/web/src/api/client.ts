@@ -17,41 +17,72 @@ export interface Charter {
 export interface Cycle {
   id: string;
   charter_id: string;
-  sequence: number;
   status: string;
+  config: Record<string, unknown> | null;
   created_at: string;
   updated_at: string;
+  started_at: string | null;
+  completed_at: string | null;
 }
 
 export interface Job {
   id: string;
-  charter_id: string;
   cycle_id: string | null;
-  type: string;
+  job_type: string;
   status: string;
-  progress: number | null;
-  result: unknown;
+  payload: Record<string, unknown> | null;
+  result: Record<string, unknown> | null;
   error: string | null;
+  claimed_by: string | null;
+  priority: number;
   created_at: string;
-  updated_at: string;
+  completed_at: string | null;
 }
 
 export interface SkillDefinition {
   id: string;
-  name: string;
-  description: string;
-  phase: string;
+  skill_id: string;
+  version: string;
+  phase: string | null;
+  trust_tier: string;
   enabled: boolean;
+  source_path: string | null;
+  discovered_at: string;
+}
+
+export interface StateCycleSummary {
+  id: string;
+  status: string;
+  created_at: string;
+  started_at: string | null;
+  completed_at: string | null;
+}
+
+export interface DomainEvent {
+  id: string;
+  charter_id: string | null;
+  cycle_id: string | null;
+  event_type: string;
+  payload: Record<string, unknown> | null;
+  actor_type: string;
+  actor_id: string | null;
+  created_at: string;
 }
 
 export interface ResearchState {
   charter_id: string;
-  charter: Charter;
-  cycles: Cycle[];
-  active_cycle: Cycle | null;
-  papers_count: number;
-  hypotheses_count: number;
-  experiments_count: number;
+  charter_title: string;
+  charter_status: string;
+  cycles: StateCycleSummary[];
+  active_cycle: StateCycleSummary | null;
+  total_events: number;
+  total_jobs: number;
+  recent_events: DomainEvent[];
+}
+
+export interface DiscoverSkillsResponse {
+  discovered: number;
+  items: SkillDefinition[];
 }
 
 export interface PaginatedResponse<T> {
@@ -139,8 +170,11 @@ export function fetchState(charterId: string) {
 
 // ---- Jobs ----
 
-export function fetchJobs() {
-  return apiFetch<PaginatedResponse<Job>>("/jobs");
+export function fetchJobs(cycleId?: string) {
+  const params = new URLSearchParams();
+  if (cycleId) params.set("cycle_id", cycleId);
+  const qs = params.toString();
+  return apiFetch<PaginatedResponse<Job>>(`/jobs${qs ? `?${qs}` : ""}`);
 }
 
 // ---- Skills ----
@@ -150,7 +184,7 @@ export function fetchSkills() {
 }
 
 export function discoverSkills() {
-  return apiFetch<{ discovered: number }>("/skills/discover", {
+  return apiFetch<DiscoverSkillsResponse>("/skills/discover", {
     method: "POST",
   });
 }

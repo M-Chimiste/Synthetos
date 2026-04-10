@@ -25,7 +25,7 @@ function SkillsPage() {
 
       {discover.isSuccess && (
         <div className="mb-4 rounded-lg border border-green-200 bg-green-50 p-3 text-sm text-green-700">
-          Discovered {discover.data.discovered} new skill(s).
+          Discovered or refreshed {discover.data.discovered} skill package(s).
         </div>
       )}
 
@@ -60,11 +60,21 @@ function SkillsPage() {
               className="rounded-lg border border-gray-200 bg-white p-4"
             >
               <div className="mb-2 flex items-start justify-between">
-                <h3 className="font-medium">{skill.name}</h3>
+                <h3 className="font-medium">{skill.skill_id}</h3>
                 <StatusBadge status={skill.enabled ? "active" : "disabled"} />
               </div>
-              <p className="mb-3 text-sm text-gray-500">{skill.description}</p>
-              <p className="text-xs text-gray-400">Phase: {skill.phase}</p>
+              <p className="mb-2 text-sm text-gray-500">
+                Trust tier: {skill.trust_tier}
+              </p>
+              <p className="text-xs text-gray-400">
+                Version {skill.version}
+                {skill.phase ? ` • Phase ${skill.phase}` : ""}
+              </p>
+              {skill.source_path && (
+                <p className="mt-2 truncate text-xs text-gray-400">
+                  {skill.source_path}
+                </p>
+              )}
             </div>
           ))}
         </div>

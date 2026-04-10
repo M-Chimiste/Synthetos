@@ -1,5 +1,11 @@
 import { createFileRoute, Link } from "@tanstack/react-router";
-import { useCharter, useCycles, useResearchState, useCreateCycle } from "../../api/hooks";
+import {
+  useCharter,
+  useCreateCycle,
+  useCycles,
+  useJobs,
+  useResearchState,
+} from "../../api/hooks";
 import StatusBadge from "../../components/StatusBadge";
 import EventStream from "../../components/EventStream";
 
@@ -13,6 +19,8 @@ function CharterDetailPage() {
   const cycles = useCycles(charterId);
   const state = useResearchState(charterId);
   const createCycle = useCreateCycle();
+  const activeCycleId = state.data?.active_cycle?.id;
+  const jobs = useJobs(activeCycleId, Boolean(activeCycleId));
 
   if (charter.isLoading) {
     return <p className="text-sm text-gray-500">Loading charter...</p>;
@@ -58,9 +66,25 @@ function CharterDetailPage() {
       {/* State snapshot */}
       {state.data && (
         <section className="mb-6 grid grid-cols-1 gap-4 sm:grid-cols-3">
-          <MiniStat label="Papers" value={state.data.papers_count} />
-          <MiniStat label="Hypotheses" value={state.data.hypotheses_count} />
-          <MiniStat label="Experiments" value={state.data.experiments_count} />
+          <MiniStat label="Cycles" value={state.data.cycles.length} />
+          <MiniStat label="Events" value={state.data.total_events} />
+          <MiniStat label="Jobs" value={state.data.total_jobs} />
+        </section>
+      )}
+
+      {state.data?.active_cycle && (
+        <section className="mb-6 rounded-lg border border-gray-200 bg-white p-4">
+          <div className="flex items-center justify-between">
+            <div>
+              <h2 className="text-sm font-medium uppercase text-gray-500">
+                Active Cycle
+              </h2>
+              <p className="mt-1 font-mono text-sm text-gray-800">
+                {state.data.active_cycle.id}
+              </p>
+            </div>
+            <StatusBadge status={state.data.active_cycle.status} />
+          </div>
         </section>
       )}
 
@@ -96,7 +120,7 @@ function CharterDetailPage() {
             <table className="w-full text-left text-sm">
               <thead className="border-b border-gray-100 bg-gray-50 text-xs uppercase text-gray-500">
                 <tr>
-                  <th className="px-4 py-3">#</th>
+                  <th className="px-4 py-3">Cycle</th>
                   <th className="px-4 py-3">Status</th>
                   <th className="px-4 py-3">Created</th>
                 </tr>
@@ -105,7 +129,7 @@ function CharterDetailPage() {
                 {cycles.data.items.map((cycle) => (
                   <tr key={cycle.id} className="hover:bg-gray-50">
                     <td className="px-4 py-3 font-mono">
-                      {cycle.sequence}
+                      {cycle.id.slice(0, 8)}
                     </td>
                     <td className="px-4 py-3">
                       <StatusBadge status={cycle.status} />
@@ -120,6 +144,89 @@ function CharterDetailPage() {
           </div>
         )}
       </section>
+
+      <section className="mb-6">
+        <h2 className="mb-3 text-lg font-medium">Active Jobs</h2>
+
+        {!activeCycleId && (
+          <p className="text-sm text-gray-500">Create a cycle to start queueing jobs.</p>
+        )}
+
+        {jobs.isLoading && (
+          <p className="text-sm text-gray-500">Loading jobs...</p>
+        )}
+
+        {jobs.error && (
+          <div className="rounded-lg border border-red-200 bg-red-50 p-4 text-sm text-red-700">
+            Failed to load jobs: {jobs.error.message}
+          </div>
+        )}
+
+        {activeCycleId && jobs.data && jobs.data.items.length === 0 && (
+          <p className="text-sm text-gray-500">No jobs for the active cycle.</p>
+        )}
+
+        {activeCycleId && jobs.data && jobs.data.items.length > 0 && (
+          <div className="overflow-hidden rounded-lg border border-gray-200 bg-white">
+            <table className="w-full text-left text-sm">
+              <thead className="border-b border-gray-100 bg-gray-50 text-xs uppercase text-gray-500">
+                <tr>
+                  <th className="px-4 py-3">Type</th>
+                  <th className="px-4 py-3">Status</th>
+                  <th className="px-4 py-3">Worker</th>
+                  <th className="px-4 py-3">Created</th>
+                </tr>
+              </thead>
+              <tbody className="divide-y divide-gray-100">
+                {jobs.data.items.map((job) => (
+                  <tr key={job.id} className="hover:bg-gray-50">
+                    <td className="px-4 py-3 font-mono">{job.job_type}</td>
+                    <td className="px-4 py-3">
+                      <StatusBadge status={job.status} />
+                    </td>
+                    <td className="px-4 py-3 text-gray-500">
+                      {job.claimed_by ?? "unclaimed"}
+                    </td>
+                    <td className="px-4 py-3 text-gray-500">
+                      {new Date(job.created_at).toLocaleString()}
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        )}
+      </section>
+
+      {state.data && state.data.recent_events.length > 0 && (
+        <section className="mb-6">
+          <h2 className="mb-3 text-lg font-medium">Recent Events</h2>
+          <div className="overflow-hidden rounded-lg border border-gray-200 bg-white">
+            <table className="w-full text-left text-sm">
+              <thead className="border-b border-gray-100 bg-gray-50 text-xs uppercase text-gray-500">
+                <tr>
+                  <th className="px-4 py-3">Type</th>
+                  <th className="px-4 py-3">Actor</th>
+                  <th className="px-4 py-3">Time</th>
+                </tr>
+              </thead>
+              <tbody className="divide-y divide-gray-100">
+                {state.data.recent_events.slice(0, 8).map((event) => (
+                  <tr key={event.id} className="hover:bg-gray-50">
+                    <td className="px-4 py-3 font-mono">{event.event_type}</td>
+                    <td className="px-4 py-3 text-gray-500">
+                      {event.actor_id ?? event.actor_type}
+                    </td>
+                    <td className="px-4 py-3 text-gray-500">
+                      {new Date(event.created_at).toLocaleString()}
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        </section>
+      )}
 
       {/* Event stream */}
       <section>

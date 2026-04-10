@@ -1,33 +1,62 @@
-"""Stub authentication and scope checking for Phase 0.
-
-In development mode (LAB_ENV=dev, the default), all requests are
-permitted without credentials.  When running in production the
-middleware expects a ``Bearer <token>`` header whose value is looked
-up in the ``api_tokens`` table (to be implemented in a later phase).
-"""
+"""Token authentication and scope checking for the Phase 0 API surface."""
 
 from __future__ import annotations
 
+import hashlib
+import hmac
+from datetime import datetime
 from typing import TYPE_CHECKING
 
 from fastapi import Depends, HTTPException, Request, status
+from sqlalchemy import select
+from sqlalchemy.orm import selectinload
 
-from apps.api.deps import get_settings
+from apps.api.deps import get_db, get_settings
+from libs.core.clock import utcnow
 
 if TYPE_CHECKING:
     from collections.abc import Callable
 
+    from sqlalchemy.ext.asyncio import AsyncSession
+
     from libs.core.config import Settings
+    from libs.storage.models.orchestrator import ApiToken
 
 
-async def _current_token(
+def _token_hash(token: str) -> str:
+    return hashlib.sha256(token.encode("utf-8")).hexdigest()
+
+
+async def _get_token_record(
+    token: str,
+    db: AsyncSession,
+) -> ApiToken | None:
+    from libs.storage.models.orchestrator import ApiToken
+
+    token_digest = _token_hash(token)
+    result = await db.execute(
+        select(ApiToken)
+        .options(selectinload(ApiToken.client))
+        .where(ApiToken.token_hash == token_digest, ApiToken.revoked.is_(False))
+    )
+    record = result.scalar_one_or_none()
+    if record is None:
+        return None
+    if not hmac.compare_digest(record.token_hash, token_digest):
+        return None
+    return record
+
+
+def _is_expired(expires_at: datetime | None) -> bool:
+    return expires_at is not None and expires_at <= utcnow()
+
+
+async def _current_token_record(
     request: Request,
     settings: Settings = Depends(get_settings),
-) -> str | None:
-    """Extract and validate the bearer token.
-
-    In dev mode this always returns None (auth bypassed).
-    """
+    db: AsyncSession = Depends(get_db),
+) -> ApiToken | None:
+    """Extract and validate the bearer token, returning its DB record."""
     if settings.env == "dev":
         return None
 
@@ -45,8 +74,26 @@ async def _current_token(
             detail="Empty bearer token",
         )
 
-    # TODO (Phase 2+): look up token in api_tokens table and verify scopes
-    return token
+    token_record = await _get_token_record(token, db)
+    if token_record is None:
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Unknown API token",
+        )
+
+    if _is_expired(token_record.expires_at):
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Expired API token",
+        )
+
+    if not token_record.client.enabled:
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Disabled orchestrator client",
+        )
+
+    return token_record
 
 
 def require_scope(scope: str) -> Callable:
@@ -57,13 +104,30 @@ def require_scope(scope: str) -> Callable:
 
     async def _check(
         settings: Settings = Depends(get_settings),
-        token: str | None = Depends(_current_token),
+        token_record: ApiToken | None = Depends(_current_token_record),
     ) -> None:
         if settings.env == "dev":
             return
 
-        # TODO (Phase 2+): query api_tokens for this token's scopes and
-        # raise 403 if *scope* is not present.
-        _ = scope, token
+        if token_record is None:
+            raise HTTPException(
+                status_code=status.HTTP_401_UNAUTHORIZED,
+                detail="Missing API token",
+            )
+
+        if token_record.revoked or _is_expired(token_record.expires_at):
+            raise HTTPException(
+                status_code=status.HTTP_401_UNAUTHORIZED,
+                detail="Invalid API token",
+            )
+
+        scopes = set(token_record.scopes)
+        if "admin.local" in scopes or scope in scopes:
+            return
+
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail=f"Missing required scope '{scope}'",
+        )
 
     return _check

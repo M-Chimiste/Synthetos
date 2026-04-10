@@ -39,3 +39,7 @@ class LLMAdapter(Protocol):
     ) -> T:
         """Generate a chat completion and parse it into a Pydantic model instance."""
         ...
+
+    async def close(self) -> None:
+        """Release any underlying client resources."""
+        ...

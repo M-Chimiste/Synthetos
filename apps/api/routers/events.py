@@ -10,6 +10,7 @@ from fastapi import APIRouter, Depends, Query
 from fastapi.responses import StreamingResponse
 from sqlalchemy import select
 
+from apps.api.auth import require_scope
 from apps.api.deps import get_db
 from libs.schemas.events import EventRead
 from libs.storage.models.events import DomainEvent
@@ -54,7 +55,7 @@ async def _event_stream(
         for event in events:
             data = EventRead.model_validate(event)
             payload = json.dumps(data.model_dump(mode="json"), default=str)
-            yield f"id: {data.id}\nevent: {data.event_type}\ndata: {payload}\n\n"
+            yield f"id: {data.id}\ndata: {payload}\n\n"
             cursor = event.id
 
         await asyncio.sleep(_POLL_INTERVAL)
@@ -65,6 +66,7 @@ async def stream_events(
     charter_id: UUID | None = Query(default=None),
     cycle_id: UUID | None = Query(default=None),
     last_event_id: UUID | None = Query(default=None),
+    _: None = Depends(require_scope("events.read")),
     db: AsyncSession = Depends(get_db),
 ) -> StreamingResponse:
     """Stream domain events as Server-Sent Events.

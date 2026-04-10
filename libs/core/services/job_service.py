@@ -76,6 +76,24 @@ def claim_job(session: Session, worker_id: str) -> Job | None:
     return job
 
 
+def get_job(session: Session, job_id: UUID) -> Job | None:
+    """Fetch a job by ID using the current session."""
+    return session.get(Job, job_id)
+
+
+def start_job(session: Session, job_id: UUID) -> Job:
+    """Mark a claimed job as running."""
+    session.execute(
+        update(Job)
+        .where(Job.id == job_id)
+        .values(status=JobStatus.running)
+    )
+    session.flush()
+    job = session.get(Job, job_id)
+    assert job is not None, f"Job {job_id} not found after start"
+    return job
+
+
 def complete_job(
     session: Session,
     job_id: UUID,
@@ -92,7 +110,7 @@ def complete_job(
             completed_at=now,
         )
     )
-    session.commit()
+    session.flush()
     job = session.get(Job, job_id)
     assert job is not None, f"Job {job_id} not found after completion"
     return job
@@ -114,7 +132,7 @@ def fail_job(
             completed_at=now,
         )
     )
-    session.commit()
+    session.flush()
     job = session.get(Job, job_id)
     assert job is not None, f"Job {job_id} not found after failure"
     return job
@@ -124,3 +142,34 @@ def heartbeat_job(session: Session, job_id: UUID) -> None:
     """Update the heartbeat timestamp for a running job."""
     session.execute(update(Job).where(Job.id == job_id).values(heartbeat_at=utcnow()))
     session.commit()
+
+
+def pause_job(session: Session, job_id: UUID, *, result: dict[str, Any] | None = None) -> Job:
+    """Mark a job as paused and optionally store the latest result snapshot."""
+    values: dict[str, Any] = {"status": JobStatus.paused}
+    if result is not None:
+        values["result"] = result
+
+    session.execute(update(Job).where(Job.id == job_id).values(**values))
+    session.flush()
+    job = session.get(Job, job_id)
+    assert job is not None, f"Job {job_id} not found after pause"
+    return job
+
+
+def resume_job(session: Session, job_id: UUID) -> Job:
+    """Resume a paused job by returning it to the pending queue."""
+    session.execute(
+        update(Job)
+        .where(Job.id == job_id)
+        .values(
+            status=JobStatus.pending,
+            claimed_by=None,
+            claimed_at=None,
+            heartbeat_at=None,
+        )
+    )
+    session.flush()
+    job = session.get(Job, job_id)
+    assert job is not None, f"Job {job_id} not found after resume"
+    return job

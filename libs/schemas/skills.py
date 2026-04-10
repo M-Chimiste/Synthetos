@@ -41,3 +41,10 @@ class SkillDefinitionRead(BaseModel):
     enabled: bool
     source_path: str | None
     discovered_at: datetime
+
+
+class DiscoverSkillsResponse(BaseModel):
+    """Response returned after running skill discovery."""
+
+    discovered: int
+    items: list[SkillDefinitionRead]

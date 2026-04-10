@@ -7,10 +7,11 @@ from pathlib import Path
 from fastapi import APIRouter, Depends, HTTPException, Query
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from apps.api.auth import require_scope
 from apps.api.deps import get_db, get_settings
 from libs.core.config import Settings
 from libs.schemas.common import PaginatedResponse
-from libs.schemas.skills import SkillDefinitionRead
+from libs.schemas.skills import DiscoverSkillsResponse, SkillDefinitionRead
 from libs.skills.loader import discover_skills
 from libs.skills.registry import get_skill, list_skills, upsert_skill
 
@@ -22,6 +23,7 @@ async def list_skills_endpoint(
     offset: int = Query(default=0, ge=0),
     limit: int = Query(default=50, ge=1, le=200),
     enabled_only: bool = Query(default=False),
+    _: None = Depends(require_scope("skills.read")),
     db: AsyncSession = Depends(get_db),
 ):
     skills, total = await list_skills(db, enabled_only=enabled_only, offset=offset, limit=limit)
@@ -31,6 +33,7 @@ async def list_skills_endpoint(
 @router.get("/{skill_id:path}", response_model=SkillDefinitionRead)
 async def get_skill_endpoint(
     skill_id: str,
+    _: None = Depends(require_scope("skills.read")),
     db: AsyncSession = Depends(get_db),
 ):
     skill = await get_skill(db, skill_id)
@@ -39,8 +42,9 @@ async def get_skill_endpoint(
     return skill
 
 
-@router.post("/discover", response_model=list[SkillDefinitionRead])
+@router.post("/discover", response_model=DiscoverSkillsResponse)
 async def discover_skills_endpoint(
+    _: None = Depends(require_scope("skills.bind")),
     db: AsyncSession = Depends(get_db),
     settings: Settings = Depends(get_settings),
 ):
@@ -56,4 +60,4 @@ async def discover_skills_endpoint(
         results.append(defn)
 
     await db.commit()
-    return results
+    return DiscoverSkillsResponse(discovered=len(results), items=results)

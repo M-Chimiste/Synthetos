@@ -1,5 +1,5 @@
 import { createFileRoute, Link } from "@tanstack/react-router";
-import { useCharters } from "../api/hooks";
+import { useCharters, useJobs } from "../api/hooks";
 import StatusBadge from "../components/StatusBadge";
 
 export const Route = createFileRoute("/")({
@@ -8,6 +8,11 @@ export const Route = createFileRoute("/")({
 
 function DashboardPage() {
   const { data, isLoading, error } = useCharters();
+  const jobs = useJobs();
+  const activeJobs =
+    jobs.data?.items.filter((job) =>
+      ["pending", "claimed", "running", "paused"].includes(job.status),
+    ) ?? [];
 
   return (
     <div>
@@ -28,9 +33,9 @@ function DashboardPage() {
           loading={isLoading}
         />
         <StatCard
-          label="Total Items"
-          value={data?.items.length ?? "--"}
-          loading={isLoading}
+          label="Active Jobs"
+          value={activeJobs.length}
+          loading={jobs.isLoading}
         />
       </div>
 
@@ -92,6 +97,56 @@ function DashboardPage() {
                     </td>
                     <td className="px-4 py-3 text-gray-500">
                       {new Date(charter.created_at).toLocaleDateString()}
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        )}
+      </section>
+
+      <section className="mt-8">
+        <div className="mb-3 flex items-center justify-between">
+          <h2 className="text-lg font-medium">Queue Snapshot</h2>
+          <Link to="/events" className="text-sm text-blue-600 hover:underline">
+            View live events
+          </Link>
+        </div>
+
+        {jobs.isLoading && <p className="text-sm text-gray-500">Loading jobs...</p>}
+
+        {jobs.error && (
+          <div className="rounded-lg border border-red-200 bg-red-50 p-4 text-sm text-red-700">
+            Failed to load jobs: {jobs.error.message}
+          </div>
+        )}
+
+        {jobs.data && jobs.data.items.length === 0 && (
+          <p className="text-sm text-gray-500">No jobs queued yet.</p>
+        )}
+
+        {jobs.data && jobs.data.items.length > 0 && (
+          <div className="overflow-hidden rounded-lg border border-gray-200 bg-white">
+            <table className="w-full text-left text-sm">
+              <thead className="border-b border-gray-100 bg-gray-50 text-xs uppercase text-gray-500">
+                <tr>
+                  <th className="px-4 py-3">Type</th>
+                  <th className="px-4 py-3">Status</th>
+                  <th className="px-4 py-3">Priority</th>
+                  <th className="px-4 py-3">Created</th>
+                </tr>
+              </thead>
+              <tbody className="divide-y divide-gray-100">
+                {jobs.data.items.slice(0, 8).map((job) => (
+                  <tr key={job.id} className="hover:bg-gray-50">
+                    <td className="px-4 py-3 font-mono">{job.job_type}</td>
+                    <td className="px-4 py-3">
+                      <StatusBadge status={job.status} />
+                    </td>
+                    <td className="px-4 py-3 text-gray-500">{job.priority}</td>
+                    <td className="px-4 py-3 text-gray-500">
+                      {new Date(job.created_at).toLocaleString()}
                     </td>
                   </tr>
                 ))}

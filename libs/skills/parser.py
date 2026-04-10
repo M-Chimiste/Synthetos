@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from pathlib import Path
+from typing import Any
 
 import frontmatter
 
@@ -24,7 +25,7 @@ def parse_skill_file(path: Path) -> tuple[SkillManifest, str]:
     except Exception as e:
         raise SkillParseError(f"Failed to parse {path}: {e}") from e
 
-    metadata = dict(post.metadata)
+    metadata: dict[str, Any] = dict(post.metadata)
     if "id" not in metadata:
         raise SkillParseError(f"Skill at {path} missing required 'id' in frontmatter")
 

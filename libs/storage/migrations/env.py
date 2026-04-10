@@ -9,9 +9,11 @@ from sqlalchemy import engine_from_config, pool
 
 # Import all models so they register with Base.metadata
 import libs.storage.models  # noqa: F401
+from libs.core.config import get_settings
 from libs.storage.base import Base
 
 config = context.config
+config.set_main_option("sqlalchemy.url", get_settings().sync_db_url)
 
 if config.config_file_name is not None:
     fileConfig(config.config_file_name)

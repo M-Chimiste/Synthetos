@@ -14,6 +14,17 @@ const STATUS_COLORS: Record<string, string> = {
   discovering: "bg-indigo-100 text-indigo-800",
   analyzing: "bg-indigo-100 text-indigo-800",
   experimenting: "bg-orange-100 text-orange-800",
+  created: "bg-slate-100 text-slate-800",
+  claimed: "bg-amber-100 text-amber-800",
+  discovery_ready: "bg-indigo-100 text-indigo-800",
+  discovery_screened: "bg-indigo-100 text-indigo-800",
+  analysis_ready: "bg-sky-100 text-sky-800",
+  evidence_ready: "bg-sky-100 text-sky-800",
+  portfolio_ready: "bg-orange-100 text-orange-800",
+  protocol_ready: "bg-orange-100 text-orange-800",
+  verifying: "bg-violet-100 text-violet-800",
+  reporting: "bg-blue-100 text-blue-800",
+  archived: "bg-gray-100 text-gray-600",
 };
 
 const DEFAULT_COLOR = "bg-gray-100 text-gray-700";
