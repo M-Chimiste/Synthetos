@@ -4,8 +4,8 @@ This file gives coding agents a concise operating brief for work in this reposit
 
 ## Project Snapshot
 
-- Product: **ML Laboratory Co-Scientist** (codename **Synthetos**)
-- Goal: a local-first, single-user system for end-to-end ML research loops
+- Product: **Synthetos**
+- Goal: a single-user ML research system for end-to-end research loops
 - Current state: **pre-implementation**
 - Immediate focus: **Phase 0 (Foundation)** from the phased implementation plan
 
@@ -33,17 +33,33 @@ Synthetos is intended to support four connected research loops:
 
 It is meant to behave like a bounded, inspectable research control tower, not a black-box swarm of chat agents.
 
+Two horizontal layers matter across those loops:
+
+- the **Skill system** for optional task-specific tools and context
+- the **Orchestrator API** for external control and telemetry via REST/SSE
+
 ## Locked Architectural Decisions
 
 Treat these as defaults unless a repository document explicitly changes them:
 
 - Use operator-over-shared-state, not agent-to-agent hidden memory.
-- Keep orchestration explicit with state machines and append-only domain events.
+- `ResearchCharter` is the project definition; `ResearchCycle` is one bounded research loop within a charter; `ResearchState` is the logical aggregate of everything that has occurred within a charter.
+- Keep orchestration explicit with state transitions and append-only domain events.
+- Assume only one active charter at a time because GPU-heavy work is not meant to run concurrently.
 - Prefer metadata-first literature triage before full-text ingestion.
+- Use an HTML-first full-text path for shortlisted papers, with PDF plus Marker as fallback when HTML is unavailable or low quality.
 - Build task-scoped context packs instead of passing entire project state into every step.
 - Keep the core deterministic and typed; use LLMs at the probabilistic edge.
 - Put every external dependency behind adapters.
 - Treat mechanical failures separately from scientific findings.
+- Prompts define operator behavior; skills are optional augmentations, not replacements for prompts.
+- Policy precedence is: hard system policy and token scopes, then user or charter settings, then autonomy or operator defaults.
+
+## Runtime Model
+
+- Postgres runs in Docker via `docker compose`.
+- API, worker, and web are expected to run on the host during development.
+- Experiment workloads run as sibling Docker containers with GPU passthrough, not Docker-in-Docker.
 
 ## Planned Monorepo Shape
 
@@ -65,8 +81,19 @@ Do not invent a conflicting structure without checking the docs first.
 - Backend: Python 3.12, FastAPI, Pydantic v2, SQLAlchemy 2, Alembic, psycopg, Typer
 - Frontend: React, TypeScript, Vite, TanStack Query, TanStack Router, Tailwind CSS
 - Database: PostgreSQL with pgvector and Apache AGE
+- Embeddings: `gte-modernbert`, 768 dimensions
+- Model gateway must support local OpenAI-compatible endpoints plus hosted OpenAI, Anthropic, and Google routes
 - Execution: Docker or Podman, with git worktrees for workspace isolation
 - Tooling: `uv`, `ruff`, `pyright`, `pytest`, `vitest`, `Playwright`
+
+Structured outputs are a first-class requirement. Generated data should validate into typed schemas whenever possible.
+
+## Internal Corpus
+
+- The internal corpus is a seeded local arXiv metadata mirror.
+- The arXiv metadata corpus is already downloaded and embedded, then incrementally updated through harvesting.
+- Discovery should stay metadata-first: review title and abstract together before escalating.
+- Shortlisted papers can move to HTML-first full-text extraction, with PDF as fallback.
 
 ## Implementation Guardrails
 
@@ -78,6 +105,7 @@ Do not invent a conflicting structure without checking the docs first.
 - Record lineage for model calls, experiments, and verification artifacts.
 - Keep container execution sandboxed by default: network disabled, data read-only, limits enforced.
 - Add modular behavior through `skill.md` packages instead of hardcoding everything into the core.
+- Build vertical slices that preserve durable artifacts and readable reports, not disconnected helpers.
 
 ## Agent Working Rules
 
@@ -87,6 +115,7 @@ Do not invent a conflicting structure without checking the docs first.
 - Optimize for inspectability, reproducibility, and durable state.
 - Evidence before hypothesis before code: build flows that keep provenance visible.
 - If you introduce a new subsystem, connect it back to one of the four core loops or a horizontal layer.
+- If you add entities early, prefer the names already called out in the planning docs, such as `ProblemProfile`, `DiscoveryView`, `PaperReviewArtifact`, `SkillExecutionRecord`, and `ApprovalEvent`.
 
 ## Expected Environment
 

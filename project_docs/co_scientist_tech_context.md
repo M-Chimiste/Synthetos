@@ -48,10 +48,11 @@ This tech context assumes the following product decisions are already in force:
 - Mechanical failures should route through **auto-remediation** before being treated as full scientific failure cases.
 - Successful runs should eventually receive **directional signal** and **frontier tracking**.
 - Checkpoint gates are **off unless configured** by policy, profile, or user preference.
-- Modular behavior must be supported through ``** packages**.
+- Modular behavior must be supported through **`skill.md` packages**.
 - Third-party skill signing is **not required** in the first local release.  Instead we use validation, capability declaration, hashes, and trust tiers.
 - External orchestrators must be supported through a **stable API plus telemetry streams**.
 - Cross-charter pattern memory should be **light-touch by default**, with no mandatory human verification before a pattern can begin influencing planning.
+- In v1, the local internal corpus is a seeded arXiv metadata mirror. It starts from a pre-populated seed and is incrementally updated through harvesting. Full text is fetched only on demand for shortlisted papers.
 
 ---
 
@@ -103,7 +104,7 @@ The canonical local stack for the first implementation is:
 The agreed database posture is:
 
 - **PostgreSQL** is the canonical system of record
-- `` provides semantic retrieval in the same Postgres instance
+- **`pgvector`** provides semantic retrieval in the same Postgres instance
 - **Apache AGE** provides graph storage and graph traversal in the same Postgres instance
 - we do **not** introduce a separate external graph database in v1
 
@@ -425,11 +426,14 @@ arXiv is the primary internal corpus. The full arXiv dataset is already download
 
 Technical stance:
 
+- seed the local corpus from a pre-populated arXiv metadata dataset
 - store title, abstract, categories, authors, dates, ids, and links in Postgres
 - pre-computed embeddings already exist for the full corpus
 - support incremental sync from a bulk metadata harvester for new papers
-- when a paper is shortlisted for full-text analysis, download and process with Marker (github.com/datalab-to/marker)
-- treat HTML fetch and PDF fetch as separate escalation operations
+- when a paper is shortlisted for full-text analysis, try HTML first
+- if HTML is unavailable or low quality, download the PDF and process it with Marker (github.com/datalab-to/marker)
+- normalize either full-text path into the same internal content representation for downstream chunking and analysis
+- treat HTML fetch and PDF fetch as separate escalation operations with explicit provenance
 
 ### 8.3 External source strategy
 
@@ -520,7 +524,8 @@ Triggered only for shortlisted papers or later explicit escalation.
 Technical stance:
 
 - HTML-first when a machine-readable source is available
-- PDF fallback when needed
+- PDF fallback when HTML is unavailable or low quality
+- HTML and PDF ingestion should converge into the same normalized internal full-text representation
 - keep provenance by chunk, page, and source location
 - normalize extracted elements into a consistent internal representation
 
@@ -657,7 +662,7 @@ capabilities:
   - source.read_metadata
   - source.request_fulltext
 risk_level: low
-trust_tier_required: untrusted
+trust_tier_required: third_party_untrusted
 ---
 
 # Title + Abstract Triage
@@ -746,7 +751,9 @@ Do not split this into a separate gateway service in v1.  Keep it in the same Fa
 
 Suggested resource families:
 
+- `/api/v1/charters`
 - `/api/v1/cycles`
+- `/api/v1/state`
 - `/api/v1/discovery`
 - `/api/v1/papers`
 - `/api/v1/analysis`
@@ -765,8 +772,9 @@ Suggested resource families:
 
 The API must support:
 
-- create and update research cycles
-- read cycle state snapshots
+- create and update research charters
+- create, resume, and update research cycles
+- read charter-scoped state snapshots
 - list and fetch discovery artifacts
 - list and fetch analysis packets and review artifacts
 - request allowed operator execution
@@ -782,8 +790,11 @@ Use local API tokens with explicit scopes in v1.
 
 Suggested scopes:
 
+- `charters.read`
+- `charters.write`
 - `cycles.read`
 - `cycles.write`
+- `state.read`
 - `discovery.read`
 - `analysis.read`
 - `runs.read`
@@ -1312,4 +1323,3 @@ Turn this into an initial repository bootstrap with:
 - orchestrator token and event-stream scaffolding
 - reranking policy and fallback scaffolding
 - remediation action and directional signal schema stubs
-
