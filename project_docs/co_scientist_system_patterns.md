@@ -250,13 +250,12 @@ Why this pattern exists:
 
 ### 5.2 State machine orchestration
 
-The lab should be implemented as a state machine over a research cycle, not as a freeform conversation.
+Each `ResearchCycle` within a charter should be implemented as a state machine, not as a freeform conversation.
 
 A typical cycle might move through states like:
 
 ```text
 created
--> chartered
 -> discovery_ready
 -> discovery_screened
 -> analysis_ready
@@ -781,6 +780,7 @@ Responsibility:
 Primary record types:
 
 - `ResearchCharter`
+- `ResearchCycle`
 - `ResearchState`
 - `ProblemProfile`
 - `PaperCard`

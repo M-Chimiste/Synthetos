@@ -108,7 +108,7 @@ npx playwright test               # E2e tests
 
 ## Core Domain Entities
 
-`ResearchCharter`, `ResearchState` (logical aggregate), `ProblemProfile`, `DiscoverySession`, `PaperCard`, `PaperAnalysisPacket`, `EvidenceCard`, `HypothesisCard`, `ExperimentSpec`, `RunRecord`, `VerificationReport`, `FailurePostmortem`, `RemediationAction`, `MetricFrontier`, `DirectionalSignal`, `CanonicalPattern`, `ReportBundle`, `SkillDefinition`, `SkillBinding`, `DomainEvent`
+`ResearchCharter`, `ResearchCycle`, `ResearchState` (logical aggregate), `ProblemProfile`, `DiscoverySession`, `DiscoveryView`, `PaperCard`, `PaperAnalysisPacket`, `PaperReviewArtifact`, `EvidenceCard`, `HypothesisCard`, `ExperimentSpec`, `RunRecord`, `VerificationReport`, `FailurePostmortem`, `RemediationAction`, `MetricFrontier`, `DirectionalSignal`, `CanonicalPattern`, `ReportBundle`, `SkillDefinition`, `SkillBinding`, `SkillExecutionRecord`, `OrchestratorClient`, `ApprovalEvent`, `DomainEvent`
 
 ## Environment
 

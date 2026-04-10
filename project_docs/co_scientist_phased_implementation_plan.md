@@ -65,6 +65,7 @@ The most important early decision is the durable shape of the research record.
 The following entities should be treated as first-class from the start:
 
 - `ResearchCharter`
+- `ResearchCycle`
 - `ResearchState`
 - `ProblemProfile`
 - `DiscoverySession`
