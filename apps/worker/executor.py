@@ -98,6 +98,16 @@ def _register_verification_operators() -> None:
 _register_verification_operators()
 
 
+def _register_remediation_operators() -> None:
+    """Register the Phase 4 remediation, signal, and recommendation operators."""
+    from libs.remediation.operators import register as register_remediation
+
+    register_remediation(register_operator)
+
+
+_register_remediation_operators()
+
+
 def execute(op_input: OperatorInput) -> OperatorResult:
     """Dispatch a job to its registered operator handler.
 

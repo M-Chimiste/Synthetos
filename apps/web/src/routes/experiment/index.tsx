@@ -5,6 +5,7 @@ import {
   fetchExperimentSpecs,
   fetchRunRecords,
 } from "../../api/experiment";
+import { fetchCharterFrontiers, type MetricFrontier } from "../../api/remediation";
 import StatusBadge from "../../components/StatusBadge";
 
 export const Route = createFileRoute("/experiment/")({
@@ -26,6 +27,15 @@ function ExperimentIndex() {
     queryKey: ["run-records"],
     queryFn: () => fetchRunRecords({ limit: 20 }),
     refetchInterval: 5_000,
+  });
+
+  // Derive charter_id from first hypothesis card (all cards share a charter)
+  const charterId = hypotheses.data?.items?.[0]?.charter_id;
+
+  const frontiers = useQuery({
+    queryKey: ["frontiers", charterId],
+    queryFn: () => fetchCharterFrontiers(charterId!),
+    enabled: !!charterId,
   });
 
   return (
@@ -126,6 +136,57 @@ function ExperimentIndex() {
           )}
         </div>
       </section>
+
+      {/* Frontier Summary */}
+      {frontiers.data && frontiers.data.length > 0 && (
+        <section>
+          <h2 className="text-lg font-semibold mb-2">
+            Metric Frontiers ({frontiers.data.length})
+          </h2>
+          <div className="space-y-2">
+            {frontiers.data.map((f: MetricFrontier) => (
+              <div
+                key={f.id}
+                className="border rounded p-3 flex items-center justify-between"
+              >
+                <div>
+                  <div className="font-medium">
+                    {f.primary_metric_name}{" "}
+                    <span className="text-xs text-gray-500">
+                      ({f.primary_metric_direction})
+                    </span>
+                  </div>
+                  <div className="text-sm">
+                    Best: {f.best_metric_value.toFixed(4)} ·{" "}
+                    {f.successful_runs}/{f.total_runs} runs successful
+                  </div>
+                </div>
+                <div className="text-right text-sm">
+                  <div
+                    className={
+                      f.runs_since_improvement >= 5
+                        ? "text-red-600"
+                        : f.runs_since_improvement >= 3
+                          ? "text-yellow-600"
+                          : "text-green-600"
+                    }
+                  >
+                    {f.runs_since_improvement === 0
+                      ? "Improved last run"
+                      : `${f.runs_since_improvement} runs since improvement`}
+                  </div>
+                  <a
+                    href={`/experiment/${f.best_run_id}`}
+                    className="text-xs text-blue-500 underline"
+                  >
+                    Best run
+                  </a>
+                </div>
+              </div>
+            ))}
+          </div>
+        </section>
+      )}
     </div>
   );
 }

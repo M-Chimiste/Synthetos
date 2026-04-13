@@ -63,8 +63,17 @@ def execution_setup_operator(op_input: OperatorInput) -> OperatorResult:
 
         run.workspace_path = str(worktree_path)
 
-        # 2. Write generated code files
-        code_plan = spec.code_plan or {}
+        # 2. Write generated code files (with optional remediation patches)
+        code_plan = dict(spec.code_plan or {})
+        remediation_overrides = op_input.payload.get("remediation_overrides", {})
+
+        # Apply code_plan patches from remediation
+        if "code_plan" in remediation_overrides:
+            patched_files = remediation_overrides["code_plan"].get("patched_files", {})
+            existing_files = dict(code_plan.get("files", {}))
+            existing_files.update(patched_files)
+            code_plan["files"] = existing_files
+
         files = code_plan.get("files", {})
         for filename, content in files.items():
             file_path = worktree_path / filename
@@ -102,7 +111,22 @@ def execution_setup_operator(op_input: OperatorInput) -> OperatorResult:
         db.flush()
 
         image_ref = spec.base_image or "python:3.12-slim"
-        build_recipe = spec.build_recipe
+        build_recipe = dict(spec.build_recipe) if spec.build_recipe else None
+
+        # Apply build_recipe patches from remediation (e.g., extra pip packages)
+        if "build_recipe" in remediation_overrides:
+            extra_pkgs = remediation_overrides["build_recipe"].get("extra_pip_packages", [])
+            if extra_pkgs and build_recipe and build_recipe.get("dockerfile_content"):
+                pip_line = f"RUN pip install {' '.join(extra_pkgs)}"
+                build_recipe["dockerfile_content"] += f"\n{pip_line}\n"
+            elif extra_pkgs:
+                # No build recipe yet — create a minimal one
+                build_recipe = {
+                    "dockerfile_content": (
+                        f"FROM {image_ref}\n"
+                        f"RUN pip install {' '.join(extra_pkgs)}\n"
+                    ),
+                }
 
         if build_recipe and build_recipe.get("dockerfile_content"):
             try:
@@ -132,16 +156,17 @@ def execution_setup_operator(op_input: OperatorInput) -> OperatorResult:
         entry_point = code_plan.get("entry_point", "run_experiment.py")
         run.command = f"python {entry_point}"
 
-        # Set resource limits
-        hw = spec.hardware_profile or {}
-        mem_gb = hw.get("memory_gb")
-        mem_str = f"{mem_gb}g" if isinstance(mem_gb, int) else "16g"
-        run.resource_limits = {
-            "memory": mem_str,
-            "timeout": hw.get("timeout_seconds", 3600),
-            "gpu": hw.get("gpu_required", False),
-            "gpu_count": hw.get("gpu_count", 1),
-        }
+        # Set resource limits (skip if already set by remediation)
+        if not run.resource_limits:
+            hw = spec.hardware_profile or {}
+            mem_gb = hw.get("memory_gb")
+            mem_str = f"{mem_gb}g" if isinstance(mem_gb, int) else "16g"
+            run.resource_limits = {
+                "memory": mem_str,
+                "timeout": hw.get("timeout_seconds", 3600),
+                "gpu": hw.get("gpu_required", False),
+                "gpu_count": hw.get("gpu_count", 1),
+            }
 
         emit_event_sync(
             db,

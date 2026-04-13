@@ -19,6 +19,7 @@ from apps.api.routers import (
     experiment,
     health,
     jobs,
+    remediation,
     skills,
     state,
 )
@@ -116,6 +117,7 @@ def create_app() -> FastAPI:
     app.include_router(discovery.router, prefix=api_prefix)
     app.include_router(analysis.router, prefix=api_prefix)
     app.include_router(experiment.router, prefix=api_prefix)
+    app.include_router(remediation.router, prefix=api_prefix)
 
     return app
 

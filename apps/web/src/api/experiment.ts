@@ -79,6 +79,7 @@ export interface ExperimentSpec {
 export interface RunRecord {
   id: string;
   experiment_spec_id: string;
+  parent_run_id: string | null;
   charter_id: string;
   cycle_id: string;
   run_number: number;

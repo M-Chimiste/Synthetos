@@ -83,3 +83,22 @@ class VerificationEvents(StrEnum):
     check_started = "verification.check_started"
     check_completed = "verification.check_completed"
     postmortem_generated = "verification.postmortem_generated"
+
+
+class RemediationEvents(StrEnum):
+    """Phase 4 remediation event types."""
+
+    remediation_started = "remediation.started"
+    retry_created = "remediation.retry_created"
+    strategy_escalated = "remediation.strategy_escalated"
+    skipped = "remediation.skipped"
+    exhausted = "remediation.exhausted"
+
+
+class SignalEvents(StrEnum):
+    """Phase 4 signal and frontier event types."""
+
+    signal_classified = "signal.classified"
+    frontier_created = "signal.frontier_created"
+    frontier_updated = "signal.frontier_updated"
+    recommendation_produced = "signal.recommendation_produced"

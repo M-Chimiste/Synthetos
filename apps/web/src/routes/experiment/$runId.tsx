@@ -9,6 +9,11 @@ import {
   fetchFailurePostmortem,
   controlRun,
 } from "../../api/experiment";
+import {
+  fetchRunRemediation,
+  fetchRunSignal,
+  fetchRunRecommendation,
+} from "../../api/remediation";
 import StatusBadge from "../../components/StatusBadge";
 
 const BASE_URL = import.meta.env.VITE_API_BASE_URL ?? "/api/v1";
@@ -67,6 +72,24 @@ function RunDetailPage() {
   const postmortem = useQuery({
     queryKey: ["postmortem", runId],
     queryFn: () => fetchFailurePostmortem(runId).catch(() => null),
+    enabled: !!runId,
+  });
+
+  const remediationActions = useQuery({
+    queryKey: ["remediation", runId],
+    queryFn: () => fetchRunRemediation(runId).catch(() => []),
+    enabled: !!runId,
+  });
+
+  const signal = useQuery({
+    queryKey: ["signal", runId],
+    queryFn: () => fetchRunSignal(runId).catch(() => null),
+    enabled: !!runId,
+  });
+
+  const recommendation = useQuery({
+    queryKey: ["recommendation", runId],
+    queryFn: () => fetchRunRecommendation(runId).catch(() => null),
     enabled: !!runId,
   });
 
@@ -234,6 +257,123 @@ function RunDetailPage() {
         </section>
       )}
 
+      {/* Run Lineage */}
+      {r.parent_run_id && (
+        <div className="text-sm text-gray-500">
+          Retry of run{" "}
+          <a
+            href={`/experiment/${r.parent_run_id}`}
+            className="text-blue-500 underline"
+          >
+            {r.parent_run_id.slice(0, 12)}
+          </a>
+        </div>
+      )}
+
+      {/* Directional Signal */}
+      {signal.data && (
+        <section>
+          <h2 className="text-lg font-semibold mb-2">Directional Signal</h2>
+          <div className="border rounded p-3 space-y-2">
+            <div className="flex items-center gap-2">
+              <span className="font-medium">Signal:</span>
+              <SignalBadge signal={signal.data.signal} />
+            </div>
+            <div className="text-sm">
+              <span className="text-gray-500">
+                {signal.data.primary_metric_name}:
+              </span>{" "}
+              {signal.data.primary_metric_value.toFixed(4)}
+              {signal.data.primary_metric_delta != null && (
+                <span
+                  className={
+                    signal.data.primary_metric_delta > 0
+                      ? "text-green-600"
+                      : signal.data.primary_metric_delta < 0
+                        ? "text-red-600"
+                        : "text-gray-500"
+                  }
+                >
+                  {" "}
+                  ({signal.data.primary_metric_delta > 0 ? "+" : ""}
+                  {signal.data.primary_metric_delta.toFixed(4)})
+                </span>
+              )}
+            </div>
+            {signal.data.constraint_metrics &&
+              signal.data.constraint_metrics.length > 0 && (
+                <div className="text-sm">
+                  {signal.data.constraint_metrics.map((cm) => (
+                    <span
+                      key={cm.name}
+                      className={`mr-3 ${cm.within_bounds ? "text-green-600" : "text-red-600"}`}
+                    >
+                      {cm.name}: {cm.value.toFixed(4)}{" "}
+                      {cm.within_bounds ? "✓" : "✗"}
+                    </span>
+                  ))}
+                </div>
+              )}
+            <div className="text-xs text-gray-500">{signal.data.reasoning}</div>
+          </div>
+        </section>
+      )}
+
+      {/* Recommendation */}
+      {recommendation.data && (
+        <section>
+          <h2 className="text-lg font-semibold mb-2">Recommendation</h2>
+          <div className="border rounded p-3 space-y-2">
+            <div className="flex items-center gap-2">
+              <span className="font-medium">Type:</span>
+              <RecommendationBadge type={recommendation.data.recommendation_type} />
+            </div>
+            <div className="text-sm">{recommendation.data.action}</div>
+            <div className="text-xs text-gray-500">
+              {recommendation.data.reasoning}
+            </div>
+          </div>
+        </section>
+      )}
+
+      {/* Remediation History */}
+      {remediationActions.data && remediationActions.data.length > 0 && (
+        <section>
+          <h2 className="text-lg font-semibold mb-2">Remediation History</h2>
+          <div className="space-y-2">
+            {remediationActions.data.map((a) => (
+              <div key={a.id} className="border rounded p-3 text-sm">
+                <div className="flex items-center gap-2">
+                  <span className="font-medium">
+                    #{a.attempt_number} {a.strategy}
+                  </span>
+                  <span className="text-xs px-2 py-0.5 rounded bg-gray-100">
+                    {a.strategy_tier}
+                  </span>
+                  <span className="text-xs px-2 py-0.5 rounded bg-gray-100">
+                    {a.outcome}
+                  </span>
+                </div>
+                {a.reasoning && (
+                  <div className="text-gray-500 mt-1">{a.reasoning}</div>
+                )}
+                {a.retry_run_id && (
+                  <div className="mt-1">
+                    Retry:{" "}
+                    <a
+                      href={`/experiment/${a.retry_run_id}`}
+                      className="text-blue-500 underline"
+                    >
+                      {a.retry_run_id.slice(0, 12)}
+                    </a>
+                  </div>
+                )}
+              </div>
+            ))}
+          </div>
+        </section>
+      )}
+
       {/* Telemetry tail */}
       <section>
         <h2 className="text-lg font-semibold mb-2">
@@ -269,5 +409,40 @@ function RunDetailPage() {
         </section>
       )}
     </div>
+  );
+}
+
+const SIGNAL_COLORS: Record<string, string> = {
+  advancing: "bg-green-100 text-green-800",
+  stalled: "bg-yellow-100 text-yellow-800",
+  regressing: "bg-red-100 text-red-800",
+  noisy: "bg-orange-100 text-orange-800",
+  breakthrough: "bg-amber-100 text-amber-800",
+};
+
+function SignalBadge({ signal }: { signal: string }) {
+  const color = SIGNAL_COLORS[signal] ?? "bg-gray-100 text-gray-800";
+  return (
+    <span className={`px-2 py-0.5 rounded text-xs font-medium ${color}`}>
+      {signal}
+    </span>
+  );
+}
+
+const REC_COLORS: Record<string, string> = {
+  continue_current: "bg-green-100 text-green-800",
+  parameter_variation: "bg-blue-100 text-blue-800",
+  hypothesis_pivot: "bg-purple-100 text-purple-800",
+  mechanical_recovery: "bg-yellow-100 text-yellow-800",
+  halt: "bg-red-100 text-red-800",
+};
+
+function RecommendationBadge({ type }: { type: string }) {
+  const color = REC_COLORS[type] ?? "bg-gray-100 text-gray-800";
+  const label = type.replace(/_/g, " ");
+  return (
+    <span className={`px-2 py-0.5 rounded text-xs font-medium ${color}`}>
+      {label}
+    </span>
   );
 }

@@ -33,6 +33,7 @@ log = get_logger("execution.run")
 _OOM_SIGNALS = ["oom", "out of memory", "killed", "signal 9"]
 _TIMEOUT_SIGNALS = ["timeout"]
 _DEPENDENCY_SIGNALS = ["modulenotfounderror", "importerror", "no such file"]
+_ARTIFACT_SIGNALS = ["filenotfounderror", "artifact", "missing output", "expected output"]
 
 
 def _classify_failure(exit_code: int, stderr_tail: str) -> str:
@@ -44,6 +45,8 @@ def _classify_failure(exit_code: int, stderr_tail: str) -> str:
         return "timeout"
     if any(s in lower for s in _DEPENDENCY_SIGNALS):
         return "dependency"
+    if any(s in lower for s in _ARTIFACT_SIGNALS):
+        return "invalid_artifact"
     if exit_code != 0:
         return "runtime"
     return "unknown"

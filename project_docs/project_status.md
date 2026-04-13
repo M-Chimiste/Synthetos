@@ -2,221 +2,224 @@
 
 **Product:** Synthetos (ML Laboratory Co-Scientist)
 **Date:** 2026-04-13
-**Phase:** 3 — Hypotheses, Protocols, and Execution Lab MVP
-**Status:** Phase 3 implementation complete, including the post-review remediation pass. All code-level quality gates are green (`ruff check`, `pyright`, `pytest` — 84 tests, and web build). Phase 3 now turns Phase 2 evidence into runnable ML experiments with real run control, live telemetry, deterministic verification, and recorded skill/model lineage. The main remaining work is live integration testing with real Postgres, real Docker containers, configured model endpoints, and GPU hardware.
+**Phase:** 4 — Remediation, Directional Signal, and Frontier Tracking
+**Status:** Phase 4 implementation complete. All code-level quality gates are green (`ruff check`, `pyright`, `pytest` — 132 tests, and web build). Phase 4 makes the execution loop resilient (auto-remediation of mechanical failures before postmortem) and research-aware (directional signal classification, metric frontier tracking per hypothesis line, and deterministic next-step recommendations). The main remaining work is live integration testing against real Postgres, Docker containers, and configured model endpoints.
 
 ---
 
-## Phase 3 Session Summary
+## Phase 4 Session Summary
 
-Phase 3 completes the transition from literature understanding to experimental execution. Evidence cards from Phase 2 are synthesized into ranked hypothesis portfolios, compiled into fully executable experiment specifications (with generated code), executed in isolated Docker containers, verified against deterministic metric contracts, and analyzed via LLM-generated failure postmortems when runs fail.
+Phase 4 bridges the deterministic execution lab (Phase 3) with the autonomous loop (Phase 5). Previously, every failed run went straight to an expensive LLM-generated postmortem and stopped. Now, mechanical failures (dependency, OOM, timeout) are auto-remediated with focused fixes before resorting to postmortem. Successful runs are classified with a directional signal, tracked against a per-hypothesis-line metric frontier, and given a deterministic next-step recommendation that distinguishes mechanical recovery from parameter variation from hypothesis pivots.
 
-The implementation followed the approved plan at `/Users/c/.claude/plans/streamed-prancing-plum.md`.
+The implementation followed the approved plan at `/Users/c/.claude/plans/lucky-toasting-plum.md`.
 
 Key design decisions:
-- **Generated-then-committed code provenance**: `protocol_compile` generates code → `execution_setup` writes files to a git worktree and commits → commit SHA is the durable lineage anchor
-- **Deterministic metric contract**: containers write `/artifacts/metrics.json` → `parse_metrics()` validates types/presence → `classify_metric()` compares against thresholds → VerificationReport
-- **Four run control actions**: pause (docker pause/SIGSTOP), resume (docker unpause/SIGCONT), cancel (docker kill), retry (new immutable RunRecord) — enforced by canonical action rules table
-- **Two-tier telemetry**: domain events (low-frequency, in main SSE stream) for orchestrators + `run_telemetry` rows (high-frequency, per-run SSE) for drill-in UI
-- **Skill lineage recording**: `record_skill_usage()` writes `skill_bindings` rows, `record_model_call()` writes `model_call_records` rows — closing the lineage gap from Phases 1-2
+- **Two-tier remediation**: focused strategies first (install missing deps, double memory, extend timeout), then broad LLM-assisted debug if the same failure class recurs. Max 3 attempts in a lineage before exhaustion.
+- **Single gateway to reporting**: the `recommend` operator is the sole owner of the `verifying → reporting` transition. Both terminal paths (passed runs via `signal_classify → recommend`, and failed-then-exhausted runs via `verification_postmortem → recommend`) converge on it.
+- **Primary metric convention**: `metrics[0]` is the optimization target unless `primary_metric_index` is set. All others are constraint metrics with bounds checking.
+- **Frontier keyed by hypothesis line**: `(charter_id, hypothesis_card_id)` not per-spec, so progress is tracked across protocol recompilations.
+- **VerificationReport as canonical owner**: signal and recommendation rows don't point back to the report — the report holds outgoing FKs (`directional_signal_id`, `recommendation_id`), avoiding circular references.
+- **Override delivery via job payload**: remediation patches (`code_plan`, `build_recipe`) go through the job payload key `remediation_overrides`, keeping `ExperimentSpec` immutable. Resource limits (`memory`, `timeout`) are set directly on the new `RunRecord`.
 
 The main outcomes were:
 
-- Added 7 new database tables via Alembic migration: `hypothesis_sessions`, `hypothesis_cards`, `experiment_specs`, `run_records`, `run_telemetry`, `verification_reports`, `failure_postmortems`
-- Built 3 hypothesis operators (generate, critique, rank) with structured LLM output and weighted composite scoring (novelty 0.3, feasibility 0.4, impact 0.3)
-- Built protocol compilation operator with spec completeness validation (baseline, metrics, stop conditions, code_plan required)
-- Built execution runtime: git worktree management, Docker SDK runner with GPU passthrough via `DeviceRequest`, log streaming with telemetry callback, failure classification (oom/timeout/dependency/runtime/metric_parse)
-- Built deterministic verification pipeline: metric parsing → per-metric classification → artifact contract checking → verdict (passed/failed/inconclusive) → optional LLM postmortem
-- Added worker failure cascading for all Phase 3 job prefixes (`hypothesis_*`, `protocol_*`, `execution_*`, `verification_*`)
-- Added 19 API endpoints under `/api/v1` for hypotheses, protocols, runs, run control, telemetry (list + SSE stream), and verification
-- Added 12 CLI commands under `synthetos experiment`
-- Added run control service with canonical action rules enforcement (409 on illegal transitions)
-- Added per-run telemetry SSE endpoint with terminal-status auto-close
-- Added skill lineage helpers and 4 Phase 3 skill packages
-- Added `hypothesis_generation` and `protocol_drafting` model role configs
-- Built web frontend: TypeScript API client, experiment dashboard page, run detail page with metrics/verification/postmortem/telemetry/controls
-- Remediated the Phase 3 execution gaps: active pause/resume/cancel/retry behavior, incremental telemetry commits, `execution.run_progress` heartbeats, wired skill usage in operators, deterministic `output_contract` and `metric_sanity`, scoped hypothesis selection, and mandatory commit provenance
-- Added targeted Phase 3 unit coverage for runtime control, telemetry, verification, and lineage
-- All code-level quality gates pass: `ruff`, `pyright`, `pytest` (`84 passed`), and web build
+- Added 4 new database tables via Alembic migration: `remediation_actions`, `directional_signals`, `metric_frontiers`, `run_recommendations`
+- Added 3 columns to existing tables: `run_records.parent_run_id`, `experiment_specs.primary_metric_index`, `verification_reports.directional_signal_id` + `recommendation_id`
+- Built 3 new operators: `auto_remediate`, `signal_classify`, `recommend`
+- Built pure-function modules: signal classification (5 signals), frontier upsert, recommendation rules (decision matrix), strategy selection with tier escalation
+- Rewired the verification pipeline: `verification_check` routes failed → `auto_remediate`, passed → `signal_classify`; `verification_postmortem` routes to `recommend` instead of directly to reporting
+- Added `invalid_artifact` failure class to execution classification
+- Modified `execution_setup` to merge remediation overrides (code_plan patches, build_recipe extras)
+- Added 7 API endpoints for remediation, signal, recommendation, lineage, signal history, and frontiers
+- Added 5 CLI commands: `remediation`, `signal`, `frontier`, `recommendation` under `synthetos experiment`
+- Added 9 new event types: `RemediationEvents` (5) and `SignalEvents` (4)
+- Built web frontend: TypeScript API client, run detail page with signal/recommendation/remediation/lineage sections, experiment index with frontier summary
+- Added 53 new unit tests (signal classification, frontier, recommendations, strategies)
+- All code-level quality gates pass: `ruff`, `pyright`, `pytest` (`132 passed`), and web build
 
 ---
 
-## What Was Added in Phase 3
+## What Was Added in Phase 4
 
 ### 1. Schema, migrations, and core types
 
-- New ORM models (`libs/storage/models/experiment.py`):
-  - `HypothesisSession` — one hypothesis-generation run per cycle, with status/budget/stats/step_log
-  - `HypothesisCard` — candidate hypothesis with evidence lineage, critique, scores (novelty/feasibility/impact), rank, status lifecycle
-  - `ExperimentSpec` — compiled protocol with baseline, controls, metrics, expected_artifacts, stop_conditions, code_plan, hardware_profile, base_image
-  - `RunRecord` — one execution of a spec, with workspace/container/image tracking, metrics_output, artifact_manifest, resource_usage, failure classification
-  - `RunTelemetry` — high-frequency streaming rows (log/metric/resource/status_change)
-  - `VerificationReport` — baseline comparison, artifact checks, output contract, metric sanity, verdict (passed/failed/inconclusive)
-  - `FailurePostmortem` — root cause, contributing factors, error trace, next step recommendation, lessons
-- Pydantic schemas (`libs/schemas/experiment.py`):
-  - `HypothesisBudget`, `HypothesisSessionStartRequest/Read/Response`, `HypothesisCardRead/Update`
-  - `ExperimentSpecCompileRequest/Read/Response`, `RunStartRequest/Response`, `RunControlRequest`, `RunRecordRead`
-  - `RunTelemetryRead`, `VerificationReportRead`, `FailurePostmortemRead`
+- New ORM models (`libs/storage/models/remediation.py`):
+  - `RemediationAction` — one remediation attempt per failed run, with strategy, tier (focused/broad), outcome, attempt tracking, and retry lineage
+  - `DirectionalSignal` — signal classification (advancing/stalled/regressing/noisy/breakthrough) with primary metric, delta, constraint metrics, and history window
+  - `MetricFrontier` — best-known metric state per hypothesis line (charter + hypothesis card), with best run, runs since improvement, success rate
+  - `RunRecommendation` — next-step recommendation (continue_current/parameter_variation/hypothesis_pivot/mechanical_recovery/halt) with action, reasoning, and inputs snapshot
+- Column additions to existing models (`libs/storage/models/experiment.py`):
+  - `RunRecord.parent_run_id` — self-referential FK for retry lineage tracking
+  - `ExperimentSpec.primary_metric_index` — which metric is the optimization target (default 0)
+  - `VerificationReport.directional_signal_id` — FK to signal row (set by `signal_classify`)
+  - `VerificationReport.recommendation_id` — FK to recommendation row (set by `recommend`)
+- Pydantic schemas (`libs/schemas/remediation.py`):
+  - `RemediationActionRead`, `DirectionalSignalRead`, `MetricFrontierRead`, `RunRecommendationRead`, `RunLineageRead`
+- Updated schemas (`libs/schemas/experiment.py`):
+  - Added `parent_run_id`, `primary_metric_index`, `directional_signal_id`, `recommendation_id` to existing read models
 - Alembic migration:
-  - `20260413_000001_phase3_hypotheses_execution.py` — creates 7 tables with indexes, FK constraints, Vector(768) columns
+  - `20260414_000001_phase4_remediation_signal.py` — creates 4 tables, adds 3 columns, with full downgrade support
 - Event types:
-  - `IdeationEvents` (6), `ProtocolEvents` (5), `ExecutionEvents` (9), `VerificationEvents` (3) — 23 new events namespaced under `ideation.*`, `protocol.*`, `execution.*`, `verification.*`
+  - `RemediationEvents` (5): `remediation.started`, `remediation.retry_created`, `remediation.strategy_escalated`, `remediation.skipped`, `remediation.exhausted`
+  - `SignalEvents` (4): `signal.classified`, `signal.frontier_created`, `signal.frontier_updated`, `signal.recommendation_produced`
 
-### 2. Hypothesis pipeline (`libs/ideation/`)
+### 2. Signal classification (`libs/remediation/signal_classification.py`)
 
-- `operators/generate.py` — loads evidence cards, calls `hypothesis_generation` model role with structured output, creates `HypothesisCard` rows
-- `operators/critique.py` — calls LLM in critique mode, fills novelty/feasibility/impact scores and critique payload
-- `operators/rank.py` — weighted composite scoring, assigns ranks, marks session completed, transitions cycle → `portfolio_ready`
-- `operators/_common.py` — shared helpers (session loading, step log, stats, enqueue, mark_failed)
+Pure-function module with deterministic rules:
+- `breakthrough` — improvement >= 2 standard deviations from historical mean (requires 3+ prior runs)
+- `advancing` — improvement over previous run beyond 1% noise band
+- `regressing` — wrong direction beyond noise band
+- `noisy` — direction alternating for 3+ consecutive runs
+- `stalled` — within noise band for 3+ consecutive runs
+- First successful run always classified as `advancing`
 
-### 3. Protocol compilation (`libs/protocols/`)
+### 3. Frontier tracking (`libs/remediation/frontier.py`)
 
-- `operators/compile.py` — loads selected hypotheses, calls `protocol_drafting` model role, generates `ExperimentSpec` rows with code_plan, validates completeness, rejects under-specified specs with detailed reasons, transitions cycle → `protocol_ready`
-- `validation.py` — spec completeness checker (baseline, metrics with direction, code_plan with entry_point and files, stop conditions)
+- `upsert_frontier()` — creates or updates `MetricFrontier` keyed on `(charter_id, hypothesis_card_id)`
+- Tracks best run, best metric value, total runs, successful runs, runs since improvement
+- Only successful runs can update the best value; failed runs still increment total_runs
 
-### 4. Execution runtime
+### 4. Recommendation logic (`libs/remediation/recommendations.py`)
 
-- `libs/adapters/git/worktree.py` — `create_worktree()`, `commit_worktree()`, `cleanup_worktree()` via git CLI
-- `libs/adapters/container/docker_runner.py` — `DockerRunner` class using Docker SDK: `build_image()`, `run()` with GPU passthrough via `DeviceRequest`, log streaming, timeout handling, `pause()`/`unpause()`/`kill()` for run control
-- `libs/execution/metrics.py` — `parse_metrics()` (validates /artifacts/metrics.json: presence, JSON validity, type coercion, NaN/inf rejection) and `classify_metric()` (per-metric pass/fail against spec thresholds/baseline)
-- `libs/execution/operators/setup.py` — creates git worktree, writes generated code files, commits, resolves/builds Docker image
-- `libs/execution/operators/run.py` — launches container, streams logs with telemetry callback, classifies failures (oom/timeout/dependency/runtime), enqueues capture or verification
-- `libs/execution/operators/capture.py` — collects artifact manifest with SHA-256 hashes, parses metrics via `parse_metrics()`, fails run on metric parse errors before verification
+Deterministic decision matrix mapping (signal, frontier state, remediation history) to recommendation type:
+- `continue_current` — breakthrough or advancing with no issues
+- `parameter_variation` — stalled (below threshold), regressing, noisy, or advancing with unresolved failures
+- `hypothesis_pivot` — stalled (>= 5 runs without improvement) or all remediations exhausted with no prior successes
+- Failed path: uses frontier + remediation + postmortem history when no signal exists
 
-### 5. Verification (`libs/verification/`)
+### 5. Remediation strategies (`libs/remediation/strategies.py`)
 
-- `baseline.py` — `compare_to_baseline()` produces per-metric `MetricVerdict` list
-- `contracts.py` — `check_artifact_contract()` verifies expected artifacts against manifest
-- `operators/check.py` — creates `VerificationReport` with verdict logic: all pass + thresholds → "passed", all pass but no thresholds → "inconclusive", any fail → "failed"
-- `operators/postmortem.py` — calls `evaluation` model role with error trace + metrics, creates `FailurePostmortem`, transitions cycle → `reporting`
+Two-tier strategy selection per failure class:
+- **Tier 1 — Focused** (deterministic, no LLM):
+  - `dependency` → parse stderr for missing modules, patch build_recipe
+  - `oom` → double memory limit (cap 64g)
+  - `timeout` → increase timeout by 50% (cap 4h)
+  - `invalid_artifact` → escalate to broad
+  - `metric_parse` → not remediable, skip to postmortem
+- **Tier 2 — Broad debug** (LLM-assisted):
+  - Activates when focused strategy already tried for same failure class
+  - Sends error trace + code plan + prior remediation history to LLM for code fix
+- Escalation rule: attempt 1 = focused; attempt 2 with same failure class = broad; different class = focused for new class
 
-### 6. Worker integration
+### 6. Operators (`libs/remediation/operators/`)
 
-- All 9 Phase 3 operators registered in `apps/worker/executor.py` via 4 registration blocks (ideation, protocols, execution, verification)
-- `_mark_ideation_job_failed()` — marks linked hypothesis session failed
-- `_mark_execution_job_failed()` — marks linked run record failed
-- Both integrated into the worker failure path alongside existing discovery/analysis cascades
+- `auto_remediate` — loads failed run, counts lineage attempts, selects strategy, creates new RunRecord with overrides, persists RemediationAction, enqueues `execution_setup` for retry. Routes to `verification_postmortem` when exhausted or non-remediable.
+- `signal_classify` — loads run history across all specs in hypothesis line, classifies signal, persists DirectionalSignal, upserts MetricFrontier, sets VerificationReport FK, enqueues `recommend`.
+- `recommend` — gathers signal + frontier + remediation + postmortem data, applies deterministic rules, persists RunRecommendation, sets VerificationReport FK, transitions cycle → `reporting`.
 
-### 7. Service layer (`libs/core/services/experiment_service.py`)
+### 7. Pipeline rewiring
 
-- `start_hypothesis_session()` — validates `evidence_ready` cycle status, creates session + enqueues `hypothesis_generate`
-- `compile_protocols()` — validates `portfolio_ready`, enqueues `protocol_compile` with hypothesis session reference
-- `start_run()` — validates spec is `validated`, creates RunRecord, enqueues `execution_setup`, transitions cycle → `running`
-- `control_run()` — enforces canonical action rules table (pause/resume/cancel/retry with status-specific legality, 409 on violations)
-- Query functions for all entities: sessions, cards, specs, runs, telemetry, verification reports, postmortems
+- `verification_check` (failed path): now enqueues `auto_remediate` instead of `verification_postmortem`
+- `verification_check` (passed path): now enqueues `signal_classify` instead of transitioning to `reporting`
+- `verification_postmortem`: now enqueues `recommend` instead of transitioning to `reporting`
+- `execution_setup`: reads `remediation_overrides` from job payload, merges code_plan patches and build_recipe extras
+- `execution_run`: added `invalid_artifact` failure classification heuristics
 
-### 8. API (`apps/api/routers/experiment.py`)
+### 8. API (`apps/api/routers/remediation.py`)
 
-19 endpoints under `/api/v1`:
-- Hypotheses: `POST /hypotheses/sessions`, `GET /hypotheses/sessions`, `GET /hypotheses/sessions/{id}`, `GET /hypotheses/cards`, `GET /hypotheses/cards/{id}`, `PATCH /hypotheses/cards/{id}`
-- Protocols: `POST /protocols/compile`, `GET /protocols/specs`, `GET /protocols/specs/{id}`
-- Runs: `POST /runs`, `GET /runs`, `GET /runs/{id}`, `POST /runs/{id}/control`
-- Telemetry: `GET /runs/{id}/telemetry`, `GET /runs/{id}/telemetry/stream` (SSE)
-- Verification: `GET /runs/{id}/verification`, `GET /runs/{id}/postmortem`, `GET /verifications`
+7 endpoints under `/api/v1`:
+- `GET /runs/{id}/remediation` — remediation actions for a run
+- `GET /runs/{id}/signal` — directional signal for a run
+- `GET /runs/{id}/recommendation` — recommendation for a run
+- `GET /runs/{id}/lineage` — full retry chain (parent_run_id walk + remediation actions)
+- `GET /specs/{id}/signal-history` — all signals for a spec
+- `GET /hypotheses/{id}/frontier` — metric frontier for a hypothesis line
+- `GET /charters/{id}/frontiers` — all frontiers for a charter
 
-### 9. Skills
+### 9. CLI (`apps/cli/commands/experiment.py`)
 
-- `skills/ideation/hypothesis_generation/skill.md` — guidance for hypothesis generation and critique
-- `skills/ideation/experiment_planning/skill.md` — guidance for compiling hypotheses into executable specs
-- `skills/coding/experiment_coding/skill.md` — code structure, metric reporting, artifact output conventions
-- `skills/verification/run_evaluation/skill.md` — verification checks, failure classification, postmortem analysis
+5 new commands under `synthetos experiment`:
+- `remediation --run-id <uuid>` — show remediation actions
+- `signal --run-id <uuid>` — show directional signal
+- `frontier --charter-id <uuid>` — list metric frontiers
+- `recommendation --run-id <uuid>` — show recommendation
 
-### 10. Lineage
+### 10. Frontend
 
-- `libs/skills/lineage.py` — `record_skill_usage()` writes `skill_bindings` rows, `record_model_call()` writes `model_call_records` rows
-- Model config: added `hypothesis_generation` and `protocol_drafting` role entries to `configs/models.yaml`
-
-### 11. CLI (`apps/cli/commands/experiment.py`)
-
-12 commands under `synthetos experiment`:
-- `hypothesize`, `hypotheses`, `compile`, `specs`, `run`, `runs`, `status`, `pause`, `resume`, `cancel`, `retry`, `verify`, `postmortem`
-
-### 12. Frontend
-
-- `apps/web/src/api/experiment.ts` — full TypeScript API client with types for all Phase 3 entities
-- `apps/web/src/routes/experiment/index.tsx` — dashboard showing hypotheses, specs, and runs with polling
-- `apps/web/src/routes/experiment/$runId.tsx` — run detail page with metrics, verification report, failure postmortem, telemetry tail, and run control buttons (pause/resume/cancel/retry)
+- `apps/web/src/api/remediation.ts` — TypeScript API client with types for all Phase 4 entities
+- `apps/web/src/routes/experiment/$runId.tsx` — run detail page gains: run lineage links, directional signal badge with delta and constraint metrics, recommendation badge with action/reasoning, remediation history with strategy/tier/outcome and retry links
+- `apps/web/src/routes/experiment/index.tsx` — experiment index gains: frontier summary section showing best metric, runs since improvement, success rate per hypothesis line
+- `apps/web/src/api/experiment.ts` — added `parent_run_id` to `RunRecord` TypeScript type
 
 ---
 
-## Files Touched in Phase 3
+## Files Touched in Phase 4
 
 ### New backend / library files
 
-- `libs/storage/models/experiment.py` — 7 SQLAlchemy models
-- `libs/storage/migrations/versions/20260413_000001_phase3_hypotheses_execution.py`
-- `libs/schemas/experiment.py` — 15+ Pydantic schemas
-- `libs/ideation/__init__.py`, `operators/__init__.py`, `operators/_common.py`, `operators/generate.py`, `operators/critique.py`, `operators/rank.py`
-- `libs/protocols/__init__.py`, `operators/__init__.py`, `operators/_common.py`, `operators/compile.py`, `validation.py`
-- `libs/execution/__init__.py`, `metrics.py`, `operators/__init__.py`, `operators/_common.py`, `operators/setup.py`, `operators/run.py`, `operators/capture.py`
-- `libs/verification/__init__.py`, `baseline.py`, `contracts.py`, `operators/__init__.py`, `operators/_common.py`, `operators/check.py`, `operators/postmortem.py`
-- `libs/adapters/git/__init__.py`, `worktree.py`
-- `libs/adapters/container/docker_runner.py`
-- `libs/skills/lineage.py`
-- `libs/core/services/experiment_service.py`
-- `apps/api/routers/experiment.py`
-- `apps/cli/commands/experiment.py`
+- `libs/storage/models/remediation.py` — 4 SQLAlchemy models
+- `libs/storage/migrations/versions/20260414_000001_phase4_remediation_signal.py`
+- `libs/schemas/remediation.py` — 5 Pydantic schemas
+- `libs/remediation/__init__.py`, `signal_classification.py`, `frontier.py`, `recommendations.py`, `strategies.py`
+- `libs/remediation/operators/__init__.py`, `_common.py`, `remediate.py`, `signal.py`, `recommend.py`
+- `apps/api/routers/remediation.py`
 
 ### Modified backend / library files
 
-- `pyproject.toml` — added `docker>=7,<8`
-- `libs/core/event_types.py` — added `IdeationEvents`, `ProtocolEvents`, `ExecutionEvents`, `VerificationEvents`
-- `libs/storage/models/__init__.py` — registered 7 new models
-- `apps/worker/executor.py` — registered 4 operator chains (ideation, protocols, execution, verification)
-- `apps/worker/main.py` — added `_mark_ideation_job_failed`, `_mark_execution_job_failed` + failure cascade integration
-- `apps/api/main.py` — mounted experiment router
-- `apps/cli/main.py` — registered `experiment` Typer subcommand
-- `configs/models.yaml` — added `hypothesis_generation` and `protocol_drafting` role entries
-
-### New skills
-
-- `skills/ideation/hypothesis_generation/skill.md`
-- `skills/ideation/experiment_planning/skill.md`
-- `skills/coding/experiment_coding/skill.md`
-- `skills/verification/run_evaluation/skill.md`
+- `libs/core/event_types.py` — added `RemediationEvents` (5) and `SignalEvents` (4)
+- `libs/storage/models/experiment.py` — added `parent_run_id`, `primary_metric_index`, `directional_signal_id`, `recommendation_id` columns
+- `libs/storage/models/__init__.py` — registered 4 new models
+- `libs/schemas/experiment.py` — added new fields to `RunRecordRead`, `ExperimentSpecRead`, `VerificationReportRead`
+- `libs/verification/operators/check.py` — rewired failed → `auto_remediate`, passed → `signal_classify`
+- `libs/verification/operators/postmortem.py` — enqueues `recommend` instead of transitioning to reporting
+- `libs/execution/operators/run.py` — added `invalid_artifact` failure classification
+- `libs/execution/operators/setup.py` — handles `remediation_overrides` payload
+- `apps/worker/executor.py` — registered Phase 4 operator chain
+- `apps/api/main.py` — mounted remediation router
+- `apps/cli/commands/experiment.py` — added 5 Phase 4 commands
 
 ### Frontend
 
-- `apps/web/src/api/experiment.ts` — TypeScript API client
-- `apps/web/src/routes/experiment/index.tsx` — experiment dashboard
-- `apps/web/src/routes/experiment/$runId.tsx` — run detail page
-- `apps/web/src/routeTree.gen.ts` — route registration (auto-generated)
+- `apps/web/src/api/remediation.ts` — new TypeScript API client
+- `apps/web/src/api/experiment.ts` — added `parent_run_id` to RunRecord
+- `apps/web/src/routes/experiment/$runId.tsx` — signal, recommendation, remediation, lineage sections
+- `apps/web/src/routes/experiment/index.tsx` — frontier summary section
+
+### Tests
+
+- `tests/unit/test_signal_classification.py` — 16 tests covering all 5 signals + edge cases
+- `tests/unit/test_frontier.py` — 6 tests for create/update/failed paths
+- `tests/unit/test_recommendations.py` — 12 tests covering full decision matrix
+- `tests/unit/test_remediation_strategies.py` — 19 tests for all failure classes + escalation + helpers
 
 ---
 
 ## Verification Status
 
-The repository passes code-level quality gates after Phase 3:
+The repository passes code-level quality gates after Phase 4:
 
 - `uv run ruff check .` — passes
-- `UV_CACHE_DIR=/tmp/uv-cache uv run pyright` — passes
-- `uv run pytest` — `84 passed`
+- `uv run pyright` — passes (0 errors, 0 warnings)
+- `uv run pytest` — `132 passed`
 - `cd apps/web && npm run build` — passes
 
 ---
 
-## What Remains Before Phase 3 Can Be Called Fully Verified
+## What Remains Before Phase 4 Can Be Called Fully Verified
 
 1. **Run the migration against a live Postgres instance.**
-   - `alembic upgrade head` should create the 7 Phase 3 tables alongside the existing Phase 0+1+2 schema.
-2. **Validate the full hypothesis → protocol → execution → verification pipeline end-to-end.**
-   - Start from a cycle with evidence cards, run `synthetos experiment hypothesize`, watch the worker process the 3-operator hypothesis chain, then `compile`, then `run`.
-3. **Validate Docker container execution with real GPU hardware.**
-   - Test with a simple PyTorch script on the 2x RTX 6000 Blackwell GPUs. Confirm `DeviceRequest` GPU passthrough works, metrics are written to `/artifacts/metrics.json`, and the verification pipeline produces a correct verdict.
-4. **Validate run control actions against a running container.**
-   - Pause a running container (verify `docker pause` works), resume it, cancel it, retry it. Confirm the canonical action rules table is enforced correctly (409 on illegal transitions).
-5. **Test failure paths.**
-   - Force an OOM failure (exit code 137), a timeout, a dependency error (missing import), and a metric parse error (corrupt metrics.json). Verify each produces the correct `failure_class` and generates an LLM postmortem.
-6. **Validate configured model endpoints.**
-   - The `hypothesis_generation`, `protocol_drafting`, `coding`, and `evaluation` model roles must all be reachable for the full pipeline.
-7. **Run a true end-to-end live experiment smoke.**
-   - Confirm the full hypothesis → protocol → execution → verification path works with real artifacts, real metrics, and the expected verification verdict under live conditions.
+   - `alembic upgrade head` should create the 4 Phase 4 tables and add columns to `run_records`, `experiment_specs`, and `verification_reports` alongside existing schema.
+2. **Validate auto-remediation end-to-end.**
+   - Force a dependency failure (missing import), verify remediation creates a retry run with the missing package added to build_recipe. Confirm the retry succeeds.
+   - Force an OOM failure (exit code 137), verify memory is doubled on retry.
+   - Force a timeout, verify timeout is extended.
+   - Verify max_attempts (3) is respected and remediation exhaustion routes to postmortem → recommend.
+3. **Validate the broad debug escalation path.**
+   - Force two consecutive dependency failures with the same missing module to trigger focused → broad escalation. Verify the LLM is called and code_plan patches are applied.
+4. **Validate signal classification after successful runs.**
+   - Run multiple experiments against the same hypothesis. Verify signals progress through advancing → stalled as metrics plateau. Verify frontier updates correctly.
+5. **Validate recommendations.**
+   - After a stalled frontier (5+ runs without improvement), verify the recommendation is `hypothesis_pivot`.
+   - After a breakthrough, verify `continue_current`.
+   - After remediation exhaustion with no prior successes, verify `hypothesis_pivot`.
+6. **Validate UI rendering.**
+   - Confirm the run detail page shows signal badge, recommendation badge, remediation history with retry links, and lineage breadcrumbs.
+   - Confirm the experiment index shows frontier summary with best metric and staleness indicators.
 
 ---
 
 ## What Is Explicitly Still Out of Scope
 
-- Auto-remediation, directional signal, and frontier tracking (Phase 4)
 - Autonomous loop, gating, and completion reports (Phase 5)
 - Cross-charter pattern memory (Phase 6)
 - Re-embedding the corpus or supporting alternate embedding models — locked to `gte-modernbert-base` / 768
@@ -233,7 +236,7 @@ uv sync --extra dev --extra reranker
 
 # Database
 docker compose up -d postgres
-uv run synthetos db init   # runs alembic upgrade head; lands Phase 0+1+2+3 schema
+uv run synthetos db init   # runs alembic upgrade head; lands Phase 0+1+2+3+4 schema
 
 # (One-time) import the pre-embedded arXiv mirror — ~56 GB JSONL, ~3M records
 uv run synthetos corpus import-arxiv --path artifacts/arxiv-embedded.jsonl
@@ -241,7 +244,7 @@ uv run synthetos corpus import-arxiv --path artifacts/arxiv-embedded.jsonl
 # Backend API
 uv run uvicorn apps.api.main:app --port 8000 --reload
 
-# Worker (must be running for discovery, analysis, and experiment operator chains)
+# Worker (must be running for discovery, analysis, experiment, and remediation operator chains)
 uv run python -m apps.worker
 
 # Frontend
@@ -286,6 +289,12 @@ uv run synthetos experiment pause --run-id <uuid>
 uv run synthetos experiment resume --run-id <uuid>
 uv run synthetos experiment cancel --run-id <uuid>
 uv run synthetos experiment retry --run-id <uuid>
+
+# Phase 4: Inspect remediation, signal, frontier, recommendation
+uv run synthetos experiment remediation --run-id <uuid>
+uv run synthetos experiment signal --run-id <uuid>
+uv run synthetos experiment recommendation --run-id <uuid>
+uv run synthetos experiment frontier --charter-id <uuid>
 ```
 
 If local Postgres is not using the repo defaults, set `LAB_DB_URL` first so the API, worker, and Alembic all target the same database. The query-time embedding endpoint configured in `configs/models.yaml` (`embeddings.default.base_url`) must be reachable for hybrid retrieval; without it the internal corpus adapter degrades to lexical-only.

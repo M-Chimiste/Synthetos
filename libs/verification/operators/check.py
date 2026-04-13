@@ -14,7 +14,6 @@ from libs.core.event_types import VerificationEvents
 from libs.core.events import emit_event_sync
 from libs.core.logging import get_logger
 from libs.core.operators import OperatorInput, OperatorResult
-from libs.core.types import CycleStatus
 from libs.execution.operators._common import (
     ExecutionStateError,
     load_run_record,
@@ -169,13 +168,13 @@ def verification_check_operator(op_input: OperatorInput) -> OperatorResult:
             enqueue_next_verification(
                 db,
                 cycle_id=run.cycle_id,
-                next_job_type="verification_postmortem",
+                next_job_type="auto_remediate",
                 run_record_id=run.id,
             )
             db.commit()
             return OperatorResult(
                 success=True,
-                summary="Run failed; created failure report; enqueued postmortem",
+                summary="Run failed; created failure report; enqueued auto_remediate",
             )
 
         # Run completed successfully — full verification
@@ -313,20 +312,25 @@ def verification_check_operator(op_input: OperatorInput) -> OperatorResult:
             enqueue_next_verification(
                 db,
                 cycle_id=run.cycle_id,
-                next_job_type="verification_postmortem",
+                next_job_type="auto_remediate",
                 run_record_id=run.id,
             )
             db.commit()
             return OperatorResult(
                 success=True,
-                summary=f"Verification failed; enqueued postmortem. {'; '.join(summary_parts)}",
+                summary=f"Verification failed; enqueued auto_remediate. {'; '.join(summary_parts)}",
             )
 
-        # Passed or inconclusive — transition to reporting
+        # Passed or inconclusive — enqueue signal classification
+        enqueue_next_verification(
+            db,
+            cycle_id=run.cycle_id,
+            next_job_type="signal_classify",
+            run_record_id=run.id,
+        )
         db.commit()
 
     return OperatorResult(
         success=True,
-        summary="; ".join(summary_parts),
-        state_patch={"cycle_status": CycleStatus.reporting.value},
+        summary=f"{'; '.join(summary_parts)}; enqueued signal_classify",
     )

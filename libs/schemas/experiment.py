@@ -132,6 +132,7 @@ class ExperimentSpecRead(BaseModel):
     hardware_profile: dict[str, Any] | None = None
     base_image: str | None = None
     build_recipe: dict[str, Any] | None = None
+    primary_metric_index: int = 0
     status: str
     rejection_reason: str | None = None
     created_at: datetime
@@ -170,6 +171,7 @@ class RunRecordRead(BaseModel):
 
     id: UUID
     experiment_spec_id: UUID
+    parent_run_id: UUID | None = None
     charter_id: UUID
     cycle_id: UUID
     run_number: int
@@ -232,6 +234,8 @@ class VerificationReportRead(BaseModel):
     run_record_id: UUID
     charter_id: UUID
     cycle_id: UUID
+    directional_signal_id: UUID | None = None
+    recommendation_id: UUID | None = None
     verdict: str
     baseline_comparison: dict[str, Any] | None = None
     artifact_checks: list[dict[str, Any]] | None = None

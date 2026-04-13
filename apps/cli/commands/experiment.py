@@ -247,3 +247,138 @@ async def _show_postmortem(run_id: UUID) -> None:
         typer.echo(f"Root cause:     {pm.root_cause}")
         if pm.next_step_recommendation:
             typer.echo(f"Next step:      {pm.next_step_recommendation}")
+
+
+# ---- Remediation (Phase 4) ---------------------------------------------------
+
+
+@app.command("remediation")
+def show_remediation(
+    run_id: str = typer.Option(..., "--run-id", help="UUID of the run record"),
+) -> None:
+    """Show remediation actions for a run."""
+    asyncio.run(_show_remediation(UUID(run_id)))
+
+
+async def _show_remediation(run_id: UUID) -> None:
+    from sqlalchemy import select
+
+    from libs.storage.base import get_async_session
+    from libs.storage.models.remediation import RemediationAction
+
+    async with get_async_session() as db:
+        result = await db.execute(
+            select(RemediationAction)
+            .where(RemediationAction.run_record_id == run_id)
+            .order_by(RemediationAction.created_at.asc())
+        )
+        actions = result.scalars().all()
+        if not actions:
+            typer.echo("No remediation actions for this run.")
+            return
+        for a in actions:
+            typer.echo(
+                f"  #{a.attempt_number} {a.strategy} ({a.strategy_tier}) "
+                f"→ {a.outcome}"
+            )
+            if a.reasoning:
+                typer.echo(f"    Reason: {a.reasoning}")
+            if a.retry_run_id:
+                typer.echo(f"    Retry run: {a.retry_run_id}")
+
+
+@app.command("signal")
+def show_signal(
+    run_id: str = typer.Option(..., "--run-id", help="UUID of the run record"),
+) -> None:
+    """Show directional signal for a run."""
+    asyncio.run(_show_signal(UUID(run_id)))
+
+
+async def _show_signal(run_id: UUID) -> None:
+    from sqlalchemy import select
+
+    from libs.storage.base import get_async_session
+    from libs.storage.models.remediation import DirectionalSignal
+
+    async with get_async_session() as db:
+        result = await db.execute(
+            select(DirectionalSignal).where(
+                DirectionalSignal.run_record_id == run_id
+            )
+        )
+        sig = result.scalar_one_or_none()
+        if sig is None:
+            typer.echo("No directional signal for this run.")
+            return
+        typer.echo(f"Signal:    {sig.signal}")
+        typer.echo(f"Metric:    {sig.primary_metric_name} = {sig.primary_metric_value:.4f}")
+        if sig.primary_metric_delta is not None:
+            typer.echo(f"Delta:     {sig.primary_metric_delta:+.4f}")
+        typer.echo(f"Direction: {sig.primary_metric_direction}")
+        typer.echo(f"Reasoning: {sig.reasoning}")
+
+
+@app.command("frontier")
+def show_frontier(
+    charter_id: str = typer.Option(
+        ..., "--charter-id", help="UUID of the charter"
+    ),
+) -> None:
+    """List metric frontiers for a charter."""
+    asyncio.run(_show_frontier(UUID(charter_id)))
+
+
+async def _show_frontier(charter_id: UUID) -> None:
+    from sqlalchemy import select
+
+    from libs.storage.base import get_async_session
+    from libs.storage.models.remediation import MetricFrontier
+
+    async with get_async_session() as db:
+        result = await db.execute(
+            select(MetricFrontier)
+            .where(MetricFrontier.charter_id == charter_id)
+            .order_by(MetricFrontier.updated_at.desc())
+        )
+        frontiers = result.scalars().all()
+        if not frontiers:
+            typer.echo("No metric frontiers for this charter.")
+            return
+        for f in frontiers:
+            typer.echo(
+                f"  Hypothesis {f.hypothesis_card_id}: "
+                f"{f.primary_metric_name}={f.best_metric_value:.4f} "
+                f"({f.primary_metric_direction}) "
+                f"| {f.runs_since_improvement} runs since improvement "
+                f"| {f.successful_runs}/{f.total_runs} successful"
+            )
+
+
+@app.command("recommendation")
+def show_recommendation(
+    run_id: str = typer.Option(..., "--run-id", help="UUID of the run record"),
+) -> None:
+    """Show recommendation for a run."""
+    asyncio.run(_show_recommendation(UUID(run_id)))
+
+
+async def _show_recommendation(run_id: UUID) -> None:
+    from sqlalchemy import select
+
+    from libs.storage.base import get_async_session
+    from libs.storage.models.remediation import RunRecommendation
+
+    async with get_async_session() as db:
+        result = await db.execute(
+            select(RunRecommendation).where(
+                RunRecommendation.run_record_id == run_id
+            )
+        )
+        rec = result.scalar_one_or_none()
+        if rec is None:
+            typer.echo("No recommendation for this run.")
+            return
+        typer.echo(f"Type:      {rec.recommendation_type}")
+        typer.echo(f"Action:    {rec.action}")
+        typer.echo(f"Reasoning: {rec.reasoning}")

@@ -17,7 +17,7 @@ from libs.core.event_types import VerificationEvents
 from libs.core.events import emit_event_sync
 from libs.core.logging import get_logger
 from libs.core.operators import OperatorInput, OperatorResult
-from libs.core.types import CycleStatus
+from libs.core.services.job_service import create_job
 from libs.discovery.skill_support import join_skill_prompts, load_skill_prompt
 from libs.execution.operators._common import (
     ExecutionStateError,
@@ -185,10 +185,18 @@ def verification_postmortem_operator(op_input: OperatorInput) -> OperatorResult:
                 "failure_class": postmortem.failure_class,
             },
         )
+
+        # Enqueue recommend operator (it owns the transition to reporting)
+        create_job(
+            db,
+            cycle_id=run.cycle_id,
+            job_type="recommend",
+            payload={"run_record_id": str(run.id), "failed": True},
+            priority=10,
+        )
         db.commit()
 
     return OperatorResult(
         success=True,
-        summary=f"Postmortem generated for run {run_id} ({postmortem.failure_class})",
-        state_patch={"cycle_status": CycleStatus.reporting.value},
+        summary=f"Postmortem for run {run_id} ({postmortem.failure_class}); enqueued recommend",
     )

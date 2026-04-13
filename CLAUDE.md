@@ -37,8 +37,9 @@ cd apps/web && npm run test             # Frontend tests (vitest)
 
 ### Runtime Model
 
-- **Postgres** runs in Docker via docker-compose. Extensions (pgvector, Apache AGE) are loaded by `docker/init-extensions.sql`.
+- **Postgres** runs in Docker via docker-compose. Extensions (pgvector, Apache AGE) are loaded by `docker/init-extensions.sql`. AGE is optional—falls back to relational tables if unavailable.
 - **API, worker, CLI** run on the host with hot reload. They share `libs/` but run as separate processes.
+- **API is async** (async SQLAlchemy sessions); **worker and CLI are sync** (sync session factory). Don't mix session types.
 - **Experiment containers** (future) will be spawned as sibling Docker containers with GPU passthrough.
 
 ### Core Pattern: Queue-Driven Operator Execution
@@ -46,11 +47,15 @@ cd apps/web && npm run test             # Frontend tests (vitest)
 The system is a **job queue + operator** architecture, not an agent framework:
 
 1. **API/CLI** receives user requests → calls a **service** (`libs/core/services/`) → enqueues a **job** in Postgres.
-2. **Worker** polls for jobs using `SELECT FOR UPDATE SKIP LOCKED`, claims one, builds an `OperatorInput`, and calls the appropriate **operator**.
+2. **Worker** polls for jobs using `SELECT FOR UPDATE SKIP LOCKED` (ordered by priority DESC, created_at), claims one, builds an `OperatorInput`, and calls the appropriate **operator**.
 3. **Operators** (`libs/discovery/operators/`, `libs/analysis/operators/`) do the actual work (LLM calls, data processing) and return an `OperatorResult` containing events, state patches, and artifacts.
-4. **Worker** persists events, applies state patches, and updates job status—all atomically.
+4. **Worker** persists events, applies state patches, and updates job status—all atomically. A heartbeat thread (5s interval) signals liveness during execution.
 
 Key contracts are in `libs/core/operators.py`: `OperatorInput` (frozen dataclass) and `OperatorResult` (events + state_patch + artifacts + summary).
+
+### Services Convention
+
+Services in `libs/core/services/` emit events within the session but **do not commit**—the caller is responsible for committing the transaction. This keeps service methods composable.
 
 ### State Machine
 
@@ -66,9 +71,10 @@ All state changes emit `DomainEvent` rows (`libs/core/events.py`, `libs/storage/
 ### LLM Integration
 
 `libs/adapters/llm/` implements a hexagonal adapter pattern:
-- `base.py` defines the `LLMAdapter` interface (free-form + structured completions)
+- `base.py` defines the `LLMAdapter` protocol: `complete()`, `complete_structured(response_model)`, `close()`
 - `router.py` (`ModelRouter`) reads `configs/models.yaml`, maps roles to providers, lazily instantiates and caches adapters
 - Provider adapters: `anthropic_adapter.py`, `openai_adapter.py`, `openai_compat.py` (for LMStudio/Ollama/VLLM), `google_adapter.py`
+- Model roles (defined in `configs/models.yaml`): planning, retrieval_synthesis, metadata_analysis, coding, summarization, evaluation, report_writing, hypothesis_generation, protocol_drafting
 
 ### Skill System
 
@@ -80,14 +86,16 @@ File-based skill discovery: `libs/skills/loader.py` walks `LAB_SKILL_PATHS` dire
 
 ### Database
 
-PostgreSQL with pgvector (768-dim embeddings) and Apache AGE (graph storage). Alembic migrations in `libs/storage/migrations/versions/`. SQLAlchemy models in `libs/storage/models/`. Dual session factories: async for API, sync for worker/CLI.
+PostgreSQL with pgvector (768-dim embeddings) and Apache AGE (graph storage). Alembic migrations in `libs/storage/migrations/versions/`. SQLAlchemy models in `libs/storage/models/`. Dual session factories: async for API, sync for worker/CLI. All primary keys use UUIDv7 (time-sortable, via `uuid_utils`).
+
+The async DB URL requires `postgresql+psycopg://` prefix (not plain `postgresql://`).
 
 ## Monorepo Layout
 
 - `apps/api/` — FastAPI server, routers mount under `/api/v1`, auth in `auth.py`, deps in `deps.py`
 - `apps/worker/` — Polling worker with `claimer.py` (job locking), `heartbeat.py`, `executor.py` (operator dispatch)
 - `apps/cli/` — Typer CLI, entry point is `synthetos` command, subcommands in `commands/`
-- `apps/web/` — React + TypeScript + Vite + TanStack Router/Query + Tailwind CSS
+- `apps/web/` — React 19 + TypeScript + Vite + TanStack Router (file-based, auto-generates `routeTree.gen.ts`) + TanStack Query + Tailwind CSS 4
 - `libs/schemas/` — Pydantic v2 request/response models (API boundary)
 - `libs/core/` — Domain logic: config, events, operators, state machine, services
 - `libs/storage/` — SQLAlchemy models, Alembic migrations, session management
@@ -98,6 +106,10 @@ PostgreSQL with pgvector (768-dim embeddings) and Apache AGE (graph storage). Al
 - `skills/` — First-party skill.md packages
 - `configs/` — YAML configs (models.yaml, discovery/, policies/, problems/)
 - `prompts/` — Versioned prompt assets (not yet populated)
+
+### API Error Mapping
+
+The API maps domain exceptions to HTTP status codes: `InvalidTransitionError` → 409, `NoResultFound` → 404. CORS is open in dev, locked down in prod.
 
 ## Key Design Principles
 
