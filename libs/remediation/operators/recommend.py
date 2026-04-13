@@ -17,6 +17,8 @@ from libs.remediation.operators._common import (
     ExecutionStateError,
     load_experiment_spec,
     load_frontier,
+    load_lineage_actions,
+    load_lineage_run_ids,
     load_run_record,
     run_record_id_from_payload,
 )
@@ -25,7 +27,6 @@ from libs.storage.base import get_sync_session_factory
 from libs.storage.models.experiment import FailurePostmortem, VerificationReport
 from libs.storage.models.remediation import (
     DirectionalSignal,
-    RemediationAction,
     RunRecommendation,
 )
 
@@ -55,32 +56,32 @@ def recommend_operator(op_input: OperatorInput) -> OperatorResult:
         # Load frontier
         frontier = load_frontier(db, run.charter_id, spec.hypothesis_card_id)
 
-        # Count remediation attempts for this spec
-        remediation_count = db.execute(
-            select(func.count())
-            .select_from(RemediationAction)
-            .where(RemediationAction.experiment_spec_id == spec.id)
-        ).scalar_one()
+        lineage_actions = load_lineage_actions(db, run.id)
+        lineage_run_ids = load_lineage_run_ids(db, run.id)
+        remediation_count = len(lineage_actions)
+        remediation_exhausted = any(
+            action.outcome == "exhausted" for action in lineage_actions
+        )
 
-        # Check if remediation is exhausted (any action with outcome=exhausted)
-        remediation_exhausted = db.execute(
-            select(RemediationAction)
-            .where(
-                RemediationAction.experiment_spec_id == spec.id,
-                RemediationAction.outcome == "exhausted",
-            )
-            .limit(1)
-        ).scalar_one_or_none() is not None
-
-        # Check for unresolved failures (any postmortem exists for runs of this spec)
+        # Historical counts stay informative, but only current-lineage failures
+        # influence the recommendation type.
         from libs.storage.models.experiment import RunRecord
 
-        has_unresolved = db.execute(
-            select(FailurePostmortem)
+        historical_postmortem_count = db.execute(
+            select(func.count())
+            .select_from(FailurePostmortem)
             .join(RunRecord, FailurePostmortem.run_record_id == RunRecord.id)
             .where(RunRecord.experiment_spec_id == spec.id)
-            .limit(1)
-        ).scalar_one_or_none() is not None
+        ).scalar_one()
+
+        lineage_postmortem_count = db.execute(
+            select(FailurePostmortem)
+            .join(RunRecord, FailurePostmortem.run_record_id == RunRecord.id)
+            .where(RunRecord.id.in_(lineage_run_ids))
+        ).scalars().all()
+        has_unresolved = is_failed_path or remediation_exhausted or bool(
+            lineage_postmortem_count
+        )
 
         inputs = RecommendationInputs(
             signal=signal_row.signal if signal_row else None,
@@ -106,22 +107,33 @@ def recommend_operator(op_input: OperatorInput) -> OperatorResult:
             } if frontier else None,
             "remediation_attempts": remediation_count,
             "remediation_exhausted": remediation_exhausted,
+            "has_unresolved_failures": has_unresolved,
             "failed_path": is_failed_path,
+            "historical_postmortem_count": historical_postmortem_count,
         }
 
-        rec_row = RunRecommendation(
-            id=uuid7(),
-            run_record_id=run.id,
-            charter_id=run.charter_id,
-            cycle_id=run.cycle_id,
-            experiment_spec_id=spec.id,
-            recommendation_type=rec.recommendation_type,
-            action=rec.action,
-            reasoning=rec.reasoning,
-            inputs_summary=inputs_summary,
-            created_at=utcnow(),
-        )
-        db.add(rec_row)
+        rec_row = db.execute(
+            select(RunRecommendation).where(RunRecommendation.run_record_id == run.id)
+        ).scalar_one_or_none()
+        if rec_row is None:
+            rec_row = RunRecommendation(
+                id=uuid7(),
+                run_record_id=run.id,
+                charter_id=run.charter_id,
+                cycle_id=run.cycle_id,
+                experiment_spec_id=spec.id,
+                recommendation_type=rec.recommendation_type,
+                action=rec.action,
+                reasoning=rec.reasoning,
+                inputs_summary=inputs_summary,
+                created_at=utcnow(),
+            )
+            db.add(rec_row)
+        else:
+            rec_row.recommendation_type = rec.recommendation_type
+            rec_row.action = rec.action
+            rec_row.reasoning = rec.reasoning
+            rec_row.inputs_summary = inputs_summary
 
         # Update VerificationReport with recommendation FK
         vr = db.execute(

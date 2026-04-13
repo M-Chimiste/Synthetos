@@ -9,7 +9,6 @@ from pathlib import Path
 from typing import Any
 
 from pydantic import BaseModel, Field
-from sqlalchemy import select
 from uuid_utils import uuid7
 
 from libs.core.clock import utcnow
@@ -23,6 +22,7 @@ from libs.remediation.operators._common import (
     count_lineage_attempts,
     enqueue_next_phase4,
     load_experiment_spec,
+    load_lineage_actions,
     load_run_record,
     run_record_id_from_payload,
 )
@@ -181,11 +181,7 @@ def auto_remediate_operator(op_input: OperatorInput) -> OperatorResult:
                 stderr_tail = "\n".join(lines[-50:])
 
         # Load prior strategies in lineage
-        prior_actions = db.execute(
-            select(RemediationAction)
-            .where(RemediationAction.experiment_spec_id == spec.id)
-            .order_by(RemediationAction.created_at.asc())
-        ).scalars().all()
+        prior_actions = load_lineage_actions(db, run.id)
         prior_strategies = [a.strategy for a in prior_actions]
         prior_failure_classes = [a.failure_class for a in prior_actions]
 
@@ -196,6 +192,9 @@ def auto_remediate_operator(op_input: OperatorInput) -> OperatorResult:
             current_resource_limits=run.resource_limits,
             prior_strategies=prior_strategies,
             prior_failure_classes=prior_failure_classes,
+            expected_artifacts=spec.expected_artifacts,
+            artifact_manifest=run.artifact_manifest,
+            code_plan=spec.code_plan,
         )
 
         if not strat.remediable:

@@ -137,6 +137,7 @@ def upgrade() -> None:
             server_default=sa.func.now(),
         ),
         sa.PrimaryKeyConstraint("id", name="pk_directional_signals"),
+        sa.UniqueConstraint("run_record_id", name="uq_directional_signals_run"),
         sa.ForeignKeyConstraint(
             ["run_record_id"],
             ["run_records.id"],
@@ -257,6 +258,7 @@ def upgrade() -> None:
             server_default=sa.func.now(),
         ),
         sa.PrimaryKeyConstraint("id", name="pk_run_recommendations"),
+        sa.UniqueConstraint("run_record_id", name="uq_run_recommendations_run"),
         sa.ForeignKeyConstraint(
             ["run_record_id"],
             ["run_records.id"],

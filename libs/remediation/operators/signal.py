@@ -159,23 +159,36 @@ def signal_classify_operator(op_input: OperatorInput) -> OperatorResult:
             })
 
         # Persist DirectionalSignal
-        signal_row = DirectionalSignal(
-            id=uuid7(),
-            run_record_id=run.id,
-            charter_id=run.charter_id,
-            cycle_id=run.cycle_id,
-            experiment_spec_id=run.experiment_spec_id,
-            signal=sig_result.signal,
-            primary_metric_name=metric_name,
-            primary_metric_value=current_value,
-            primary_metric_delta=sig_result.delta,
-            primary_metric_direction=metric_direction,
-            constraint_metrics=constraint_metrics or None,
-            history_window=history_window or None,
-            reasoning=sig_result.reasoning,
-            created_at=utcnow(),
-        )
-        db.add(signal_row)
+        signal_row = db.execute(
+            select(DirectionalSignal).where(DirectionalSignal.run_record_id == run.id)
+        ).scalar_one_or_none()
+        if signal_row is None:
+            signal_row = DirectionalSignal(
+                id=uuid7(),
+                run_record_id=run.id,
+                charter_id=run.charter_id,
+                cycle_id=run.cycle_id,
+                experiment_spec_id=run.experiment_spec_id,
+                signal=sig_result.signal,
+                primary_metric_name=metric_name,
+                primary_metric_value=current_value,
+                primary_metric_delta=sig_result.delta,
+                primary_metric_direction=metric_direction,
+                constraint_metrics=constraint_metrics or None,
+                history_window=history_window or None,
+                reasoning=sig_result.reasoning,
+                created_at=utcnow(),
+            )
+            db.add(signal_row)
+        else:
+            signal_row.signal = sig_result.signal
+            signal_row.primary_metric_name = metric_name
+            signal_row.primary_metric_value = current_value
+            signal_row.primary_metric_delta = sig_result.delta
+            signal_row.primary_metric_direction = metric_direction
+            signal_row.constraint_metrics = constraint_metrics or None
+            signal_row.history_window = history_window or None
+            signal_row.reasoning = sig_result.reasoning
 
         # Update VerificationReport with signal FK
         vr = db.execute(

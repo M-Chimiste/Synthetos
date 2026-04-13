@@ -3,13 +3,17 @@
 from __future__ import annotations
 
 from datetime import UTC, datetime, timedelta
+from typing import Any
 
 import pytest
-from fastapi import HTTPException
+from fastapi import FastAPI, HTTPException
+from fastapi.testclient import TestClient
 from starlette.requests import Request
 from uuid_utils import uuid7
 
 import apps.api.auth as auth
+from apps.api.deps import get_db, get_settings
+from apps.api.routers import remediation
 from libs.core.config import Settings
 from libs.storage.models.orchestrator import ApiToken, OrchestratorClient
 
@@ -118,3 +122,60 @@ async def test_require_scope_rejects_missing_scope() -> None:
             settings=Settings(env="prod"),
             token_record=_token_record(scopes=["runs.read"]),
         )
+
+
+class _AsyncScalarResult:
+    def __init__(self, value: Any):
+        self._value = value
+
+    def scalar_one_or_none(self) -> Any:
+        return self._value
+
+    def scalars(self) -> _AsyncScalarResult:
+        return self
+
+    def all(self) -> Any:
+        return self._value
+
+
+class _AsyncReadSession:
+    async def execute(self, _query: Any) -> _AsyncScalarResult:
+        return _AsyncScalarResult(None)
+
+
+@pytest.mark.parametrize(
+    ("token", "scopes", "expected_status"),
+    [
+        ("allowed-token", ["cycles.read"], 200),
+        ("denied-token", ["runs.read"], 403),
+    ],
+)
+def test_remediation_routes_require_cycles_read_scope(
+    monkeypatch: pytest.MonkeyPatch,
+    token: str,
+    scopes: list[str],
+    expected_status: int,
+) -> None:
+    app = FastAPI()
+    app.include_router(remediation.router, prefix="/api/v1")
+
+    async def override_db():
+        yield _AsyncReadSession()
+
+    app.dependency_overrides[get_db] = override_db
+    app.dependency_overrides[get_settings] = lambda: Settings(env="prod")
+
+    async def fake_get_token_record(raw_token: str, _db: object) -> ApiToken | None:
+        if raw_token != token:
+            return None
+        return _token_record(scopes=scopes)
+
+    monkeypatch.setattr(auth, "_get_token_record", fake_get_token_record)
+
+    client = TestClient(app)
+    run_id = uuid7()
+    response = client.get(
+        f"/api/v1/runs/{run_id}/signal",
+        headers={"Authorization": f"Bearer {token}"},
+    )
+    assert response.status_code == expected_status

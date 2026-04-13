@@ -11,6 +11,7 @@ import {
 } from "../../api/experiment";
 import {
   fetchRunRemediation,
+  fetchRunLineage,
   fetchRunSignal,
   fetchRunRecommendation,
 } from "../../api/remediation";
@@ -81,6 +82,12 @@ function RunDetailPage() {
     enabled: !!runId,
   });
 
+  const lineage = useQuery({
+    queryKey: ["run-lineage", runId],
+    queryFn: () => fetchRunLineage(runId).catch(() => null),
+    enabled: !!runId,
+  });
+
   const signal = useQuery({
     queryKey: ["signal", runId],
     queryFn: () => fetchRunSignal(runId).catch(() => null),
@@ -114,6 +121,14 @@ function RunDetailPage() {
     () => [...liveTelemetry].sort((a, b) => a.timestamp.localeCompare(b.timestamp)),
     [liveTelemetry],
   );
+  const lineageRunIds = lineage.data?.run_ids ?? [];
+  const currentLineageIndex = lineageRunIds.findIndex((id) => id === runId);
+  const previousRunId =
+    currentLineageIndex > 0 ? lineageRunIds[currentLineageIndex - 1] : null;
+  const nextRunId =
+    currentLineageIndex >= 0 && currentLineageIndex < lineageRunIds.length - 1
+      ? lineageRunIds[currentLineageIndex + 1]
+      : null;
 
   return (
     <div className="p-4 space-y-6">
@@ -258,16 +273,52 @@ function RunDetailPage() {
       )}
 
       {/* Run Lineage */}
-      {r.parent_run_id && (
-        <div className="text-sm text-gray-500">
-          Retry of run{" "}
-          <a
-            href={`/experiment/${r.parent_run_id}`}
-            className="text-blue-500 underline"
-          >
-            {r.parent_run_id.slice(0, 12)}
-          </a>
-        </div>
+      {lineageRunIds.length > 1 && (
+        <section className="space-y-2">
+          <h2 className="text-lg font-semibold">Run Lineage</h2>
+          <div className="flex flex-wrap items-center gap-3 text-sm text-gray-600">
+            {previousRunId && (
+              <span>
+                Previous retry{" "}
+                <a
+                  href={`/experiment/${previousRunId}`}
+                  className="text-blue-500 underline"
+                >
+                  {previousRunId.slice(0, 12)}
+                </a>
+              </span>
+            )}
+            {nextRunId && (
+              <span>
+                Next retry{" "}
+                <a
+                  href={`/experiment/${nextRunId}`}
+                  className="text-blue-500 underline"
+                >
+                  {nextRunId.slice(0, 12)}
+                </a>
+              </span>
+            )}
+          </div>
+          <div className="flex flex-wrap gap-2 text-xs">
+            {lineageRunIds.map((lineageRunId) => {
+              const isCurrent = lineageRunId === runId;
+              return (
+                <a
+                  key={lineageRunId}
+                  href={`/experiment/${lineageRunId}`}
+                  className={`rounded border px-2 py-1 ${
+                    isCurrent
+                      ? "border-blue-500 bg-blue-50 text-blue-700"
+                      : "border-gray-200 bg-white text-gray-600"
+                  }`}
+                >
+                  {lineageRunId.slice(0, 12)}
+                </a>
+              );
+            })}
+          </div>
+        </section>
       )}
 
       {/* Directional Signal */}

@@ -125,13 +125,52 @@ class TestRuntimeStrategy:
 
 
 class TestInvalidArtifactStrategy:
-    def test_goes_to_broad(self) -> None:
+    def test_creates_focused_rewrite_when_mapping_is_unambiguous(self) -> None:
         result = select_strategy(
             failure_class="invalid_artifact",
             stderr_tail="",
             current_resource_limits={},
             prior_strategies=[],
             prior_failure_classes=[],
+            expected_artifacts=[
+                {"name": "metrics.json", "path": "outputs/metrics.json", "required": True}
+            ],
+            artifact_manifest=[
+                {"name": "results.json", "path": "outputs/results.json", "size_bytes": 42}
+            ],
+            code_plan={
+                "files": {
+                    "run_experiment.py": (
+                        "with open('outputs/results.json', 'w') as f:\n"
+                        "    f.write('ok')\n"
+                    )
+                }
+            },
+        )
+        assert result.strategy == "repair_artifact_path"
+        assert result.strategy_tier == "focused"
+        patched = result.overrides["code_plan"]["patched_files"]["run_experiment.py"]
+        assert "outputs/metrics.json" in patched
+
+    def test_falls_back_to_broad_when_mapping_is_ambiguous(self) -> None:
+        result = select_strategy(
+            failure_class="invalid_artifact",
+            stderr_tail="",
+            current_resource_limits={},
+            prior_strategies=[],
+            prior_failure_classes=[],
+            expected_artifacts=[
+                {"name": "metrics.json", "path": "outputs/metrics.json", "required": True}
+            ],
+            artifact_manifest=[
+                {"name": "results.json", "path": "outputs/results.json"},
+                {"name": "summary.json", "path": "outputs/summary.json"},
+            ],
+            code_plan={
+                "files": {
+                    "run_experiment.py": "print('artifact paths are dynamic')\n"
+                }
+            },
         )
         assert result.strategy == "debug_broad"
 

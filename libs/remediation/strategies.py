@@ -34,6 +34,9 @@ def select_strategy(
     current_resource_limits: dict[str, Any] | None,
     prior_strategies: list[str],
     prior_failure_classes: list[str],
+    expected_artifacts: list[dict[str, Any]] | None = None,
+    artifact_manifest: list[dict[str, Any]] | None = None,
+    code_plan: dict[str, Any] | None = None,
 ) -> StrategyResult:
     """Select a remediation strategy based on failure class and history.
 
@@ -144,9 +147,16 @@ def select_strategy(
                 failure_class,
                 "Artifact fix already tried; escalating to broad debug.",
             )
+        focused_fix = _select_invalid_artifact_fix(
+            expected_artifacts=expected_artifacts,
+            artifact_manifest=artifact_manifest,
+            code_plan=code_plan,
+        )
+        if focused_fix is not None:
+            return focused_fix
         return _broad_debug_result(
             failure_class,
-            "Invalid artifact output; needs LLM analysis to fix code.",
+            "Invalid artifact output was ambiguous; escalating to broad debug.",
         )
 
     if failure_class == "runtime":
@@ -175,6 +185,94 @@ def _broad_debug_result(failure_class: str, reasoning: str) -> StrategyResult:
     )
 
 
+def _select_invalid_artifact_fix(
+    *,
+    expected_artifacts: list[dict[str, Any]] | None,
+    artifact_manifest: list[dict[str, Any]] | None,
+    code_plan: dict[str, Any] | None,
+) -> StrategyResult | None:
+    """Return a deterministic artifact-path repair when one is obvious."""
+    expected_artifacts = expected_artifacts or []
+    artifact_manifest = artifact_manifest or []
+    code_plan = code_plan or {}
+
+    manifest_by_name = {
+        str(entry.get("name", "")).strip(): entry
+        for entry in artifact_manifest
+        if entry.get("name")
+    }
+    missing_required = [
+        artifact
+        for artifact in expected_artifacts
+        if artifact.get("required", True)
+        and str(artifact.get("name", "")).strip()
+        and str(artifact.get("name", "")).strip() not in manifest_by_name
+    ]
+    if len(missing_required) != 1:
+        return None
+
+    expected = missing_required[0]
+    expected_name = str(expected.get("name", "")).strip()
+    expected_path = str(expected.get("path") or expected_name).strip()
+    if not expected_name or not expected_path:
+        return None
+
+    expected_ext = _artifact_extension(expected_path)
+    candidates = [
+        entry
+        for entry in artifact_manifest
+        if _artifact_extension(str(entry.get("path") or entry.get("name") or "")) == expected_ext
+        and str(entry.get("name", "")).strip() != expected_name
+    ]
+    if len(candidates) != 1:
+        return None
+
+    produced = candidates[0]
+    produced_path = str(produced.get("path") or produced.get("name") or "").strip()
+    produced_name = str(produced.get("name") or "").strip()
+    if not produced_path:
+        return None
+
+    files = code_plan.get("files", {})
+    if not isinstance(files, dict):
+        return None
+
+    patched_files: dict[str, str] = {}
+    expected_basename = expected_path.split("/")[-1]
+    produced_basename = produced_path.split("/")[-1]
+    for file_path, content in files.items():
+        if not isinstance(content, str):
+            continue
+        updated = content.replace(produced_path, expected_path)
+        if produced_basename and produced_basename != expected_basename:
+            updated = updated.replace(produced_basename, expected_basename)
+        if updated != content:
+            patched_files[str(file_path)] = updated
+
+    if not patched_files:
+        return None
+
+    return StrategyResult(
+        strategy="repair_artifact_path",
+        strategy_tier="focused",
+        remediable=True,
+        reasoning=(
+            f"Expected artifact '{expected_name}' was missing, but produced artifact "
+            f"'{produced_name or produced_path}' matched the extension. Rewriting file "
+            "references to the expected artifact path."
+        ),
+        overrides={
+            "code_plan": {
+                "patched_files": patched_files,
+            },
+            "artifact_rewrite": {
+                "from": produced_path,
+                "to": expected_path,
+            },
+        },
+    )
+
+
 def _extract_missing_modules(stderr_tail: str) -> list[str]:
     """Parse stderr to find missing Python module names."""
     # Match patterns like "ModuleNotFoundError: No module named 'foo'"
@@ -196,3 +294,11 @@ def _parse_memory(mem_str: str) -> int:
         return int(mem_str)
     except ValueError:
         return 16  # default
+
+
+def _artifact_extension(path: str) -> str:
+    """Return the lowercase file extension for an artifact path or name."""
+    parts = str(path).rsplit(".", 1)
+    if len(parts) != 2:
+        return ""
+    return parts[1].lower()

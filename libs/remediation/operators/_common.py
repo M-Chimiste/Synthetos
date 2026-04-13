@@ -19,6 +19,8 @@ from libs.storage.models.remediation import MetricFrontier, RemediationAction
 __all__ = [
     "ExecutionStateError",
     "enqueue_next_phase4",
+    "load_lineage_actions",
+    "load_lineage_run_ids",
     "load_run_record",
     "run_record_id_from_payload",
 ]
@@ -52,6 +54,15 @@ def count_lineage_attempts(session: Session, run_id: UUID) -> int:
     Walks the parent_run_id chain backwards and counts RemediationAction
     rows linked to any run in the chain.
     """
+    return len(load_lineage_actions(session, run_id))
+
+
+def load_lineage_run_ids(session: Session, run_id: UUID) -> list[UUID]:
+    """Return the current retry lineage from root to *run_id*.
+
+    This walks only the active ancestor chain. It does not include sibling
+    retries or descendants from other branches.
+    """
     lineage_ids: list[UUID] = []
     current_id: UUID | None = run_id
 
@@ -62,14 +73,22 @@ def count_lineage_attempts(session: Session, run_id: UUID) -> int:
             break
         current_id = run.parent_run_id
 
-    if not lineage_ids:
-        return 0
+    lineage_ids.reverse()
+    return lineage_ids
 
-    count = session.execute(
-        select(RemediationAction)
-        .where(RemediationAction.run_record_id.in_(lineage_ids))
-    ).all()
-    return len(count)
+
+def load_lineage_actions(session: Session, run_id: UUID) -> list[RemediationAction]:
+    """Load remediation actions for the active retry lineage of *run_id*."""
+    lineage_ids = load_lineage_run_ids(session, run_id)
+    if not lineage_ids:
+        return []
+    return list(
+        session.execute(
+            select(RemediationAction)
+            .where(RemediationAction.run_record_id.in_(lineage_ids))
+            .order_by(RemediationAction.created_at.asc())
+        ).scalars().all()
+    )
 
 
 def load_experiment_spec(session: Session, spec_id: UUID) -> ExperimentSpec:
