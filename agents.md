@@ -6,10 +6,10 @@ This file gives coding agents a concise operating brief for work in this reposit
 
 - Product: **Synthetos**
 - Goal: a single-user ML research system for end-to-end research loops
-- Current state: **implemented through Phase 2**
-- Immediate focus: **stabilizing and extending the existing codebase**, with the next major product areas starting in Phase 3+
+- Current state: **implemented through Phase 3**
+- Immediate focus: **stabilizing the Phase 0-3 stack under real integration conditions** before moving into later-loop autonomy and learning work
 
-This is no longer a planning-only repository. The repo now contains working backend, worker, CLI, web, migrations, and unit-test coverage for the foundation, discovery, and analysis layers.
+This is no longer a planning-only repository. The repo now contains working backend, worker, CLI, web, migrations, and unit-test coverage for the foundation, discovery, analysis, and experiment layers.
 
 ## Source of Truth
 
@@ -46,12 +46,13 @@ Implemented today:
 - **Phase 0** foundations: FastAPI API, worker, Typer CLI, React web shell, auth/scope checks, jobs, domain events, SSE, Alembic migrations, core cycle/state flows
 - **Phase 1** discovery: arXiv metadata search, problem profiles, discovery sessions, metadata analysis, stable/discovery views, reports, evaluation hooks, resumable corpus import path
 - **Phase 2** analysis: HTML-first full-text ingestion with PDF+Docling fallback, structure-aware chunking, typed paper graphs with optional AGE projection, coverage diagnostics, review artifacts, persisted analysis reports, graph-aware QA/locate, evidence extraction, contradiction/redundancy detection
+- **Phase 3** experiment: hypothesis generation/critique/ranking, protocol compilation, git-worktree execution setup, sibling Docker runs, run telemetry, run control, deterministic verification, failure postmortems, and experiment web/API/CLI surfaces
 
 Still not implemented:
 
-- Phase 3+ experiment, remediation, autonomous loop, and cross-charter memory features
-- full end-to-end integration coverage for the complete discovery -> analysis runtime path
-- real-environment validation for live model endpoints, real-paper ingestion/fallback, and AGE-vs-relational behavior
+- Phase 4+ remediation, autonomous loop, and cross-charter memory features
+- full end-to-end live integration coverage across discovery -> analysis -> experiment
+- real-environment validation for live model endpoints, real-paper ingestion/fallback, AGE-vs-relational behavior, and real Docker/GPU execution
 
 ## Locked Architectural Decisions
 
@@ -71,13 +72,16 @@ Treat these as defaults unless a repository document explicitly changes them:
 - Prompts define operator behavior; skills are optional augmentations, not replacements for prompts.
 - Policy precedence is: hard system policy and token scopes, then user or charter settings, then autonomy or operator defaults.
 - Paper-keyed analysis reads use the **latest completed** analysis session.
+- Experiment code provenance is generated-then-committed: generated files are written to a git worktree and committed before execution, and the commit SHA is the durable lineage anchor.
+- Run control semantics are explicit: `pause`, `resume`, `cancel`, and `retry` are first-class behaviors, not just UI/API affordances.
+- Telemetry is two-tiered: low-frequency orchestration events in `domain_events`, and high-frequency per-run telemetry in `run_telemetry`.
 
 ## Runtime Model
 
 - Postgres runs in Docker via `docker compose`.
 - API, worker, and web are expected to run on the host during development.
-- Experiment workloads are still intended to run as sibling Docker containers with GPU passthrough, not Docker-in-Docker.
-- Artifacts are written under `LAB_DATA_ROOT`, including discovery and analysis report bundles.
+- Experiment workloads run as sibling Docker containers with GPU passthrough, not Docker-in-Docker.
+- Artifacts are written under `LAB_DATA_ROOT`, including discovery, analysis, and experiment report bundles.
 
 ## Actual Monorepo Shape
 
@@ -95,12 +99,16 @@ docker/
 
 Notable implemented app/library areas:
 
-- `apps/api` - REST API routers for charters, cycles, state, jobs, events, skills, discovery, analysis
-- `apps/worker` - job claimer/executor loop for discovery and analysis operators
-- `apps/cli` - Typer commands including DB, corpus, discovery, and analysis flows
+- `apps/api` - REST API routers for charters, cycles, state, jobs, events, skills, discovery, analysis, and experiment
+- `apps/worker` - job claimer/executor loop for discovery, analysis, ideation, protocol, execution, and verification operators
+- `apps/cli` - Typer commands including DB, corpus, discovery, analysis, and experiment flows
 - `apps/web` - React/TanStack frontend
 - `libs/discovery` - Phase 1 discovery pipeline
 - `libs/analysis` - Phase 2 analysis pipeline
+- `libs/ideation` - Phase 3 hypothesis generation, critique, and ranking
+- `libs/protocols` - Phase 3 protocol compilation and spec validation
+- `libs/execution` - Phase 3 workspace setup, container execution, metrics parsing, capture
+- `libs/verification` - Phase 3 deterministic verification and failure postmortems
 - `libs/adapters` - LLM, embeddings, ingestion, graph, and source adapters
 - `libs/storage` - SQLAlchemy models and Alembic migrations
 - `libs/schemas` - canonical Pydantic boundary types
@@ -133,6 +141,9 @@ Key entities that already exist in code and should usually be reused instead of 
 - `PaperCard`
 - `AnalysisSession`, `IngestedDocument`, `PaperChunk`, `GraphNode`, `GraphEdge`, `CoverageDiagnostic`
 - `PaperAnalysisPacket`, `PaperReviewArtifact`, `EvidenceCard`
+- `HypothesisSession`, `HypothesisCard`
+- `ExperimentSpec`, `RunRecord`, `RunTelemetry`
+- `VerificationReport`, `FailurePostmortem`
 - `SkillDefinition`
 - `DomainEvent`, `Job`
 
@@ -143,9 +154,9 @@ Key entities that already exist in code and should usually be reused instead of 
 - Store prompts as versioned files, not inline strings.
 - Keep config in YAML plus environment variables, not prompt text.
 - Every schema change should go through Alembic migrations.
-- Record lineage for model calls, reports, and verification artifacts.
+- Record lineage for model calls, skill usage, reports, and verification artifacts.
 - Preserve the operator -> job -> domain event pattern instead of adding hidden workflow shortcuts.
-- Keep container execution sandboxed by default when Phase 3 work begins: network disabled, data read-only, limits enforced.
+- Keep container execution sandboxed by default: network disabled, data read-only, limits enforced.
 - Add modular behavior through `skill.md` packages instead of hardcoding everything into the core.
 - Build vertical slices that preserve durable artifacts and readable reports, not disconnected helpers.
 
@@ -157,9 +168,11 @@ Key entities that already exist in code and should usually be reused instead of 
 - Optimize for inspectability, reproducibility, and durable state.
 - Evidence before hypothesis before code: build flows that keep provenance visible.
 - If you introduce a new subsystem, connect it back to one of the four core loops or a horizontal layer.
-- Prefer extending existing discovery/analysis patterns over inventing a second workflow style.
+- Prefer extending existing discovery/analysis/experiment patterns over inventing a second workflow style.
 - When changing paper analysis behavior, make sure API, worker, schemas, CLI, and web contracts stay aligned.
 - When changing paper-keyed analysis reads, preserve the latest-completed-session semantics unless product docs explicitly change them.
+- When changing experiment behavior, keep run status, container state, telemetry, and verification artifacts aligned.
+- When changing Phase 3 operator behavior, preserve the generated-code -> committed-worktree -> container-run lineage chain unless the docs explicitly change it.
 
 ## Expected Environment
 
@@ -196,6 +209,9 @@ cd apps/web && npm run dev
 uv run synthetos corpus import-arxiv --path <jsonl>
 uv run synthetos discovery start ...
 uv run synthetos analysis run --paper-id <uuid> --charter-id <uuid> --cycle-id <uuid>
+uv run synthetos experiment hypothesize --cycle-id <uuid>
+uv run synthetos experiment compile --cycle-id <uuid>
+uv run synthetos experiment run --spec-id <uuid>
 
 # Quality
 uv run ruff check .
@@ -210,7 +226,7 @@ At the time of the latest repo update:
 
 - `uv run ruff check .` passes
 - `UV_CACHE_DIR=/tmp/uv-cache uv run pyright` passes
-- `uv run pytest` passes
+- `uv run pytest` passes (`84 passed`)
 - `cd apps/web && npm run build` passes
 
 What still needs real-environment validation:
@@ -219,4 +235,5 @@ What still needs real-environment validation:
 - real-paper HTML ingestion and PDF fallback
 - configured LLM endpoints for graph extraction/review/evidence/QA
 - AGE projection versus relational fallback
-- end-to-end integration coverage across discovery -> analysis
+- real Docker/GPU experiment execution, run control, and artifact capture
+- end-to-end integration coverage across discovery -> analysis -> experiment
