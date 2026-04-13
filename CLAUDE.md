@@ -29,6 +29,7 @@ uv run ruff format .                    # Format
 uv run pyright                          # Type check
 uv run pytest                           # All backend tests
 uv run pytest tests/unit/test_foo.py -k test_name  # Single test
+cd apps/web && npm run lint              # Frontend lint (ESLint)
 cd apps/web && npm run build            # Frontend type check + build
 cd apps/web && npm run test             # Frontend tests (vitest)
 ```
@@ -74,7 +75,7 @@ All state changes emit `DomainEvent` rows (`libs/core/events.py`, `libs/storage/
 - `base.py` defines the `LLMAdapter` protocol: `complete()`, `complete_structured(response_model)`, `close()`
 - `router.py` (`ModelRouter`) reads `configs/models.yaml`, maps roles to providers, lazily instantiates and caches adapters
 - Provider adapters: `anthropic_adapter.py`, `openai_adapter.py`, `openai_compat.py` (for LMStudio/Ollama/VLLM), `google_adapter.py`
-- Model roles (defined in `configs/models.yaml`): planning, retrieval_synthesis, metadata_analysis, coding, summarization, evaluation, report_writing, hypothesis_generation, protocol_drafting
+- Model roles (defined in `configs/models.yaml`): planning, retrieval_synthesis, metadata_analysis, coding, summarization, evaluation, report_writing, hypothesis_generation, protocol_drafting. Some roles (metadata_analysis, coding, summarization) default to `local` provider (Ollama/vLLM on port 11434); others use Anthropic.
 
 ### Skill System
 
@@ -95,7 +96,7 @@ The async DB URL requires `postgresql+psycopg://` prefix (not plain `postgresql:
 - `apps/api/` — FastAPI server, routers mount under `/api/v1`, auth in `auth.py`, deps in `deps.py`
 - `apps/worker/` — Polling worker with `claimer.py` (job locking), `heartbeat.py`, `executor.py` (operator dispatch)
 - `apps/cli/` — Typer CLI, entry point is `synthetos` command, subcommands in `commands/`
-- `apps/web/` — React 19 + TypeScript + Vite + TanStack Router (file-based, auto-generates `routeTree.gen.ts`) + TanStack Query + Tailwind CSS 4
+- `apps/web/` — React 19 + TypeScript + Vite + TanStack Router (file-based, auto-generates `routeTree.gen.ts`) + TanStack Query + Tailwind CSS 4. Vite proxies `/api` to `localhost:8000`.
 - `libs/schemas/` — Pydantic v2 request/response models (API boundary)
 - `libs/core/` — Domain logic: config, events, operators, state machine, services
 - `libs/storage/` — SQLAlchemy models, Alembic migrations, session management

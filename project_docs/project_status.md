@@ -3,23 +3,25 @@
 **Product:** Synthetos (ML Laboratory Co-Scientist)
 **Date:** 2026-04-13
 **Phase:** 4 — Remediation, Directional Signal, and Frontier Tracking
-**Status:** Phase 4 implementation complete. All code-level quality gates are green (`ruff check`, `pyright`, `pytest` — 132 tests, and web build). Phase 4 makes the execution loop resilient (auto-remediation of mechanical failures before postmortem) and research-aware (directional signal classification, metric frontier tracking per hypothesis line, and deterministic next-step recommendations). The main remaining work is live integration testing against real Postgres, Docker containers, and configured model endpoints.
+**Status:** Phase 4 implementation and remediation pass are complete. All code-level quality gates are green (`ruff check`, `pyright`, `pytest` — 141 tests, and web build). The remediation/signal/recommendation layer now has correct auth, lineage-scoped remediation history, truthful retry-lineage reads in the API and UI, deterministic focused `invalid_artifact` repair before broad debug, and idempotent per-run signal and recommendation artifacts. The main remaining work is still live integration testing against real Postgres, Docker containers, and configured model endpoints.
 
 ---
 
 ## Phase 4 Session Summary
 
-Phase 4 bridges the deterministic execution lab (Phase 3) with the autonomous loop (Phase 5). Previously, every failed run went straight to an expensive LLM-generated postmortem and stopped. Now, mechanical failures (dependency, OOM, timeout) are auto-remediated with focused fixes before resorting to postmortem. Successful runs are classified with a directional signal, tracked against a per-hypothesis-line metric frontier, and given a deterministic next-step recommendation that distinguishes mechanical recovery from parameter variation from hypothesis pivots.
+Phase 4 bridges the deterministic execution lab (Phase 3) with the autonomous loop (Phase 5). Previously, every failed run went straight to an expensive LLM-generated postmortem and stopped. Now, mechanical failures (dependency, OOM, timeout, and deterministic artifact naming/path mismatches) are auto-remediated with focused fixes before resorting to postmortem. Successful runs are classified with a directional signal, tracked against a per-hypothesis-line metric frontier, and given a deterministic next-step recommendation that distinguishes mechanical recovery from parameter variation from hypothesis pivots.
 
-The implementation followed the approved plan at `/Users/c/.claude/plans/lucky-toasting-plum.md`.
+The initial Phase 4 implementation landed, and then a follow-up remediation pass corrected the execution gaps found in review.
 
 Key design decisions:
 - **Two-tier remediation**: focused strategies first (install missing deps, double memory, extend timeout), then broad LLM-assisted debug if the same failure class recurs. Max 3 attempts in a lineage before exhaustion.
+- **Lineage-scoped remediation state**: retry escalation, unresolved-failure checks, and recommendation inputs are computed from the current retry lineage, not all historical runs on the spec.
 - **Single gateway to reporting**: the `recommend` operator is the sole owner of the `verifying → reporting` transition. Both terminal paths (passed runs via `signal_classify → recommend`, and failed-then-exhausted runs via `verification_postmortem → recommend`) converge on it.
 - **Primary metric convention**: `metrics[0]` is the optimization target unless `primary_metric_index` is set. All others are constraint metrics with bounds checking.
 - **Frontier keyed by hypothesis line**: `(charter_id, hypothesis_card_id)` not per-spec, so progress is tracked across protocol recompilations.
 - **VerificationReport as canonical owner**: signal and recommendation rows don't point back to the report — the report holds outgoing FKs (`directional_signal_id`, `recommendation_id`), avoiding circular references.
 - **Override delivery via job payload**: remediation patches (`code_plan`, `build_recipe`) go through the job payload key `remediation_overrides`, keeping `ExperimentSpec` immutable. Resource limits (`memory`, `timeout`) are set directly on the new `RunRecord`.
+- **Per-run artifact idempotency**: `DirectionalSignal` and `RunRecommendation` are unique per `run_record_id`, and operators reuse/update the existing row when replayed.
 
 The main outcomes were:
 
@@ -34,8 +36,14 @@ The main outcomes were:
 - Added 5 CLI commands: `remediation`, `signal`, `frontier`, `recommendation` under `synthetos experiment`
 - Added 9 new event types: `RemediationEvents` (5) and `SignalEvents` (4)
 - Built web frontend: TypeScript API client, run detail page with signal/recommendation/remediation/lineage sections, experiment index with frontier summary
-- Added 53 new unit tests (signal classification, frontier, recommendations, strategies)
-- All code-level quality gates pass: `ruff`, `pyright`, `pytest` (`132 passed`), and web build
+- Added Phase 4 remediation follow-up work:
+  - remediation routes now use `cycles.read` scope, matching the rest of the experiment surface
+  - `/runs/{id}/lineage` returns the full retry chain for any node, not only ancestors plus direct children
+  - the run detail page now renders previous/next retry links plus full chain context from the lineage endpoint
+  - `invalid_artifact` now has a deterministic focused artifact-path rewrite strategy before broad LLM debug
+  - old resolved failures from other lineages no longer bias later successful recommendations
+- Added 62 unit tests across the Phase 4 area and remediation follow-up work
+- All code-level quality gates pass: `ruff`, `pyright`, `pytest` (`141 passed`), and web build
 
 ---
 
@@ -94,10 +102,11 @@ Two-tier strategy selection per failure class:
   - `dependency` → parse stderr for missing modules, patch build_recipe
   - `oom` → double memory limit (cap 64g)
   - `timeout` → increase timeout by 50% (cap 4h)
-  - `invalid_artifact` → escalate to broad
+  - `invalid_artifact` → if there is exactly one clear filename/path mismatch with the same extension, rewrite references in `code_plan.files` from the produced artifact path to the expected artifact path
   - `metric_parse` → not remediable, skip to postmortem
 - **Tier 2 — Broad debug** (LLM-assisted):
   - Activates when focused strategy already tried for same failure class
+  - Also used when `invalid_artifact` is ambiguous and no single deterministic rewrite exists
   - Sends error trace + code plan + prior remediation history to LLM for code fix
 - Escalation rule: attempt 1 = focused; attempt 2 with same failure class = broad; different class = focused for new class
 
@@ -121,10 +130,12 @@ Two-tier strategy selection per failure class:
 - `GET /runs/{id}/remediation` — remediation actions for a run
 - `GET /runs/{id}/signal` — directional signal for a run
 - `GET /runs/{id}/recommendation` — recommendation for a run
-- `GET /runs/{id}/lineage` — full retry chain (parent_run_id walk + remediation actions)
+- `GET /runs/{id}/lineage` — full retry chain for any node (walk to root, then include all descendants ordered oldest→newest, plus remediation actions)
 - `GET /specs/{id}/signal-history` — all signals for a spec
 - `GET /hypotheses/{id}/frontier` — metric frontier for a hypothesis line
 - `GET /charters/{id}/frontiers` — all frontiers for a charter
+
+All remediation read routes use `cycles.read`, matching the existing experiment/discovery/analysis permission model.
 
 ### 9. CLI (`apps/cli/commands/experiment.py`)
 
@@ -172,7 +183,7 @@ Two-tier strategy selection per failure class:
 
 - `apps/web/src/api/remediation.ts` — new TypeScript API client
 - `apps/web/src/api/experiment.ts` — added `parent_run_id` to RunRecord
-- `apps/web/src/routes/experiment/$runId.tsx` — signal, recommendation, remediation, lineage sections
+- `apps/web/src/routes/experiment/$runId.tsx` — signal, recommendation, remediation, lineage sections, plus previous/next retry navigation and full chain context
 - `apps/web/src/routes/experiment/index.tsx` — frontier summary section
 
 ### Tests
@@ -181,6 +192,8 @@ Two-tier strategy selection per failure class:
 - `tests/unit/test_frontier.py` — 6 tests for create/update/failed paths
 - `tests/unit/test_recommendations.py` — 12 tests covering full decision matrix
 - `tests/unit/test_remediation_strategies.py` — 19 tests for all failure classes + escalation + helpers
+- `tests/unit/test_auth.py` — includes remediation route scope enforcement
+- `tests/unit/test_phase4_remediation_runtime.py` — covers lineage-scoped recommendation behavior, idempotent signal/recommend artifacts, and full retry-chain reads
 
 ---
 
@@ -190,7 +203,7 @@ The repository passes code-level quality gates after Phase 4:
 
 - `uv run ruff check .` — passes
 - `uv run pyright` — passes (0 errors, 0 warnings)
-- `uv run pytest` — `132 passed`
+- `uv run pytest` — `141 passed`
 - `cd apps/web && npm run build` — passes
 
 ---
@@ -203,6 +216,7 @@ The repository passes code-level quality gates after Phase 4:
    - Force a dependency failure (missing import), verify remediation creates a retry run with the missing package added to build_recipe. Confirm the retry succeeds.
    - Force an OOM failure (exit code 137), verify memory is doubled on retry.
    - Force a timeout, verify timeout is extended.
+   - Force a deterministic invalid-artifact mismatch, verify the focused artifact-path rewrite is applied before broad debug.
    - Verify max_attempts (3) is respected and remediation exhaustion routes to postmortem → recommend.
 3. **Validate the broad debug escalation path.**
    - Force two consecutive dependency failures with the same missing module to trigger focused → broad escalation. Verify the LLM is called and code_plan patches are applied.
