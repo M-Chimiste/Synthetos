@@ -39,5 +39,6 @@ class PaperCardRead(BaseModel):
     triage_status: str
     triage_reason: str | None
     metadata_analysis: dict[str, Any] | None
+    analysis_status: str
     created_at: datetime
     updated_at: datetime

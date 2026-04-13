@@ -9,7 +9,7 @@ ALLOWED_TRANSITIONS: dict[CycleStatus, list[CycleStatus]] = {
     CycleStatus.created: [CycleStatus.discovery_ready],
     CycleStatus.discovery_ready: [CycleStatus.discovery_screened],
     CycleStatus.discovery_screened: [CycleStatus.analysis_ready],
-    CycleStatus.analysis_ready: [CycleStatus.evidence_ready],
+    CycleStatus.analysis_ready: [CycleStatus.analysis_ready, CycleStatus.evidence_ready],
     CycleStatus.evidence_ready: [CycleStatus.portfolio_ready],
     CycleStatus.portfolio_ready: [CycleStatus.protocol_ready],
     CycleStatus.protocol_ready: [CycleStatus.running],

@@ -11,10 +11,12 @@ from fastapi.responses import JSONResponse
 from sqlalchemy.exc import NoResultFound
 
 from apps.api.routers import (
+    analysis,
     charters,
     cycles,
     discovery,
     events,
+    experiment,
     health,
     jobs,
     skills,
@@ -112,6 +114,8 @@ def create_app() -> FastAPI:
     app.include_router(jobs.router, prefix=api_prefix)
     app.include_router(skills.router, prefix=api_prefix)
     app.include_router(discovery.router, prefix=api_prefix)
+    app.include_router(analysis.router, prefix=api_prefix)
+    app.include_router(experiment.router, prefix=api_prefix)
 
     return app
 

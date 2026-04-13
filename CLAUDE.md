@@ -4,114 +4,115 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## Project Overview
 
-**Synthetos** -- a single-user ML research system for running end-to-end research loops. Researchers define problems, triage literature (arXiv), generate hypotheses, execute experiments in GPU-capable containers, verify results, and prepare submissions.
+**Synthetos** is a single-user ML research system for running end-to-end research loops. Researchers define problems, triage literature (arXiv), generate hypotheses, execute experiments in GPU-capable containers, verify results, and prepare submissions.
 
-**Current status:** Pre-implementation. The repository contains planning/design documents in `project_docs/`. Phase 0 (Foundation) is ready to begin.
+Design docs live in `project_docs/`. The phased implementation plan is in `project_docs/co_scientist_phased_implementation_plan.md`.
 
-## Design Documents
-
-- `project_docs/co_scientist_prd.md` -- Product requirements, MVP scope, success metrics
-- `project_docs/co_scientist_system_patterns.md` -- Architecture patterns, design principles, data model
-- `project_docs/co_scientist_tech_context.md` -- Tech stack, repo structure, service breakdown, coding standards
-- `project_docs/co_scientist_phased_implementation_plan.md` -- 7-phase roadmap (Phase 0-6)
-
-## Architecture
-
-Four core loops: **Discover** (intake -> retrieval -> metadata analysis -> shortlist) -> **Analyze** (full-text ingestion -> graph construction -> QA -> coverage) -> **Experiment** (hypotheses -> protocols -> containerized runs -> telemetry) -> **Learn** (remediation -> signal classification -> frontier tracking -> patterns).
-
-Two horizontal layers: **Skill system** (optional add-on tools/context that augment prompts for specific tasks) and **Orchestrator API** (REST/SSE control plane for external tool integration).
-
-### Critical Architectural Decisions
-
-- **Operator-over-shared-state**, not agent messaging. Typed operators read/write a shared `ResearchState` -- no hidden prompt history as memory.
-- **ResearchCharter** = the project definition. **ResearchCycle** = one bounded research loop within a charter. **ResearchState** = logical aggregate of everything that has occurred within a charter across its cycles (not a single DB row).
-- **One active charter at a time** due to GPU constraints. Users can swap between charters but not run them concurrently.
-- **Metadata-first literature triage**: title+abstract screening before full text. Shortlisted papers use an HTML-first full-text path, with PDF + Docling as fallback when HTML is unavailable or low quality.
-- **Task-scoped context assembly**: each operator gets a scoped `ContextPack` with token budget, allowed sources, deterministic ordering.
-- **Portfolio search**: ranked hypothesis portfolio, not greedy single-path.
-- **Hexagonal architecture**: all external systems behind adapter interfaces. Core domain code must not depend on vendor SDKs.
-- **Evidence before hypothesis before code**: never jump from task description directly to generated code.
-- **Deterministic core, probabilistic edge**: LLMs for synthesis/ideation/critique; Python+config for state, policy, lineage.
-- **Prompts vs Skills**: Prompts control overall operator behavior (versioned file assets). Skills are optional add-ons providing tools or additional context for specific task types. Skills augment prompts, they don't replace them.
-- **Policy precedence**: hard system policy and token scopes override user-configured policy, which overrides autonomy or operator defaults.
-
-### Runtime Model
-
-- **Infrastructure (Postgres):** Runs in Docker containers via docker-compose
-- **Application (API, worker, web):** Runs on host with hot reload
-- **Experiment containers:** Spawned as sibling Docker containers (not DinD) with GPU passthrough via Docker SDK. Host machine has 2x RTX 6000 Blackwell GPUs for training/inference.
-
-### Planned Monorepo Structure
-
-```
-apps/           -- api/ worker/ web/ cli/
-libs/           -- schemas/ core/ orchestration/ storage/ discovery/ analysis/
-                   literature/ ideation/ protocols/ execution/ remediation/
-                   verification/ reporting/ memory/ skills/
-                   adapters/ (arxiv/ corpus/ external_search/ paper_ingestion/
-                              graph/ llm/ embeddings/ git/ container/)
-prompts/        -- versioned prompt assets (planning/ discovery/ analysis/ ideation/
-                   coding/ remediation/ verification/ reporting/)
-skills/         -- first-party skill.md packages by phase
-configs/        -- YAML config (problems/ policies/ models/ skills/)
-tests/          -- unit/ integration/ e2e/ fixtures/
-```
-
-## Tech Stack
-
-**Backend:** Python 3.12, uv, FastAPI, Pydantic v2, SQLAlchemy 2, Alembic, psycopg, Typer (CLI), structlog, httpx, tenacity, jinja2, orjson
-
-**Database:** PostgreSQL + pgvector (768-dim, gte-modernbert embeddings) + Apache AGE (graph storage), all in one instance
-
-**Frontend:** React, TypeScript, Vite, TanStack Query, TanStack Router, Tailwind CSS
-
-**Model Gateway:** Must support all from day one:
-- Local: LMStudio, Ollama, VLLM-compatible endpoints (all OpenAI-compatible API)
-- Hosted: OpenAI, Anthropic, Google
-- Structured output support is critical -- most generated data validated via structured output
-
-**Embeddings:** gte-modernbert, 768 dimensions. arXiv corpus is already embedded.
-
-**Execution:** Docker containers with NVIDIA Container Toolkit + GPU passthrough. Git worktrees for workspace isolation.
-
-**Quality:** ruff (lint/format), pyright (types), pytest + testcontainers (backend tests), vitest (frontend), Playwright (e2e)
-
-## Internal Corpus
-
-The "internal corpus" is a seeded local arXiv metadata mirror. The arXiv metadata corpus is already downloaded and embedded (gte-modernbert, 768-dim), then incrementally updated through harvesting. Full text is fetched only for shortlisted papers, using HTML first and PDF + Docling as fallback.
-
-## Development Commands (Planned)
+## Development Commands
 
 ```bash
 # Infrastructure
-docker compose up postgres
+docker compose up -d postgres          # Start Postgres (pgvector + AGE extensions)
 
 # Backend
-uv sync                           # Install deps
-alembic upgrade head              # Run migrations
-uv run uvicorn apps.api:app       # Start API
-uv run python -m apps.worker      # Start worker
+uv sync --extra dev                     # Install all deps including dev
+uv run synthetos db init                # Run Alembic migrations
+uv run uvicorn apps.api.main:app --reload  # API server (port 8000)
+uv run python -m apps.worker           # Worker process (separate terminal)
 
 # Frontend
-npm install
-npm run dev
+cd apps/web && npm install && npm run dev  # Vite dev server (port 5173)
 
 # Quality
-uv run pytest                     # Backend tests
+uv run ruff check .                     # Lint
+uv run ruff format .                    # Format
+uv run pyright                          # Type check
+uv run pytest                           # All backend tests
 uv run pytest tests/unit/test_foo.py -k test_name  # Single test
-uv run ruff check .               # Lint
-uv run ruff format .              # Format
-uv run pyright                    # Type check
-npm run test                      # Frontend tests (vitest)
-npx playwright test               # E2e tests
+cd apps/web && npm run build            # Frontend type check + build
+cd apps/web && npm run test             # Frontend tests (vitest)
 ```
 
-## Core Domain Entities
+## Architecture
 
-`ResearchCharter`, `ResearchCycle`, `ResearchState` (logical aggregate), `ProblemProfile`, `DiscoverySession`, `DiscoveryView`, `PaperCard`, `PaperAnalysisPacket`, `PaperReviewArtifact`, `EvidenceCard`, `HypothesisCard`, `ExperimentSpec`, `RunRecord`, `VerificationReport`, `FailurePostmortem`, `RemediationAction`, `MetricFrontier`, `DirectionalSignal`, `CanonicalPattern`, `ReportBundle`, `SkillDefinition`, `SkillBinding`, `SkillExecutionRecord`, `OrchestratorClient`, `ApprovalEvent`, `DomainEvent`
+### Runtime Model
 
-## Environment
+- **Postgres** runs in Docker via docker-compose. Extensions (pgvector, Apache AGE) are loaded by `docker/init-extensions.sql`.
+- **API, worker, CLI** run on the host with hot reload. They share `libs/` but run as separate processes.
+- **Experiment containers** (future) will be spawned as sibling Docker containers with GPU passthrough.
 
-- Credentials in `.env` (gitignored for sensitive values)
-- Key env vars: `LAB_DB_URL`, `LAB_DATA_ROOT`, `LAB_MODEL_CONFIG`, `LAB_SKILL_PATHS`, `LAB_API_PORT`, `LAB_AUTO_INIT_DB`
-- Artifact storage under `LAB_DATA_ROOT` (artifacts/, cache/, workspaces/, exports/)
+### Core Pattern: Queue-Driven Operator Execution
+
+The system is a **job queue + operator** architecture, not an agent framework:
+
+1. **API/CLI** receives user requests → calls a **service** (`libs/core/services/`) → enqueues a **job** in Postgres.
+2. **Worker** polls for jobs using `SELECT FOR UPDATE SKIP LOCKED`, claims one, builds an `OperatorInput`, and calls the appropriate **operator**.
+3. **Operators** (`libs/discovery/operators/`, `libs/analysis/operators/`) do the actual work (LLM calls, data processing) and return an `OperatorResult` containing events, state patches, and artifacts.
+4. **Worker** persists events, applies state patches, and updates job status—all atomically.
+
+Key contracts are in `libs/core/operators.py`: `OperatorInput` (frozen dataclass) and `OperatorResult` (events + state_patch + artifacts + summary).
+
+### State Machine
+
+Cycles follow a strict DAG of status transitions defined in `libs/core/state_machine.py`:
+`created → discovery_ready → discovery_screened → analysis_ready → evidence_ready → portfolio_ready → protocol_ready → running → verifying → reporting → closed`
+
+The worker validates transitions before applying them.
+
+### Event Sourcing
+
+All state changes emit `DomainEvent` rows (`libs/core/events.py`, `libs/storage/models/events.py`). Events carry charter_id, cycle_id, actor info, and JSON payloads. The API exposes an SSE stream for live telemetry.
+
+### LLM Integration
+
+`libs/adapters/llm/` implements a hexagonal adapter pattern:
+- `base.py` defines the `LLMAdapter` interface (free-form + structured completions)
+- `router.py` (`ModelRouter`) reads `configs/models.yaml`, maps roles to providers, lazily instantiates and caches adapters
+- Provider adapters: `anthropic_adapter.py`, `openai_adapter.py`, `openai_compat.py` (for LMStudio/Ollama/VLLM), `google_adapter.py`
+
+### Skill System
+
+File-based skill discovery: `libs/skills/loader.py` walks `LAB_SKILL_PATHS` directories for `skill.md` files with YAML frontmatter. Skills are validated (`libs/skills/validator.py`), registered (`libs/skills/registry.py`), and tracked with SHA-256 content hashes. Trust tiers: `first-party` vs `user-local`.
+
+### Configuration
+
+`libs/core/config.py` uses pydantic-settings with `LAB_` env prefix and `.env` fallback. Singleton via `get_settings()`. Key settings: `LAB_DB_URL`, `LAB_ENV` (dev bypasses browser auth), `LAB_DATA_ROOT`, `LAB_MODEL_CONFIG`, `LAB_SKILL_PATHS`.
+
+### Database
+
+PostgreSQL with pgvector (768-dim embeddings) and Apache AGE (graph storage). Alembic migrations in `libs/storage/migrations/versions/`. SQLAlchemy models in `libs/storage/models/`. Dual session factories: async for API, sync for worker/CLI.
+
+## Monorepo Layout
+
+- `apps/api/` — FastAPI server, routers mount under `/api/v1`, auth in `auth.py`, deps in `deps.py`
+- `apps/worker/` — Polling worker with `claimer.py` (job locking), `heartbeat.py`, `executor.py` (operator dispatch)
+- `apps/cli/` — Typer CLI, entry point is `synthetos` command, subcommands in `commands/`
+- `apps/web/` — React + TypeScript + Vite + TanStack Router/Query + Tailwind CSS
+- `libs/schemas/` — Pydantic v2 request/response models (API boundary)
+- `libs/core/` — Domain logic: config, events, operators, state machine, services
+- `libs/storage/` — SQLAlchemy models, Alembic migrations, session management
+- `libs/adapters/` — Hexagonal adapters: `llm/`, `embeddings/`, `sources/`, `reranker/`, `ingestion/`, `graph/`
+- `libs/discovery/` — Discovery loop operators and supporting logic (ranking, evaluation, views, metadata analysis)
+- `libs/analysis/` — Analysis loop operators (coverage, graph QA, reports)
+- `libs/skills/` — Skill loader, parser, validator, registry
+- `skills/` — First-party skill.md packages
+- `configs/` — YAML configs (models.yaml, discovery/, policies/, problems/)
+- `prompts/` — Versioned prompt assets (not yet populated)
+
+## Key Design Principles
+
+- **Operator-over-shared-state**: typed operators read/write shared `ResearchState`—no agent messaging or hidden prompt history.
+- **Hexagonal architecture**: all external systems behind adapter interfaces in `libs/adapters/`. Core domain code must not import vendor SDKs.
+- **Metadata-first triage**: title+abstract screening before full text. HTML-first full-text path, PDF+Docling as fallback.
+- **Deterministic core, probabilistic edge**: LLMs for synthesis/ideation; Python+config for state, policy, lineage.
+- **One active charter at a time** due to GPU constraints.
+
+## Tooling Config
+
+- **ruff**: line-length 100, target py312. `B008` suppressed in `apps/api/` and `apps/cli/` (idiomatic FastAPI/Typer defaults). isort knows `apps` and `libs` as first-party.
+- **pyright**: standard mode, includes `apps` and `libs`, excludes `tests`.
+- **pytest**: asyncio_mode = auto, testpaths = tests.
+
+## Internal Corpus
+
+The arXiv metadata corpus is already downloaded and embedded (gte-modernbert, 768-dim). It is incrementally updated via harvesting. Full text is fetched only for shortlisted papers.

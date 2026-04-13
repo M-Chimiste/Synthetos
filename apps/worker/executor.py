@@ -48,6 +48,56 @@ def _register_discovery_operators() -> None:
 _register_discovery_operators()
 
 
+def _register_analysis_operators() -> None:
+    """Register the Phase 2 analysis operator chain."""
+    from libs.analysis.operators import register as register_analysis
+
+    register_analysis(register_operator)
+
+
+_register_analysis_operators()
+
+
+def _register_ideation_operators() -> None:
+    """Register the Phase 3 hypothesis operator chain."""
+    from libs.ideation.operators import register as register_ideation
+
+    register_ideation(register_operator)
+
+
+_register_ideation_operators()
+
+
+def _register_protocol_operators() -> None:
+    """Register the Phase 3 protocol operator chain."""
+    from libs.protocols.operators import register as register_protocols
+
+    register_protocols(register_operator)
+
+
+_register_protocol_operators()
+
+
+def _register_execution_operators() -> None:
+    """Register the Phase 3 execution operator chain."""
+    from libs.execution.operators import register as register_execution
+
+    register_execution(register_operator)
+
+
+_register_execution_operators()
+
+
+def _register_verification_operators() -> None:
+    """Register the Phase 3 verification operator chain."""
+    from libs.verification.operators import register as register_verification
+
+    register_verification(register_operator)
+
+
+_register_verification_operators()
+
+
 def execute(op_input: OperatorInput) -> OperatorResult:
     """Dispatch a job to its registered operator handler.
 

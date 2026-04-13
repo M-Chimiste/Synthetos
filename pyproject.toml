@@ -25,6 +25,9 @@ dependencies = [
     "pyyaml>=6.0,<7",
     "python-frontmatter>=1.1,<2",
     "pgvector>=0.3,<1",
+    "beautifulsoup4>=4.12,<5",
+    "docling>=2.15,<3",
+    "docker>=7,<8",
 ]
 
 [project.optional-dependencies]

@@ -20,6 +20,14 @@ from uuid_utils import uuid7
 from apps.worker.claimer import try_claim
 from apps.worker.executor import execute
 from apps.worker.heartbeat import HeartbeatThread
+from libs.analysis.operators._common import (
+    AnalysisStateError,
+    analysis_session_id_from_payload,
+    load_analysis_session,
+)
+from libs.analysis.operators._common import (
+    mark_failed as mark_analysis_failed,
+)
 from libs.core.clock import utcnow
 from libs.core.config import get_settings
 from libs.core.events import emit_event_sync
@@ -39,6 +47,19 @@ from libs.discovery.operators._common import (
     load_session,
     mark_failed,
     session_id_from_payload,
+)
+from libs.execution.operators._common import (
+    ExecutionStateError,
+    load_run_record,
+    run_record_id_from_payload,
+)
+from libs.ideation.operators._common import (
+    IdeationStateError,
+    hypothesis_session_id_from_payload,
+    load_hypothesis_session,
+)
+from libs.ideation.operators._common import (
+    mark_failed as mark_ideation_failed,
 )
 from libs.storage.base import get_sync_session_factory
 from libs.storage.models.research import ResearchCycle
@@ -182,6 +203,109 @@ def _mark_discovery_job_failed(
         },
     )
     return session_id, changed
+
+
+def _mark_analysis_job_failed(
+    session: Session,
+    *,
+    job: Job,
+    error: str,
+) -> tuple[UUID | None, UUID | None, bool]:
+    """Mark the linked analysis session failed for a failed analysis job."""
+    if not job.job_type.startswith("analysis_"):
+        return None, None, False
+
+    try:
+        session_id = analysis_session_id_from_payload(
+            OperatorInput(
+                cycle_id=job.cycle_id or UUID(int=0),
+                charter_id=UUID(int=0),
+                job_id=job.id,
+                job_type=job.job_type,
+                payload=job.payload or {},
+            )
+        )
+        analysis = load_analysis_session(session, session_id)
+    except (AnalysisStateError, ValueError):
+        return None, None, False
+
+    changed = mark_analysis_failed(
+        analysis,
+        step=job.job_type.removeprefix("analysis_"),
+        error=error,
+        detail={
+            "job_id": str(job.id),
+            "job_type": job.job_type,
+        },
+    )
+    return session_id, analysis.paper_card_id, changed
+
+
+def _mark_ideation_job_failed(
+    session: Session,
+    *,
+    job: Job,
+    error: str,
+) -> tuple[UUID | None, bool]:
+    """Mark the linked hypothesis session failed for a failed ideation job."""
+    if not job.job_type.startswith("hypothesis_"):
+        return None, False
+
+    try:
+        session_id = hypothesis_session_id_from_payload(
+            OperatorInput(
+                cycle_id=job.cycle_id or UUID(int=0),
+                charter_id=UUID(int=0),
+                job_id=job.id,
+                job_type=job.job_type,
+                payload=job.payload or {},
+            )
+        )
+        hs = load_hypothesis_session(session, session_id)
+    except (IdeationStateError, ValueError):
+        return None, False
+
+    changed = mark_ideation_failed(
+        hs,
+        step=job.job_type.removeprefix("hypothesis_"),
+        error=error,
+        detail={"job_id": str(job.id), "job_type": job.job_type},
+    )
+    return session_id, changed
+
+
+def _mark_execution_job_failed(
+    session: Session,
+    *,
+    job: Job,
+    error: str,
+) -> tuple[UUID | None, bool]:
+    """Mark the linked run record failed for a failed execution/verification job."""
+    prefixes = ("execution_", "verification_", "protocol_")
+    if not any(job.job_type.startswith(p) for p in prefixes):
+        return None, False
+
+    try:
+        run_id = run_record_id_from_payload(
+            OperatorInput(
+                cycle_id=job.cycle_id or UUID(int=0),
+                charter_id=UUID(int=0),
+                job_id=job.id,
+                job_type=job.job_type,
+                payload=job.payload or {},
+            )
+        )
+        run_record = load_run_record(session, run_id)
+    except (ExecutionStateError, ValueError):
+        return None, False
+
+    if run_record.status in ("failed", "cancelled"):
+        return run_id, False
+
+    run_record.status = "failed"
+    run_record.error = error
+    run_record.completed_at = utcnow()
+    return run_id, True
 
 
 def run(*, poll_interval: float = _DEFAULT_POLL_INTERVAL) -> None:
@@ -340,7 +464,58 @@ def run(*, poll_interval: float = _DEFAULT_POLL_INTERVAL) -> None:
                         job=current_job,
                         error=result.error or "unknown error",
                     )
+                    (
+                        analysis_session_id,
+                        analysis_paper_card_id,
+                        analysis_failure_changed,
+                    ) = _mark_analysis_job_failed(
+                        session,
+                        job=current_job,
+                        error=result.error or "unknown error",
+                    )
+                    ideation_session_id, ideation_failure_changed = (
+                        _mark_ideation_job_failed(
+                            session,
+                            job=current_job,
+                            error=result.error or "unknown error",
+                        )
+                    )
+                    execution_run_id, execution_failure_changed = (
+                        _mark_execution_job_failed(
+                            session,
+                            job=current_job,
+                            error=result.error or "unknown error",
+                        )
+                    )
                     fail_job(session, current_job.id, result.error or "unknown error")
+                    if ideation_failure_changed:
+                        emit_event_sync(
+                            session,
+                            event_type="ideation.session_failed",
+                            charter_id=charter_id,
+                            cycle_id=current_job.cycle_id,
+                            payload={
+                                "hypothesis_session_id": str(ideation_session_id),
+                                "operator": current_job.job_type,
+                                "error": result.error,
+                            },
+                            actor_type=ActorType.worker,
+                            actor_id=worker_id,
+                        )
+                    if execution_failure_changed:
+                        emit_event_sync(
+                            session,
+                            event_type="execution.run_failed",
+                            charter_id=charter_id,
+                            cycle_id=current_job.cycle_id,
+                            payload={
+                                "run_record_id": str(execution_run_id),
+                                "operator": current_job.job_type,
+                                "error": result.error,
+                            },
+                            actor_type=ActorType.worker,
+                            actor_id=worker_id,
+                        )
                     if discovery_failure_changed:
                         emit_event_sync(
                             session,
@@ -349,6 +524,21 @@ def run(*, poll_interval: float = _DEFAULT_POLL_INTERVAL) -> None:
                             cycle_id=current_job.cycle_id,
                             payload={
                                 "session_id": str(discovery_session_id),
+                                "operator": current_job.job_type,
+                                "error": result.error,
+                            },
+                            actor_type=ActorType.worker,
+                            actor_id=worker_id,
+                        )
+                    if analysis_failure_changed:
+                        emit_event_sync(
+                            session,
+                            event_type="analysis.session_failed",
+                            charter_id=charter_id,
+                            cycle_id=current_job.cycle_id,
+                            payload={
+                                "analysis_session_id": str(analysis_session_id),
+                                "paper_card_id": str(analysis_paper_card_id),
                                 "operator": current_job.job_type,
                                 "error": result.error,
                             },

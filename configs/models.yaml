@@ -44,6 +44,16 @@ roles:
     model: claude-sonnet-4-20250514
     temperature: 0.5
 
+  hypothesis_generation:
+    provider: anthropic
+    model: claude-sonnet-4-20250514
+    temperature: 0.7
+
+  protocol_drafting:
+    provider: anthropic
+    model: claude-sonnet-4-20250514
+    temperature: 0.3
+
 # Embeddings router profiles -- used by EmbeddingsRouter
 # The corpus is pre-embedded with Alibaba-NLP/gte-modernbert-base, so any
 # query-time profile MUST serve the same checkpoint or cosine results will

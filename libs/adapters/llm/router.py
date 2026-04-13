@@ -67,6 +67,10 @@ class ModelRouter:
 
         return role_cfg
 
+    def get_role_config(self, role: ModelRole) -> dict[str, Any]:
+        """Expose resolved role configuration for lineage and diagnostics."""
+        return dict(self._get_role_config(role))
+
     def _get_provider_config(self, provider_name: str) -> dict[str, Any]:
         """Get the provider-level configuration."""
         providers = self._config.get("providers", {})
