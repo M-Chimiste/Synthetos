@@ -12,6 +12,7 @@ from sqlalchemy.exc import NoResultFound
 
 from apps.api.routers import (
     analysis,
+    autonomy,
     charters,
     cycles,
     discovery,
@@ -118,6 +119,7 @@ def create_app() -> FastAPI:
     app.include_router(analysis.router, prefix=api_prefix)
     app.include_router(experiment.router, prefix=api_prefix)
     app.include_router(remediation.router, prefix=api_prefix)
+    app.include_router(autonomy.router, prefix=api_prefix)
 
     return app
 

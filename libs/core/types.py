@@ -38,6 +38,7 @@ class CycleStatus(StrEnum):
     protocol_ready = "protocol_ready"
     running = "running"
     verifying = "verifying"
+    loop_deciding = "loop_deciding"
     reporting = "reporting"
     closed = "closed"
 

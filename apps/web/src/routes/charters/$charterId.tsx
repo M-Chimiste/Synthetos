@@ -8,6 +8,7 @@ import {
 } from "../../api/hooks";
 import StatusBadge from "../../components/StatusBadge";
 import EventStream from "../../components/EventStream";
+import AutonomyPanel from "../../components/AutonomyPanel";
 
 export const Route = createFileRoute("/charters/$charterId")({
   component: CharterDetailPage,
@@ -94,6 +95,12 @@ function CharterDetailPage() {
             </div>
             <StatusBadge status={state.data.active_cycle.status} />
           </div>
+        </section>
+      )}
+
+      {state.data?.active_cycle && (
+        <section className="mb-6 rounded-lg border border-gray-200 bg-white p-4">
+          <AutonomyPanel cycleId={state.data.active_cycle.id} />
         </section>
       )}
 

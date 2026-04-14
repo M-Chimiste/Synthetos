@@ -67,6 +67,10 @@ class _FakeRecommendSession:
         self.added: list[Any] = []
         self.committed = False
 
+    def get(self, _model_class: Any, _id: Any) -> Any:
+        """Return a fake cycle with no autonomy config (supervised mode)."""
+        return SimpleNamespace(config=None)
+
     def execute(self, query: Any) -> _ScalarResult:
         query_text = str(query)
         if "FROM directional_signals" in query_text:

@@ -23,8 +23,22 @@ const STATUS_COLORS: Record<string, string> = {
   portfolio_ready: "bg-orange-100 text-orange-800",
   protocol_ready: "bg-orange-100 text-orange-800",
   verifying: "bg-violet-100 text-violet-800",
+  loop_deciding: "bg-fuchsia-100 text-fuchsia-800",
   reporting: "bg-blue-100 text-blue-800",
   archived: "bg-gray-100 text-gray-600",
+  // Phase 5 hypothesis lifecycle
+  promising: "bg-emerald-100 text-emerald-800",
+  stalled: "bg-amber-100 text-amber-800",
+  deprioritized: "bg-gray-100 text-gray-600",
+  validated: "bg-teal-100 text-teal-800",
+  compiled: "bg-sky-100 text-sky-800",
+  candidate: "bg-slate-100 text-slate-800",
+  selected: "bg-indigo-100 text-indigo-800",
+  deferred: "bg-gray-100 text-gray-600",
+  rejected: "bg-red-100 text-red-800",
+  // Autonomy mode
+  autonomous: "bg-purple-100 text-purple-800",
+  supervised: "bg-slate-100 text-slate-800",
 };
 
 const DEFAULT_COLOR = "bg-gray-100 text-gray-700";

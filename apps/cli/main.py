@@ -22,6 +22,7 @@ def main() -> None:
 
 def _register_subcommands() -> None:
     from apps.cli.commands.analysis import app as analysis_app
+    from apps.cli.commands.autonomy import app as autonomy_app
     from apps.cli.commands.charter import app as charter_app
     from apps.cli.commands.corpus import app as corpus_app
     from apps.cli.commands.cycle import app as cycle_app
@@ -38,6 +39,7 @@ def _register_subcommands() -> None:
     app.add_typer(discovery_app, name="discovery")
     app.add_typer(analysis_app, name="analysis")
     app.add_typer(experiment_app, name="experiment")
+    app.add_typer(autonomy_app, name="autonomy")
 
 
 _register_subcommands()

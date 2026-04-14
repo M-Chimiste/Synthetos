@@ -155,10 +155,35 @@ def recommend_operator(op_input: OperatorInput) -> OperatorResult:
                 "action": rec.action,
             },
         )
+
+        # Phase 5: in autonomous mode, route to loop_decide instead of reporting
+        from libs.storage.models.research import ResearchCycle
+
+        cycle = db.get(ResearchCycle, run.cycle_id)
+        autonomy_cfg = ((cycle.config if cycle else None) or {}).get("autonomy", {})
+        is_autonomous = autonomy_cfg.get("mode") == "autonomous"
+
+        if is_autonomous:
+            target_status = CycleStatus.loop_deciding.value
+            from libs.core.services.job_service import create_job
+
+            create_job(
+                db,
+                cycle_id=run.cycle_id,
+                job_type="loop_decide",
+                payload={
+                    "run_record_id": str(run.id),
+                    "recommendation_id": str(rec_row.id),
+                },
+                priority=5,
+            )
+        else:
+            target_status = CycleStatus.reporting.value
+
         db.commit()
 
     return OperatorResult(
         success=True,
         summary=f"Recommendation: {rec.recommendation_type} — {rec.action[:80]}",
-        state_patch={"cycle_status": CycleStatus.reporting.value},
+        state_patch={"cycle_status": target_status},
     )

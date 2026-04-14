@@ -108,6 +108,16 @@ def _register_remediation_operators() -> None:
 _register_remediation_operators()
 
 
+def _register_autonomy_operators() -> None:
+    """Register the Phase 5 autonomy operator chain."""
+    from libs.autonomy.operators import register as register_autonomy
+
+    register_autonomy(register_operator)
+
+
+_register_autonomy_operators()
+
+
 def execute(op_input: OperatorInput) -> OperatorResult:
     """Dispatch a job to its registered operator handler.
 

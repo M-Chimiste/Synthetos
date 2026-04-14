@@ -54,6 +54,7 @@ async def _compile_specs(
     hardware_profile: dict[str, Any] | None,
     base_image: str | None,
     skill_prompt: str | None,
+    variation_context: dict[str, Any] | None = None,
 ) -> tuple[_SpecSet, dict[str, Any]]:
     """Call the LLM to compile hypotheses into executable experiment specs."""
     router = ModelRouter()
@@ -86,11 +87,36 @@ async def _compile_specs(
         if base_image:
             hw_hint += f"\nBase image: {base_image}"
 
+        variation_hint = ""
+        if variation_context:
+            variation_hint = (
+                "\n\nPrevious attempt results:\n"
+                f"- Signal: {variation_context.get('signal', 'unknown')}\n"
+                f"- Best frontier value: {variation_context.get('frontier_best', 'N/A')}\n"
+                f"- Recommendation: {variation_context.get('recommendation_action', '')}\n"
+                f"- This is variation #{variation_context.get('variation_number', 1)}.\n"
+                "\nCompile a NEW experiment spec that addresses the stall/regression by "
+                "varying hyperparameters, architecture choices, or training strategy. "
+                "Do NOT repeat the same configuration."
+            )
+            prior_metrics = variation_context.get("prior_metrics")
+            if prior_metrics:
+                variation_hint += f"\n- Metrics achieved: {prior_metrics}"
+            context_summary = variation_context.get("context_summary")
+            if context_summary:
+                key_findings = context_summary.get("key_findings", "")
+                if key_findings:
+                    variation_hint += f"\n- Loop findings: {key_findings}"
+                repeated = context_summary.get("repeated_approaches", [])
+                if repeated:
+                    variation_hint += "\n- Repeated approaches: " + "; ".join(repeated)
+
         user_msg = (
             f"Problem: {problem_statement}\n\n"
             f"Hypotheses to compile:\n{hyp_text}\n"
             f"{hw_hint}\n\n"
             f"Compile each hypothesis into a complete, executable experiment spec."
+            f"{variation_hint}"
         )
         result = await router.complete_structured(
             role=ModelRole.protocol_drafting,
@@ -121,6 +147,8 @@ def protocol_compile_operator(op_input: OperatorInput) -> OperatorResult:
     hardware_profile = payload.get("hardware_profile")
     base_image = payload.get("base_image")
     explicit_card_ids = payload.get("hypothesis_card_ids")
+    variation_context = payload.get("variation_context")
+    from_loop = payload.get("from_loop", False)
 
     with factory() as db:
         hs = db.get(HypothesisSession, hypothesis_session_id)
@@ -224,6 +252,7 @@ def protocol_compile_operator(op_input: OperatorInput) -> OperatorResult:
                     hardware_profile,
                     base_image,
                     combined_skill_prompt,
+                    variation_context=variation_context,
                 )
             )
         except Exception as exc:
@@ -315,6 +344,54 @@ def protocol_compile_operator(op_input: OperatorInput) -> OperatorResult:
         return OperatorResult(
             success=False,
             error=f"all {rejected_count} specs were rejected as under-specified",
+        )
+
+    # Phase 5: when invoked from the autonomous loop, create a RunRecord
+    # and enqueue execution_setup directly instead of transitioning state.
+    if from_loop:
+        from libs.execution.operators._common import enqueue_next
+
+        first_spec_id = compiled_ids[0]
+        with factory() as db:
+            from libs.storage.models.experiment import RunRecord
+
+            spec_row = db.get(ExperimentSpec, first_spec_id)
+            if spec_row is None:
+                return OperatorResult(success=False, error="compiled spec not found")
+
+            # Count existing runs for this spec to determine run_number
+            from sqlalchemy import func as sa_func
+
+            max_run_num = db.execute(
+                select(sa_func.coalesce(sa_func.max(RunRecord.run_number), 0))
+                .where(RunRecord.experiment_spec_id == first_spec_id)
+            ).scalar_one()
+
+            new_run = RunRecord(
+                id=uuid7(),
+                experiment_spec_id=first_spec_id,
+                charter_id=spec_row.charter_id,
+                cycle_id=spec_row.cycle_id,
+                run_number=max_run_num + 1,
+                status="pending",
+                created_at=utcnow(),
+                updated_at=utcnow(),
+            )
+            db.add(new_run)
+            enqueue_next(
+                db,
+                cycle_id=spec_row.cycle_id,
+                next_job_type="execution_setup",
+                run_record_id=new_run.id,
+            )
+            db.commit()
+
+        return OperatorResult(
+            success=True,
+            summary=(
+                f"Compiled {len(compiled_ids)} specs from loop "
+                f"({rejected_count} rejected); enqueued execution_setup"
+            ),
         )
 
     result = OperatorResult(

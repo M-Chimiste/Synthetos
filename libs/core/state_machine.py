@@ -17,6 +17,11 @@ ALLOWED_TRANSITIONS: dict[CycleStatus, list[CycleStatus]] = {
     CycleStatus.verifying: [
         CycleStatus.reporting,
         CycleStatus.running,  # retry or next experiment
+        CycleStatus.loop_deciding,  # autonomous mode
+    ],
+    CycleStatus.loop_deciding: [
+        CycleStatus.running,  # continue/vary/pivot
+        CycleStatus.reporting,  # stop (budget, gate, halt, exhausted)
     ],
     CycleStatus.reporting: [CycleStatus.closed],
     CycleStatus.closed: [],

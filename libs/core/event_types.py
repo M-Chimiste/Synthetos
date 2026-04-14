@@ -102,3 +102,20 @@ class SignalEvents(StrEnum):
     frontier_created = "signal.frontier_created"
     frontier_updated = "signal.frontier_updated"
     recommendation_produced = "signal.recommendation_produced"
+
+
+class AutonomyEvents(StrEnum):
+    """Phase 5 autonomous-loop event types."""
+
+    loop_started = "autonomy.loop_started"
+    loop_decision_made = "autonomy.loop_decision_made"
+    budget_updated = "autonomy.budget_updated"
+    budget_exceeded = "autonomy.budget_exceeded"
+    gate_triggered = "autonomy.gate_triggered"
+    gate_resumed = "autonomy.gate_resumed"
+    hypothesis_status_changed = "autonomy.hypothesis_status_changed"
+    hypothesis_selected = "autonomy.hypothesis_selected"
+    repetition_detected = "autonomy.repetition_detected"
+    context_summarized = "autonomy.context_summarized"
+    loop_completed = "autonomy.loop_completed"
+    loop_stopped_manual = "autonomy.loop_stopped_manual"
