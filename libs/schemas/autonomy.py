@@ -6,7 +6,7 @@ from datetime import datetime
 from typing import Any, Literal
 from uuid import UUID
 
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 
 # ---------------------------------------------------------------------------
 # Autonomy policy
@@ -29,6 +29,9 @@ class AutonomyPolicyRead(BaseModel):
     max_wall_time_per_run_s: int | None = None
     summary_interval: int = 5
     checkpoint_gates: CheckpointGateConfigRead = CheckpointGateConfigRead()
+    cost_budget_note: str = (
+        "Phase 5 cost budgeting is deferred; only run-count and wall-clock limits are enforced."
+    )
 
 
 class AutonomyPolicyUpdate(BaseModel):
@@ -41,6 +44,14 @@ class AutonomyPolicyUpdate(BaseModel):
     max_wall_time_per_run_s: int | None = None
     summary_interval: int | None = None
     checkpoint_gates: CheckpointGateConfigRead | None = None
+
+
+class AutonomyReportResponse(BaseModel):
+    model_config = {"populate_by_name": True}
+
+    cycle_id: UUID
+    markdown: str | None = None
+    json_payload: dict[str, Any] | None = Field(default=None, alias="json")
 
 
 # ---------------------------------------------------------------------------

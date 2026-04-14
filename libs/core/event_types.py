@@ -117,5 +117,6 @@ class AutonomyEvents(StrEnum):
     hypothesis_selected = "autonomy.hypothesis_selected"
     repetition_detected = "autonomy.repetition_detected"
     context_summarized = "autonomy.context_summarized"
+    completion_report_generated = "autonomy.completion_report_generated"
     loop_completed = "autonomy.loop_completed"
     loop_stopped_manual = "autonomy.loop_stopped_manual"

@@ -3,7 +3,7 @@
 **Product:** Synthetos (ML Laboratory Co-Scientist)
 **Date:** 2026-04-14
 **Phase:** 5 — Autonomous Loop and Configurable Gating
-**Status:** Phase 5 implementation is complete end-to-end (backend, API, CLI, and frontend) and all code-level quality gates are green (`ruff check`, `pyright` — 0 errors, `pytest` — 230 tests passed, web build). The autonomous loop, budget tracking, checkpoint gates, hypothesis lifecycle, repetition detection, context summarization, completion reporting, API endpoints, CLI commands, and autonomy dashboard UI are all in place. The remaining work is live integration testing of the full loop against real Postgres, Docker, and model endpoints.
+**Status:** Phase 5 is now remediated and code-level complete. The autonomy loop no longer double-counts budget on gate resume, concrete hardware/network gates can pause before `execution_setup`, manual stops are durable in `loop_decisions`, completion reports are real markdown+JSON artifacts with an API read surface and UI viewer, and the Phase 5 event contract is aligned. All quality gates are green: `ruff check`, `pyright` — 0 errors, `pytest` — 238 passed, and web build. The remaining work is live integration testing of the full loop against real Postgres, Docker, and model endpoints.
 
 ---
 
@@ -11,29 +11,34 @@
 
 Phase 5 closes the research loop. Previously, every run terminated after a single `RunRecommendation` was produced and the cycle transitioned to `reporting`. Now, in autonomous mode, recommendations are consumed by a new `loop_decide` operator that continues, varies, or pivots the loop subject to budget limits and optional checkpoint gates. Supervised mode is completely unchanged.
 
+The initial implementation landed, and then a focused remediation pass corrected the main execution gaps in gate accounting, pre-execution gate enforcement, reporting, and auditability.
+
 Key design decisions:
 - **New `loop_deciding` cycle state** between `verifying` and `reporting`. Makes the decision point visible in the state machine instead of hiding it inside `verifying`. Only one conditional in Phase 4 `recommend` operator changes (the target status).
 - **Budget model tracks run count and wall-clock time, not dollar cost.** `RunRecord.resource_usage` lacks a dollar field and `ModelCallRecord.cost_estimate` is nullable and unreliable. A mixed-source cost budget would silently misenforce. Cost budgets deferred to a future iteration; the `AutonomyBudget` table and `AutonomyPolicy` model are designed to accommodate them without breaking changes.
 - **Gate pause/resume uses the existing worker pause contract.** `loop_decide` sets its own Job row to `JobStatus.paused` directly; the worker sees `current_job.status == JobStatus.paused` on return and handles `pause_job()` + event emission. Resume hits the existing `resume_job()` service. When the re-pending job runs again, `loop_decide` detects the existing `LoopDecision(decision="stop_gate")` for the same `run_record_id` and treats it as gate-approved.
+- **Gate resume is budget-neutral.** The remediation pass moved budget consumption behind the gate-resume check so resuming the same loop decision no longer burns an extra run or per-hypothesis count.
+- **Concrete-next-spec gates must fire before execution is enqueued.** `before_hardware_escalation` and `before_network_execution` are now enforced with a concrete next-spec preview instead of being evaluated against the current spec only.
 - **Hypothesis lifecycle coexists with Phase 3 statuses.** PATCH validation unchanged (`candidate|selected|rejected|deferred`); Phase 5 statuses (`active|promising|stalled|deprioritized|validated`) are system-managed by `loop_decide` via ORM writes, not through the API schema. No migration needed since the column is `String(50)`.
 - **`regenerate_hypotheses` deferred from v1.** Re-entering the ideation pipeline mid-loop would require state-machine transitions through `evidence_ready -> portfolio_ready -> protocol_ready` conflicting with the cycle being in `running`/`loop_deciding`. When all hypotheses are exhausted, the loop stops with `stop_exhausted` and the completion report recommends manual regeneration.
 - **Variation via `protocol_compile` payload.** Added `variation_context` and `from_loop` payload keys to `protocol_compile_operator`. When `from_loop=true`, the compile operator skips its own `protocol_ready` transition and instead creates a RunRecord and enqueues `execution_setup` directly, keeping the cycle in `running` throughout.
 - **Repetition detection escalates.** Exact duplicate (same code_plan+controls+metrics+baseline fingerprint) forces `continue_current` -> `vary_parameters`. Near-duplicate detection compares controls for numeric drift within 1% tolerance.
-- **Context summarization at run boundaries.** Every `summary_interval` runs (default 5), `loop_decide` generates a structured summary (hypotheses tried, frontier progression, failure patterns, remediation summary, repeated approaches) and writes it to disk. The summary is loaded into the `variation_context` when recompiling specs so the LLM stays aware of the full loop history.
+- **Context summarization at run boundaries.** Every `summary_interval` runs (default 5), `loop_decide` generates a structured summary, now with LLM-backed `key_findings`, and writes it to disk. The summary is loaded into `variation_context` when recompiling specs so the compile LLM stays aware of the loop history.
+- **Completion reports are first-class artifacts.** The remediation pass replaced the placeholder report with a real markdown+JSON bundle, a canonical autonomy report event, a read API, and a lightweight UI viewer.
 
 The main outcomes:
 
 - Added 2 new database tables via Alembic migration: `autonomy_budgets`, `loop_decisions`
 - Added 1 new `CycleStatus` enum value (`loop_deciding`) and 2 new state-machine transitions
-- Built 7 new pure-logic modules in `libs/autonomy/`: policy, budget, gates, hypothesis_lifecycle, repetition, context_summary, completion_report
+- Built 8 Phase 5 support modules in `libs/autonomy/`: policy, budget, gates, hypothesis_lifecycle, repetition, context_summary, completion_report, operators package
 - Built 2 new operators: `loop_decide` (core loop logic) and `loop_report` (completion report)
 - Modified `recommend` operator to conditionally route to `loop_deciding` + enqueue `loop_decide` in autonomous mode
 - Modified `protocol_compile` to accept `variation_context` and `from_loop` payload keys
-- Added 7 new API endpoints under `/cycles/{id}/autonomy/*`: policy GET/PUT, budget, decisions list/detail, resume, stop
+- Added 8 new API endpoints under `/cycles/{id}/autonomy/*`: policy GET/PUT, budget, decisions list/detail, report read, resume, stop
 - Added 5 new CLI subcommands under `synthetos autonomy`: policy, budget, decisions, resume, stop
-- Added 12 new event types in `AutonomyEvents` enum
-- Added 89 new unit tests (16 state-machine, 10 policy, 10 budget, 21 lifecycle, 18 gates, 14 repetition)
-- All code-level quality gates pass: `ruff` clean, `pyright` 0 errors, `pytest` 230 passed, web build succeeds
+- Added the canonical `autonomy.completion_report_generated` event and now emit `loop_started`, `budget_updated`, and `budget_exceeded`
+- Added focused runtime coverage for resume accounting, compile-time network gating, manual stop persistence, report generation/readback, and first-iteration `loop_started`
+- All code-level quality gates pass: `ruff` clean, `pyright` 0 errors, `pytest` 238 passed, web build succeeds
 
 ---
 
@@ -87,6 +92,7 @@ Transition rules:
 
 - `should_generate_summary()` triggers at run count boundaries (5, 10, 15, ...)
 - `generate_summary()` produces `LoopContextSummary` with hypotheses_tried, frontier_progression, failure_patterns, remediation_summary, repeated_approaches
+- Remediation pass: `key_findings` is now synthesized through the summarization model and recorded in model-call lineage, with deterministic fallback if the model is unavailable
 - `write_summary()` writes JSON to `{data_root}/reports/cycles/{cycle_id}/summaries/summary_{iteration}.json`
 - Loaded into `variation_context.context_summary` by `loop_decide` when enqueuing recompilations
 
@@ -97,7 +103,8 @@ Transition rules:
   - `parameter_variation` -> enqueue `protocol_compile` with `variation_context` + `from_loop=true`
   - `hypothesis_pivot` -> deprioritize current, select next viable card (ordered by rank), enqueue execution_setup or protocol_compile
   - `halt` -> stop loop
-- `loop_report` — generates markdown + JSON completion report, transitions cycle to `closed`. Sections: budget summary, hypotheses explored table, loop decisions timeline, remediation summary, final decision.
+- Remediation pass: budget mutation now happens only for completed runs, not gate resumes; `budget_updated` and `budget_exceeded` are emitted; concrete hardware/network gates are enforced before `execution_setup`
+- `loop_report` — now generates a real markdown + JSON completion report, transitions cycle to `closed`, and emits the canonical report event. Sections now include executive summary, frontier progression, and recommendation/regeneration guidance in addition to the base budget/hypothesis/decision/remediation material.
 
 ### 8. Pipeline rewiring
 
@@ -106,14 +113,15 @@ Transition rules:
 
 ### 9. API (`apps/api/routers/autonomy.py`)
 
-7 endpoints under `/api/v1/cycles/{cycle_id}/autonomy/`:
+8 endpoints under `/api/v1/cycles/{cycle_id}/autonomy/`:
 - `GET /policy` — current policy
 - `PUT /policy` — partial update (extend budget, toggle gates)
 - `GET /budget` — budget consumption
 - `GET /decisions` — list loop decisions (ordered by iteration)
 - `GET /decisions/{decision_id}` — single decision detail
+- `GET /report` — read completion markdown + JSON report bundle
 - `POST /resume` — resume gate-paused loop
-- `POST /stop` — manually stop loop (cancels pending jobs, transitions to reporting, enqueues loop_report)
+- `POST /stop` — manually stop loop (cancels pending jobs, persists `stop_manual`, transitions to reporting, enqueues loop_report)
 
 ### 10. CLI (`apps/cli/commands/autonomy.py`)
 
@@ -126,7 +134,8 @@ Transition rules:
 
 ### 11. Frontend (`apps/web/src/`)
 
-- `api/autonomy.ts` — TypeScript API client with types (`AutonomyPolicy`, `AutonomyBudget`, `LoopDecision`, `CheckpointGateConfig`) and functions for all 7 endpoints
+- `api/autonomy.ts` — TypeScript API client with types (`AutonomyPolicy`, `AutonomyBudget`, `LoopDecision`, `CheckpointGateConfig`, `AutonomyReport`) and functions for all 8 endpoints
+- `api/autonomy.ts` now also includes `AutonomyReport` and report fetching
 - `components/AutonomyPanel.tsx` — autonomy dashboard panel with:
   - Mode badge (supervised/autonomous) and paused-at-gate indicator
   - Resume Gate button (visible when the last decision was `stop_gate`)
@@ -134,6 +143,7 @@ Transition rules:
   - Policy summary grid (run/time/hypothesis budgets, active gates)
   - Budget progress bars (runs used/max, wall-clock hours/max, per-hypothesis breakdown)
   - Loop decisions timeline with iteration number, decision badge, reasoning, and gate labels
+- Remediation pass: the panel also shows the completion report once it exists and surfaces the deferred-cost note explicitly
 - `components/StatusBadge.tsx` — added color mappings for `loop_deciding`, Phase 5 hypothesis lifecycle (`promising`, `stalled`, `deprioritized`, `validated`, `compiled`, `candidate`, `selected`, `deferred`, `rejected`), and autonomy modes (`autonomous`, `supervised`)
 - `routes/charters/$charterId.tsx` — mounted `AutonomyPanel` below the Active Cycle section when an active cycle exists. Panel polls budget and decisions every 5 seconds.
 
@@ -150,13 +160,15 @@ Transition rules:
 - `libs/autonomy/hypothesis_lifecycle.py` — lifecycle transitions
 - `libs/autonomy/repetition.py` — fingerprinting and near-duplicate detection
 - `libs/autonomy/context_summary.py` — periodic summarization
+- `libs/autonomy/completion_report.py` — completion report renderer (markdown + JSON + executive summary)
 - `libs/autonomy/operators/__init__.py`
 - `libs/autonomy/operators/loop_decide.py` — core loop operator
 - `libs/autonomy/operators/loop_report.py` — completion report operator
 - `libs/storage/models/autonomy.py` — AutonomyBudget + LoopDecision ORM
 - `libs/storage/migrations/versions/20260415_000001_phase5_autonomy.py`
 - `libs/schemas/autonomy.py` — API schemas
-- `apps/api/routers/autonomy.py` — 7 endpoints
+- `libs/core/services/autonomy_service.py` — report file readback helper
+- `apps/api/routers/autonomy.py` — 8 endpoints
 - `apps/cli/commands/autonomy.py` — 5 subcommands
 
 ### Modified backend / library files
@@ -173,7 +185,7 @@ Transition rules:
 
 ### Frontend
 
-- `apps/web/src/api/autonomy.ts` — new TypeScript API client with types and 7 fetch functions
+- `apps/web/src/api/autonomy.ts` — new TypeScript API client with types and 8 fetch functions
 - `apps/web/src/components/AutonomyPanel.tsx` — autonomy dashboard panel (mode badge, resume/stop buttons, policy summary, budget bars, decisions timeline)
 - `apps/web/src/components/StatusBadge.tsx` — added colors for `loop_deciding`, Phase 5 hypothesis lifecycle, and autonomy modes
 - `apps/web/src/routes/charters/$charterId.tsx` — mounted `AutonomyPanel` below the Active Cycle section
@@ -186,6 +198,7 @@ Transition rules:
 - `tests/unit/test_hypothesis_lifecycle.py` — 21 tests for lifecycle transitions
 - `tests/unit/test_autonomy_gates.py` — 18 tests for gate evaluation
 - `tests/unit/test_autonomy_repetition.py` — 14 tests for fingerprinting and near-duplicate detection
+- `tests/unit/test_phase5_autonomy_runtime.py` — focused runtime tests for resume accounting, compile-time gates, manual stop persistence, report generation/readback, and loop-start event emission
 
 ### Fixed regressions
 
@@ -199,7 +212,7 @@ The repository passes code-level quality gates after Phase 5:
 
 - `uv run ruff check .` — passes
 - `uv run pyright` — passes (0 errors, 0 warnings)
-- `uv run pytest` — `230 passed` (141 existing Phase 0-4 + 89 new Phase 5)
+- `uv run pytest` — `238 passed`
 - `cd apps/web && npm run build` — passes
 
 ---
@@ -208,10 +221,10 @@ The repository passes code-level quality gates after Phase 5:
 
 1. **Run the migration against live Postgres.**
 2. **End-to-end autonomous loop test.** Create cycle with `config.autonomy.mode = "autonomous"`, seed hypotheses, run through loop, verify budget increments, hypothesis lifecycle transitions, loop continuation on `continue_current`, variation on `parameter_variation`, termination on budget exhaustion, and completion report generation.
-3. **Completion report rendering in UI.** The backend writes markdown + JSON to `{data_root}/reports/cycles/{cycle_id}/completion/`; the frontend currently shows the decision timeline and budget but does not yet render the final report bundle.
-4. **Gate pause/resume end-to-end.** Configure `after_every_n_runs: 2`, verify loop pauses after 2 runs (job status = paused, cycle stays in `loop_deciding`), call `POST /cycles/{id}/autonomy/resume`, verify job returns to pending and loop continues.
+3. **Gate pause/resume end-to-end.** Configure `after_every_n_runs: 2`, verify loop pauses after 2 runs (job status = paused, cycle stays in `loop_deciding`), call `POST /cycles/{id}/autonomy/resume`, verify job returns to pending and loop continues without double-counting budget.
+4. **Concrete-next-spec gates end-to-end.** Verify hardware-escalation and network-execution gates fire before `execution_setup` is enqueued for loop-generated specs.
 5. **Repetition detection smoke test.** Force same spec 3 times, verify repetition detection escalates to parameter variation.
-6. **Context summary integration.** Verify summary generated at iteration 5 and included in variation prompt.
+6. **Context summary + report model smoke.** Verify summary `key_findings` and completion executive summary are produced against real configured model endpoints.
 
 ---
 

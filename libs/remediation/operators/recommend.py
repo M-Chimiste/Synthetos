@@ -8,7 +8,7 @@ from sqlalchemy import func, select
 from uuid_utils import uuid7
 
 from libs.core.clock import utcnow
-from libs.core.event_types import SignalEvents
+from libs.core.event_types import AutonomyEvents, SignalEvents
 from libs.core.events import emit_event_sync
 from libs.core.logging import get_logger
 from libs.core.operators import OperatorInput, OperatorResult
@@ -24,6 +24,7 @@ from libs.remediation.operators._common import (
 )
 from libs.remediation.recommendations import RecommendationInputs, compute_recommendation
 from libs.storage.base import get_sync_session_factory
+from libs.storage.models.autonomy import LoopDecision
 from libs.storage.models.experiment import FailurePostmortem, VerificationReport
 from libs.storage.models.remediation import (
     DirectionalSignal,
@@ -167,6 +168,12 @@ def recommend_operator(op_input: OperatorInput) -> OperatorResult:
             target_status = CycleStatus.loop_deciding.value
             from libs.core.services.job_service import create_job
 
+            loop_started = db.execute(
+                select(func.count())
+                .select_from(LoopDecision)
+                .where(LoopDecision.cycle_id == run.cycle_id)
+            ).scalar_one() == 0
+
             create_job(
                 db,
                 cycle_id=run.cycle_id,
@@ -177,6 +184,14 @@ def recommend_operator(op_input: OperatorInput) -> OperatorResult:
                 },
                 priority=5,
             )
+            if loop_started:
+                emit_event_sync(
+                    db,
+                    event_type=AutonomyEvents.loop_started.value,
+                    charter_id=run.charter_id,
+                    cycle_id=run.cycle_id,
+                    payload={"run_record_id": str(run.id)},
+                )
         else:
             target_status = CycleStatus.reporting.value
 

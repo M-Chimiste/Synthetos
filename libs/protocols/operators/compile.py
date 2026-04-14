@@ -9,23 +9,33 @@ import asyncio
 from typing import Any
 
 from pydantic import BaseModel, Field
-from sqlalchemy import select
+from sqlalchemy import func, select
 from uuid_utils import uuid7
 
 from libs.adapters.llm.router import ModelRouter
+from libs.autonomy.budget import load_or_create_budget
+from libs.autonomy.gates import GateContext, evaluate_gates, preview_next_spec
+from libs.autonomy.policy import AutonomyPolicy
 from libs.core.clock import utcnow
-from libs.core.event_types import ProtocolEvents
+from libs.core.event_types import AutonomyEvents, ProtocolEvents
 from libs.core.events import emit_event_sync
 from libs.core.logging import get_logger
 from libs.core.operators import OperatorInput, OperatorResult
-from libs.core.types import CycleStatus
+from libs.core.types import CycleStatus, JobStatus
 from libs.discovery.skill_support import join_skill_prompts, load_skill_prompt
 from libs.protocols.validation import validate_spec
 from libs.schemas.model_gateway import ModelRole
 from libs.skills.lineage import record_model_call, record_skill_usage
 from libs.storage.base import get_sync_session_factory
-from libs.storage.models.experiment import ExperimentSpec, HypothesisCard, HypothesisSession
-from libs.storage.models.research import ResearchCharter
+from libs.storage.models.autonomy import LoopDecision
+from libs.storage.models.experiment import (
+    ExperimentSpec,
+    HypothesisCard,
+    HypothesisSession,
+    RunRecord,
+)
+from libs.storage.models.jobs import Job
+from libs.storage.models.research import ResearchCharter, ResearchCycle
 
 log = get_logger("protocols.compile")
 
@@ -149,6 +159,7 @@ def protocol_compile_operator(op_input: OperatorInput) -> OperatorResult:
     explicit_card_ids = payload.get("hypothesis_card_ids")
     variation_context = payload.get("variation_context")
     from_loop = payload.get("from_loop", False)
+    loop_context = payload.get("loop_context") or {}
 
     with factory() as db:
         hs = db.get(HypothesisSession, hypothesis_session_id)
@@ -353,8 +364,6 @@ def protocol_compile_operator(op_input: OperatorInput) -> OperatorResult:
 
         first_spec_id = compiled_ids[0]
         with factory() as db:
-            from libs.storage.models.experiment import RunRecord
-
             spec_row = db.get(ExperimentSpec, first_spec_id)
             if spec_row is None:
                 return OperatorResult(success=False, error="compiled spec not found")
@@ -378,6 +387,71 @@ def protocol_compile_operator(op_input: OperatorInput) -> OperatorResult:
                 updated_at=utcnow(),
             )
             db.add(new_run)
+
+            cycle = db.get(ResearchCycle, spec_row.cycle_id)
+            policy = AutonomyPolicy.model_validate(
+                (cycle.config or {}).get("autonomy", {}) if cycle else {}
+            )
+            budget = load_or_create_budget(db, spec_row.cycle_id)
+            preview = preview_next_spec(spec_row)
+            gate_result = evaluate_gates(
+                policy,
+                budget,
+                GateContext(
+                    runs_since_last_gate=0,
+                    wall_clock_elapsed_s=budget.wall_clock_elapsed_s,
+                    current_hardware_profile=loop_context.get("current_hardware_profile"),
+                    next_hardware_profile=preview.hardware_profile,
+                    has_network_access=preview.has_network_access,
+                ),
+            )
+
+            if gate_result.should_pause and gate_result.gate_name in (
+                "before_hardware_escalation",
+                "before_network_execution",
+            ):
+                paused_job = Job(
+                    id=uuid7(),
+                    cycle_id=spec_row.cycle_id,
+                    job_type="loop_decide",
+                    status=JobStatus.paused,
+                    payload={"prepared_run_record_id": str(new_run.id)},
+                    priority=10,
+                    created_at=utcnow(),
+                )
+                db.add(paused_job)
+                _persist_loop_gate(
+                    db,
+                    cycle=cycle,
+                    new_spec=spec_row,
+                    budget=budget,
+                    loop_context=loop_context,
+                    gate_name=gate_result.gate_name or "unknown",
+                    reason=gate_result.reason,
+                )
+                emit_event_sync(
+                    db,
+                    event_type=AutonomyEvents.gate_triggered.value,
+                    charter_id=spec_row.charter_id,
+                    cycle_id=spec_row.cycle_id,
+                    payload={
+                        "gate_name": gate_result.gate_name,
+                        "reason": gate_result.reason,
+                        "prepared_run_record_id": str(new_run.id),
+                        "spec_id": str(spec_row.id),
+                    },
+                )
+                db.commit()
+                return OperatorResult(
+                    success=True,
+                    summary=(
+                        f"Compiled {len(compiled_ids)} specs from loop "
+                        f"({rejected_count} rejected); paused before execution_setup "
+                        f"at gate {gate_result.gate_name}"
+                    ),
+                    state_patch={"cycle_status": CycleStatus.loop_deciding.value},
+                )
+
             enqueue_next(
                 db,
                 cycle_id=spec_row.cycle_id,
@@ -410,3 +484,55 @@ def protocol_compile_operator(op_input: OperatorInput) -> OperatorResult:
         },
     )
     return result
+
+
+def _persist_loop_gate(
+    db,
+    *,
+    cycle: ResearchCycle | None,
+    new_spec: ExperimentSpec,
+    budget,
+    loop_context: dict[str, Any],
+    gate_name: str,
+    reason: str,
+) -> None:
+    run_record_id = loop_context.get("run_record_id")
+    recommendation_id = loop_context.get("recommendation_id")
+    if not run_record_id or not recommendation_id or cycle is None:
+        return
+
+    from uuid import UUID
+
+    iteration_number = (
+        db.execute(
+            select(func.count())
+            .select_from(LoopDecision)
+            .where(LoopDecision.cycle_id == new_spec.cycle_id)
+        ).scalar_one()
+        + 1
+    )
+
+    decision = LoopDecision(
+        id=uuid7(),
+        cycle_id=new_spec.cycle_id,
+        charter_id=new_spec.charter_id,
+        run_record_id=UUID(str(run_record_id)),
+        recommendation_id=UUID(str(recommendation_id)),
+        iteration_number=iteration_number,
+        decision="stop_gate",
+        gate_triggered=gate_name,
+        budget_snapshot={
+            "total_runs": budget.total_runs,
+            "wall_clock_elapsed_s": budget.wall_clock_elapsed_s,
+            "runs_per_hypothesis": budget.runs_per_hypothesis,
+        },
+        hypothesis_card_id=UUID(str(loop_context["hypothesis_card_id"]))
+        if loop_context.get("hypothesis_card_id")
+        else None,
+        next_hypothesis_card_id=new_spec.hypothesis_card_id,
+        next_action="execution_setup",
+        context_summary_path=loop_context.get("context_summary_path"),
+        reasoning=reason,
+        created_at=utcnow(),
+    )
+    db.add(decision)

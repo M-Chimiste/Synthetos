@@ -63,7 +63,6 @@ Tests: verify new transitions are valid, old transitions still work.
 class CheckpointGateConfig(BaseModel):
     after_every_run: bool = False
     after_every_n_runs: int | None = None
-    before_cost_escalation_usd: float | None = None
     before_hardware_escalation: bool = False
     before_result_promotion: bool = False
     before_network_execution: bool = False
@@ -75,6 +74,7 @@ class AutonomyPolicy(BaseModel):
     max_runs_per_hypothesis: int | None = None
     max_wall_time_per_run_s: int | None = None    # per-run execution budget
     checkpoint_gates: CheckpointGateConfig = CheckpointGateConfig()
+    cost_budget_note: str = "Phase 5 cost budgeting is deferred."
 ```
 
 Stored in `ResearchCycle.config["autonomy"]`. Loaded via `AutonomyPolicy.model_validate(cycle.config.get("autonomy", {}))`.

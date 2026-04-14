@@ -34,3 +34,7 @@ class AutonomyPolicy(BaseModel):
     max_wall_time_per_run_s: int | None = None
     summary_interval: int = 5
     checkpoint_gates: CheckpointGateConfig = CheckpointGateConfig()
+    cost_budget_note: str = (
+        "Phase 5 cost budgeting is deferred; only run-count and wall-clock "
+        "limits are enforced."
+    )

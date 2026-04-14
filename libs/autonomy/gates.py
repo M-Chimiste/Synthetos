@@ -12,6 +12,7 @@ from typing import TYPE_CHECKING
 if TYPE_CHECKING:
     from libs.autonomy.policy import AutonomyPolicy
     from libs.storage.models.autonomy import AutonomyBudget
+    from libs.storage.models.experiment import ExperimentSpec
 
 
 @dataclass(frozen=True)
@@ -33,6 +34,15 @@ class GateResult:
     should_pause: bool
     gate_name: str | None = None
     reason: str = ""
+
+
+@dataclass(frozen=True)
+class NextSpecPreview:
+    """Concrete pre-execution preview for the next spec."""
+
+    spec_id: str | None
+    hardware_profile: dict | None = None
+    has_network_access: bool = False
 
 
 def evaluate_gates(
@@ -117,3 +127,46 @@ def _is_hardware_escalation(
     current_mem = current.get("memory_gb", 0)
     next_mem = next_profile.get("memory_gb", 0)
     return next_mem > current_mem
+
+
+def preview_next_spec(spec: ExperimentSpec | None) -> NextSpecPreview:
+    """Extract concrete gate-relevant properties from a spec."""
+    if spec is None:
+        return NextSpecPreview(spec_id=None)
+
+    return NextSpecPreview(
+        spec_id=str(spec.id),
+        hardware_profile=spec.hardware_profile,
+        has_network_access=_detect_network_access(spec),
+    )
+
+
+def _detect_network_access(spec: ExperimentSpec) -> bool:
+    """Best-effort detection of whether the next spec needs network access."""
+    code_plan = spec.code_plan or {}
+    build_recipe = spec.build_recipe or {}
+
+    explicit_flags = [
+        code_plan.get("requires_network"),
+        code_plan.get("network_access"),
+        build_recipe.get("requires_network"),
+        build_recipe.get("network_access"),
+    ]
+    if any(bool(flag) for flag in explicit_flags):
+        return True
+
+    text_blobs: list[str] = []
+    files = code_plan.get("files", {})
+    if isinstance(files, dict):
+        text_blobs.extend(str(content) for content in files.values())
+    for value in (
+        code_plan.get("entry_point"),
+        code_plan.get("dependencies"),
+        code_plan.get("instructions"),
+        build_recipe.get("dockerfile_content"),
+    ):
+        if value is not None:
+            text_blobs.append(str(value))
+
+    heuristics = ("requests.", "httpx.", "urllib.request", "https://", "http://", "wget ", "curl ")
+    return any(marker in blob for blob in text_blobs for marker in heuristics)

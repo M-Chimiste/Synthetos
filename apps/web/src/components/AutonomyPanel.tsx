@@ -2,7 +2,9 @@ import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import {
   fetchAutonomyBudget,
   fetchAutonomyPolicy,
+  fetchAutonomyReport,
   fetchLoopDecisions,
+  type AutonomyReport,
   resumeAutonomyGate,
   stopAutonomyLoop,
   type AutonomyBudget,
@@ -33,6 +35,12 @@ export default function AutonomyPanel({ cycleId }: Props) {
     queryKey: ["autonomy", "decisions", cycleId],
     queryFn: () => fetchLoopDecisions(cycleId),
     refetchInterval: 5_000,
+  });
+
+  const reportQ = useQuery({
+    queryKey: ["autonomy", "report", cycleId],
+    queryFn: () => fetchAutonomyReport(cycleId),
+    retry: false,
   });
 
   const resumeMut = useMutation({
@@ -117,6 +125,7 @@ export default function AutonomyPanel({ cycleId }: Props) {
           <PolicySummary policy={policy} />
           <BudgetBars policy={policy} budget={budget} />
           <DecisionsTimeline decisions={decisions} />
+          <ReportViewer report={reportQ.data ?? null} isLoading={reportQ.isLoading} />
         </>
       )}
     </div>
@@ -147,6 +156,8 @@ function PolicySummary({ policy }: { policy: AutonomyPolicy }) {
         <dd>{policy.summary_interval} runs</dd>
         <dt className="text-gray-500">Active gates</dt>
         <dd>{activeGates.length === 0 ? "none" : activeGates.join(", ")}</dd>
+        <dt className="text-gray-500">Cost budgets</dt>
+        <dd>{policy.cost_budget_note}</dd>
       </dl>
     </div>
   );
@@ -259,6 +270,39 @@ function DecisionsTimeline({ decisions }: { decisions: LoopDecision[] }) {
           </li>
         ))}
       </ol>
+    </div>
+  );
+}
+
+function ReportViewer({
+  report,
+  isLoading,
+}: {
+  report: AutonomyReport | null;
+  isLoading: boolean;
+}) {
+  if (isLoading) {
+    return (
+      <div className="rounded border border-gray-200 p-3 text-sm text-gray-500">
+        Loading completion report...
+      </div>
+    );
+  }
+
+  if (!report?.markdown) {
+    return (
+      <div className="rounded border border-gray-200 p-3 text-sm text-gray-500">
+        No completion report yet. The report appears when the autonomous loop stops.
+      </div>
+    );
+  }
+
+  return (
+    <div className="rounded border border-gray-200 p-3 text-sm">
+      <div className="mb-2 font-medium">Completion report</div>
+      <pre className="max-h-96 overflow-auto whitespace-pre-wrap rounded bg-gray-50 p-3 text-xs text-gray-700">
+        {report.markdown}
+      </pre>
     </div>
   );
 }

@@ -7,21 +7,25 @@ from uuid import UUID
 from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy import select, update
 from sqlalchemy.ext.asyncio import AsyncSession
+from uuid_utils import uuid7
 
 from apps.api.auth import require_scope
 from apps.api.deps import get_db
 from libs.autonomy.policy import AutonomyPolicy
 from libs.core.clock import utcnow
 from libs.core.events import emit_event
+from libs.core.services.autonomy_service import read_report_file
 from libs.core.types import CycleStatus, JobStatus
 from libs.schemas.autonomy import (
     AutonomyBudgetRead,
     AutonomyPolicyRead,
     AutonomyPolicyUpdate,
+    AutonomyReportResponse,
     LoopDecisionRead,
 )
 from libs.storage.models.autonomy import AutonomyBudget, LoopDecision
 from libs.storage.models.jobs import Job
+from libs.storage.models.remediation import RunRecommendation
 from libs.storage.models.research import ResearchCycle
 
 router = APIRouter(tags=["autonomy"])
@@ -150,6 +154,21 @@ async def get_loop_decision(
     return LoopDecisionRead.model_validate(row)
 
 
+@router.get(
+    "/cycles/{cycle_id}/autonomy/report",
+    response_model=AutonomyReportResponse,
+    dependencies=[Depends(require_scope("cycles.read"))],
+)
+async def get_autonomy_report(
+    cycle_id: UUID,
+    db: AsyncSession = Depends(get_db),
+) -> AutonomyReportResponse:
+    report = await read_report_file(db, cycle_id)
+    if report.markdown is None and report.json_payload is None:
+        raise HTTPException(status_code=404, detail="autonomy report not yet generated")
+    return report
+
+
 # ---------------------------------------------------------------------------
 # Resume (gate approval)
 # ---------------------------------------------------------------------------
@@ -236,14 +255,79 @@ async def stop_loop(
         .values(status=JobStatus.cancelled)
     )
 
+    budget_result = await db.execute(
+        select(AutonomyBudget).where(AutonomyBudget.cycle_id == cycle_id)
+    )
+    budget = budget_result.scalar_one_or_none()
+
+    recommendation_id = None
+    fallback_run_record_id = None
+    decision_result = await db.execute(
+        select(LoopDecision)
+        .where(LoopDecision.cycle_id == cycle_id)
+        .order_by(LoopDecision.created_at.desc())
+        .limit(1)
+    )
+    last_decision = decision_result.scalar_one_or_none()
+    if last_decision is not None:
+        recommendation_id = last_decision.recommendation_id
+    else:
+        rec_result = await db.execute(
+            select(RunRecommendation)
+            .where(RunRecommendation.cycle_id == cycle_id)
+            .order_by(RunRecommendation.created_at.desc())
+            .limit(1)
+        )
+        latest_recommendation = rec_result.scalar_one_or_none()
+        recommendation_id = latest_recommendation.id if latest_recommendation else None
+        fallback_run_record_id = (
+            latest_recommendation.run_record_id if latest_recommendation is not None else None
+        )
+    if last_decision is not None:
+        fallback_run_record_id = last_decision.run_record_id
+
+    if recommendation_id is not None and fallback_run_record_id is not None:
+        manual_decision = LoopDecision(
+            id=uuid7(),
+            cycle_id=cycle_id,
+            charter_id=cycle.charter_id,
+            run_record_id=fallback_run_record_id,
+            recommendation_id=recommendation_id,
+            iteration_number=(
+                (last_decision.iteration_number + 1)
+                if last_decision is not None
+                else 1
+            ),
+            decision="stop_manual",
+            gate_triggered=None,
+            budget_snapshot={
+                "total_runs": budget.total_runs if budget else 0,
+                "wall_clock_elapsed_s": budget.wall_clock_elapsed_s if budget else 0.0,
+                "runs_per_hypothesis": budget.runs_per_hypothesis if budget else {},
+            },
+            hypothesis_card_id=(
+                last_decision.hypothesis_card_id
+                if last_decision is not None
+                else None
+            ),
+            next_hypothesis_card_id=None,
+            next_action=None,
+            context_summary_path=(
+                last_decision.context_summary_path
+                if last_decision is not None
+                else None
+            ),
+            reasoning="Manual stop requested.",
+            created_at=utcnow(),
+        )
+        db.add(manual_decision)
+
     # Transition to reporting if in loop_deciding
-    if cycle.status == CycleStatus.loop_deciding:
+    if cycle.status in (CycleStatus.loop_deciding, CycleStatus.running):
         cycle.status = CycleStatus.reporting
         cycle.updated_at = utcnow()
 
         # Enqueue loop_report
-        from uuid_utils import uuid7
-
         report_job = Job(
             id=uuid7(),
             cycle_id=cycle_id,

@@ -23,7 +23,7 @@ from libs.autonomy.context_summary import (
     should_generate_summary,
     write_summary,
 )
-from libs.autonomy.gates import GateContext, evaluate_gates
+from libs.autonomy.gates import GateContext, evaluate_gates, preview_next_spec
 from libs.autonomy.hypothesis_lifecycle import update_hypothesis_status
 from libs.autonomy.policy import AutonomyPolicy
 from libs.autonomy.repetition import detect_repetition
@@ -52,6 +52,33 @@ def loop_decide_operator(op_input: OperatorInput) -> OperatorResult:
     """Core loop decision operator."""
     factory = get_sync_session_factory()
     payload = op_input.payload
+
+    prepared_run_id_raw = payload.get("prepared_run_record_id")
+    if prepared_run_id_raw is not None:
+        from libs.execution.operators._common import enqueue_next
+
+        prepared_run_id = UUID(str(prepared_run_id_raw))
+        with factory() as db:
+            prepared_run = db.get(RunRecord, prepared_run_id)
+            if prepared_run is None:
+                return OperatorResult(
+                    success=False,
+                    error=f"prepared run record {prepared_run_id} not found",
+                )
+
+            enqueue_next(
+                db,
+                cycle_id=prepared_run.cycle_id,
+                next_job_type="execution_setup",
+                run_record_id=prepared_run.id,
+            )
+            db.commit()
+
+        return OperatorResult(
+            success=True,
+            summary=f"Gate approved; enqueued execution_setup for prepared run {prepared_run_id}",
+            state_patch={"cycle_status": CycleStatus.running.value},
+        )
 
     rec_id_raw = payload.get("recommendation_id")
     run_id_raw = payload.get("run_record_id")
@@ -90,26 +117,9 @@ def loop_decide_operator(op_input: OperatorInput) -> OperatorResult:
             (cycle.config or {}).get("autonomy", {})
         )
 
-        # 2. Load/create budget and increment
+        # 2. Load/create budget and check for gate-resume before mutating counters.
         budget = load_or_create_budget(db, run.cycle_id)
         hypothesis_card_id = spec.hypothesis_card_id if spec else None
-        if hypothesis_card_id:
-            increment_budget(db, budget, hypothesis_card_id)
-
-        # Compute iteration number
-        existing_decisions = db.execute(
-            select(func.count())
-            .select_from(LoopDecision)
-            .where(LoopDecision.cycle_id == run.cycle_id)
-        ).scalar_one()
-        iteration_number = existing_decisions + 1
-
-        # Initialize variables used across both gate-resume and normal paths
-        card: HypothesisCard | None = None
-        signal_row: DirectionalSignal | None = None
-        frontier: MetricFrontier | None = None
-
-        # 3. Check for gate-resume (re-run after pause)
         existing_gate_decision = db.execute(
             select(LoopDecision).where(
                 LoopDecision.run_record_id == run_id,
@@ -117,6 +127,43 @@ def loop_decide_operator(op_input: OperatorInput) -> OperatorResult:
             )
         ).scalar_one_or_none()
 
+        existing_decisions = db.execute(
+            select(func.count())
+            .select_from(LoopDecision)
+            .where(LoopDecision.cycle_id == run.cycle_id)
+        ).scalar_one()
+        iteration_number = (
+            existing_gate_decision.iteration_number
+            if existing_gate_decision is not None
+            else existing_decisions + 1
+        )
+
+        if existing_gate_decision is None and hypothesis_card_id:
+            increment_budget(db, budget, hypothesis_card_id)
+            emit_event_sync(
+                db,
+                event_type=AutonomyEvents.budget_updated.value,
+                charter_id=run.charter_id,
+                cycle_id=run.cycle_id,
+                payload={
+                    "run_record_id": str(run_id),
+                    "total_runs": budget.total_runs,
+                    "wall_clock_elapsed_s": budget.wall_clock_elapsed_s,
+                    "hypothesis_card_id": str(hypothesis_card_id),
+                },
+            )
+
+        # Initialize variables used across both gate-resume and normal paths
+        card: HypothesisCard | None = None
+        signal_row: DirectionalSignal | None = None
+        frontier: MetricFrontier | None = None
+        context_summary_path = (
+            existing_gate_decision.context_summary_path
+            if existing_gate_decision
+            else None
+        )
+
+        # 3. Check for gate-resume (re-run after pause)
         if existing_gate_decision is not None:
             # Gate was approved -- skip gate evaluation, proceed with recommendation
             log.info("gate_resumed", run_id=str(run_id), iteration=iteration_number)
@@ -167,12 +214,19 @@ def loop_decide_operator(op_input: OperatorInput) -> OperatorResult:
                 ).scalar_one_or_none()
 
             # Compute gate context
-            last_gate_iteration = db.execute(
-                select(func.max(LoopDecision.iteration_number))
+            last_gate_decision = db.execute(
+                select(LoopDecision)
                 .where(LoopDecision.cycle_id == run.cycle_id)
                 .where(LoopDecision.decision == "stop_gate")
-            ).scalar_one() or 0
-            runs_since_last_gate = budget.total_runs - last_gate_iteration
+                .order_by(LoopDecision.created_at.desc())
+                .limit(1)
+            ).scalar_one_or_none()
+            last_gate_total_runs = 0
+            if last_gate_decision is not None:
+                last_gate_total_runs = int(
+                    (last_gate_decision.budget_snapshot or {}).get("total_runs", 0)
+                )
+            runs_since_last_gate = max(0, budget.total_runs - last_gate_total_runs)
 
             # Check if hypothesis would be validated
             card = None
@@ -210,8 +264,10 @@ def loop_decide_operator(op_input: OperatorInput) -> OperatorResult:
                 )
 
         # 6. Context summarization (if at boundary)
-        context_summary_path = None
-        if should_generate_summary(budget.total_runs, policy.summary_interval):
+        if context_summary_path is None and should_generate_summary(
+            budget.total_runs,
+            policy.summary_interval,
+        ):
             summary = generate_summary(
                 db, run.cycle_id, run.charter_id, iteration_number
             )
@@ -294,6 +350,29 @@ def loop_decide_operator(op_input: OperatorInput) -> OperatorResult:
                 recommendation_type = "parameter_variation"
 
         if recommendation_type == "continue_current" and spec:
+            preview = preview_next_spec(spec)
+            gate_result = evaluate_gates(
+                policy,
+                budget,
+                GateContext(
+                    runs_since_last_gate=0,
+                    wall_clock_elapsed_s=budget.wall_clock_elapsed_s,
+                    current_hardware_profile=spec.hardware_profile if spec else None,
+                    next_hardware_profile=preview.hardware_profile,
+                    has_network_access=preview.has_network_access,
+                ),
+            )
+            if gate_result.should_pause and gate_result.gate_name in (
+                "before_hardware_escalation",
+                "before_network_execution",
+            ):
+                return _pause_for_gate(
+                    db, op_input.job_id, run, rec, budget, iteration_number,
+                    gate_name=gate_result.gate_name or "unknown",
+                    reason=gate_result.reason,
+                    hypothesis_card_id=hypothesis_card_id,
+                    context_summary_path=context_summary_path,
+                )
             # Rerun same spec
             return _continue_current(
                 db, run, rec, spec, budget, iteration_number,
@@ -312,9 +391,10 @@ def loop_decide_operator(op_input: OperatorInput) -> OperatorResult:
 
         if recommendation_type == "hypothesis_pivot":
             return _pivot_hypothesis(
-                db, run, rec, spec, budget, iteration_number,
+                db, op_input.job_id, run, rec, spec, budget, iteration_number,
                 hypothesis_card_id=hypothesis_card_id,
                 context_summary_path=context_summary_path,
+                policy=policy,
             )
 
         # Fallback: treat as parameter_variation
@@ -458,6 +538,13 @@ def _vary_parameters(
         "hypothesis_card_ids": [str(hypothesis_card_id)],
         "variation_context": variation_context,
         "from_loop": True,
+        "loop_context": {
+            "run_record_id": str(run.id),
+            "recommendation_id": str(rec.id),
+            "hypothesis_card_id": str(hypothesis_card_id) if hypothesis_card_id else None,
+            "context_summary_path": context_summary_path,
+            "current_hardware_profile": spec.hardware_profile if spec else None,
+        },
     }
     if spec.hardware_profile:
         compile_payload["hardware_profile"] = spec.hardware_profile
@@ -505,8 +592,8 @@ def _vary_parameters(
 
 
 def _pivot_hypothesis(
-    db, run, rec, spec, budget, iteration_number, *,
-    hypothesis_card_id, context_summary_path,
+    db, job_id, run, rec, spec, budget, iteration_number, *,
+    hypothesis_card_id, context_summary_path, policy,
 ) -> OperatorResult:
     """Deprioritize current hypothesis and switch to the next viable one."""
     # Deprioritize current
@@ -559,6 +646,29 @@ def _pivot_hypothesis(
         ).scalar_one_or_none()
 
         if existing_spec:
+            preview = preview_next_spec(existing_spec)
+            gate_result = evaluate_gates(
+                policy,
+                budget,
+                GateContext(
+                    runs_since_last_gate=0,
+                    wall_clock_elapsed_s=budget.wall_clock_elapsed_s,
+                    current_hardware_profile=spec.hardware_profile if spec else None,
+                    next_hardware_profile=preview.hardware_profile,
+                    has_network_access=preview.has_network_access,
+                ),
+            )
+            if gate_result.should_pause and gate_result.gate_name in (
+                "before_hardware_escalation",
+                "before_network_execution",
+            ):
+                return _pause_for_gate(
+                    db, job_id, run, rec, budget, iteration_number,
+                    gate_name=gate_result.gate_name or "unknown",
+                    reason=gate_result.reason,
+                    hypothesis_card_id=hypothesis_card_id,
+                    context_summary_path=context_summary_path,
+                )
             # Create RunRecord and enqueue execution_setup
             max_run_num = db.execute(
                 select(func.coalesce(func.max(RunRecord.run_number), 0))
@@ -640,6 +750,13 @@ def _pivot_hypothesis(
         "hypothesis_session_id": str(hs.id),
         "hypothesis_card_ids": [str(next_card.id)],
         "from_loop": True,
+        "loop_context": {
+            "run_record_id": str(run.id),
+            "recommendation_id": str(rec.id),
+            "hypothesis_card_id": str(hypothesis_card_id) if hypothesis_card_id else None,
+            "context_summary_path": context_summary_path,
+            "current_hardware_profile": spec.hardware_profile if spec else None,
+        },
     }
 
     create_job(
@@ -694,6 +811,19 @@ def _stop(
     decision, reasoning, hypothesis_card_id=None, context_summary_path=None,
 ) -> OperatorResult:
     """Stop the loop and enqueue completion report."""
+    if decision == "stop_budget":
+        emit_event_sync(
+            db,
+            event_type=AutonomyEvents.budget_exceeded.value,
+            charter_id=run.charter_id,
+            cycle_id=run.cycle_id,
+            payload={
+                "run_record_id": str(run.id),
+                "reason": reasoning,
+                "total_runs": budget.total_runs,
+                "wall_clock_elapsed_s": budget.wall_clock_elapsed_s,
+            },
+        )
     _persist_decision(
         db, run, rec, budget, iteration_number,
         decision=decision,
@@ -732,14 +862,15 @@ def _stop(
 
 def _pause_for_gate(
     db, job_id, run, rec, budget, iteration_number, *,
-    gate_name, reason, hypothesis_card_id=None,
+    gate_name, reason, hypothesis_card_id=None, context_summary_path=None,
 ) -> OperatorResult:
     """Pause the loop at a checkpoint gate."""
     # Set job status to paused directly
-    db.execute(
-        update(Job).where(Job.id == job_id).values(status=JobStatus.paused)
-    )
-    db.flush()
+    if job_id is not None:
+        db.execute(
+            update(Job).where(Job.id == job_id).values(status=JobStatus.paused)
+        )
+        db.flush()
 
     _persist_decision(
         db, run, rec, budget, iteration_number,
@@ -747,6 +878,7 @@ def _pause_for_gate(
         gate_triggered=gate_name,
         reasoning=reason,
         hypothesis_card_id=hypothesis_card_id,
+        context_summary_path=context_summary_path,
     )
 
     emit_event_sync(

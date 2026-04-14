@@ -4,12 +4,19 @@ loop terminates, then transitions the cycle to closed.
 
 from __future__ import annotations
 
-import json
 from uuid import UUID
 
 from sqlalchemy import func, select
 
+from libs.autonomy.completion_report import (
+    build_report_paths,
+    generate_executive_summary,
+    render_json,
+    render_markdown,
+    write_report_bundle,
+)
 from libs.core.config import get_settings
+from libs.core.event_types import AutonomyEvents
 from libs.core.events import emit_event_sync
 from libs.core.logging import get_logger
 from libs.core.operators import OperatorInput, OperatorResult
@@ -22,6 +29,7 @@ from libs.storage.models.experiment import (
 from libs.storage.models.remediation import (
     MetricFrontier,
     RemediationAction,
+    RunRecommendation,
 )
 
 log = get_logger("autonomy.loop_report")
@@ -83,46 +91,48 @@ def loop_report_operator(op_input: OperatorInput) -> OperatorResult:
             .where(RemediationAction.outcome == "retry_created")
         ).scalar_one()
 
-        # Build report
-        report_md = _render_markdown(
-            decisions=decisions,
+        final_recommendation = None
+        if decisions:
+            final_recommendation = db.execute(
+                select(RunRecommendation).where(
+                    RunRecommendation.id == decisions[-1].recommendation_id
+                )
+            ).scalar_one_or_none()
+
+        report_json = render_json(
+            cycle_id=cycle_id,
             budget=budget,
-            cards=cards,
+            decisions=list(decisions),
+            cards=list(cards),
             frontier_map=frontier_map,
             remediation_total=remediation_total,
             remediation_resolved=remediation_resolved,
+            final_recommendation=final_recommendation,
+        )
+        executive_summary = generate_executive_summary(
+            db,
+            cycle_id=cycle_id,
+            report_json=report_json,
+        )
+        report_md = render_markdown(
+            executive_summary=executive_summary,
+            report_json=report_json,
         )
 
-        report_json = _render_json(
-            decisions=decisions,
-            budget=budget,
-            cards=cards,
-            frontier_map=frontier_map,
-            remediation_total=remediation_total,
-            remediation_resolved=remediation_resolved,
-        )
-
-        # Write to disk
-        report_dir = (
-            settings.data_root / "reports" / "cycles" / str(cycle_id) / "completion"
-        )
-        report_dir.mkdir(parents=True, exist_ok=True)
-
-        md_path = report_dir / "report.md"
-        md_path.write_text(report_md, encoding="utf-8")
-
-        json_path = report_dir / "report.json"
-        json_path.write_text(
-            json.dumps(report_json, indent=2, default=str), encoding="utf-8"
+        paths = build_report_paths(settings.data_root, cycle_id)
+        write_report_bundle(
+            paths,
+            markdown=report_md,
+            json_payload=report_json,
         )
 
         emit_event_sync(
             db,
-            event_type="autonomy.completion_report_generated",
+            event_type=AutonomyEvents.completion_report_generated.value,
             charter_id=charter_id,
             cycle_id=cycle_id,
             payload={
-                "report_path": str(md_path),
+                "report_path": str(paths.markdown),
                 "iterations": len(decisions),
             },
         )
@@ -132,94 +142,5 @@ def loop_report_operator(op_input: OperatorInput) -> OperatorResult:
         success=True,
         summary=f"Completion report generated ({len(decisions)} iterations)",
         state_patch={"cycle_status": CycleStatus.closed.value},
-        artifacts=[str(md_path), str(json_path)],
+        artifacts=[str(paths.markdown), str(paths.json)],
     )
-
-
-def _render_markdown(*, decisions, budget, cards, frontier_map,
-                     remediation_total, remediation_resolved) -> str:
-    lines = ["# Autonomous Loop Completion Report", ""]
-
-    # Budget summary
-    lines.append("## Budget Consumption")
-    if budget:
-        lines.append(f"- **Total runs:** {budget.total_runs}")
-        hours = budget.wall_clock_elapsed_s / 3600.0
-        lines.append(f"- **Wall-clock time:** {hours:.2f} hours")
-    lines.append("")
-
-    # Hypotheses explored
-    lines.append("## Hypotheses Explored")
-    lines.append("")
-    lines.append("| Hypothesis | Status | Runs | Best Metric | Runs Since Improvement |")
-    lines.append("|---|---|---|---|---|")
-    for card in cards:
-        frontier = frontier_map.get(str(card.id))
-        best = frontier.best_metric_value if frontier else "N/A"
-        runs = frontier.total_runs if frontier else 0
-        rsi = frontier.runs_since_improvement if frontier else "N/A"
-        lines.append(f"| {card.title[:60]} | {card.status} | {runs} | {best} | {rsi} |")
-    lines.append("")
-
-    # Loop decisions
-    lines.append("## Loop Decisions")
-    lines.append("")
-    lines.append("| # | Decision | Reasoning |")
-    lines.append("|---|---|---|")
-    for d in decisions:
-        reasoning_short = d.reasoning[:80] if d.reasoning else ""
-        lines.append(f"| {d.iteration_number} | {d.decision} | {reasoning_short} |")
-    lines.append("")
-
-    # Remediation
-    lines.append("## Remediation Summary")
-    lines.append(f"- **Total attempts:** {remediation_total}")
-    lines.append(f"- **Resolved:** {remediation_resolved}")
-    lines.append("")
-
-    # Final decision
-    if decisions:
-        last = decisions[-1]
-        lines.append("## Final Decision")
-        lines.append(f"- **Decision:** {last.decision}")
-        lines.append(f"- **Reasoning:** {last.reasoning}")
-    lines.append("")
-
-    return "\n".join(lines)
-
-
-def _render_json(*, decisions, budget, cards, frontier_map,
-                 remediation_total, remediation_resolved) -> dict:
-    return {
-        "budget": {
-            "total_runs": budget.total_runs if budget else 0,
-            "wall_clock_elapsed_s": budget.wall_clock_elapsed_s if budget else 0,
-            "runs_per_hypothesis": budget.runs_per_hypothesis if budget else {},
-        },
-        "hypotheses": [
-            {
-                "card_id": str(c.id),
-                "title": c.title,
-                "status": c.status,
-                "frontier": {
-                    "best_metric_value": frontier_map[str(c.id)].best_metric_value,
-                    "total_runs": frontier_map[str(c.id)].total_runs,
-                    "runs_since_improvement": frontier_map[str(c.id)].runs_since_improvement,
-                } if str(c.id) in frontier_map else None,
-            }
-            for c in cards
-        ],
-        "decisions": [
-            {
-                "iteration": d.iteration_number,
-                "decision": d.decision,
-                "reasoning": d.reasoning,
-                "gate_triggered": d.gate_triggered,
-            }
-            for d in decisions
-        ],
-        "remediation": {
-            "total_attempts": remediation_total,
-            "resolved": remediation_resolved,
-        },
-    }

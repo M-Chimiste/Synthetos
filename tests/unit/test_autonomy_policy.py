@@ -30,6 +30,10 @@ class TestAutonomyPolicyDefaults:
         policy = AutonomyPolicy()
         assert policy.summary_interval == 5
 
+    def test_cost_budget_note_explains_deferred_scope(self) -> None:
+        policy = AutonomyPolicy()
+        assert "deferred" in policy.cost_budget_note
+
 
 class TestAutonomyPolicyFromDict:
     def test_parse_autonomous_mode(self) -> None:

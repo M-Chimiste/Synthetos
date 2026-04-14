@@ -38,6 +38,7 @@ export interface AutonomyPolicy {
   max_wall_time_per_run_s: number | null;
   summary_interval: number;
   checkpoint_gates: CheckpointGateConfig;
+  cost_budget_note: string;
 }
 
 export interface AutonomyBudget {
@@ -70,6 +71,12 @@ export interface LoopDecision {
   created_at: string;
 }
 
+export interface AutonomyReport {
+  cycle_id: string;
+  markdown: string | null;
+  json: Record<string, unknown> | null;
+}
+
 // ---- API calls ----
 
 export async function fetchAutonomyPolicy(cycleId: string): Promise<AutonomyPolicy> {
@@ -94,6 +101,10 @@ export async function fetchAutonomyBudget(
 
 export async function fetchLoopDecisions(cycleId: string): Promise<LoopDecision[]> {
   return apiFetch<LoopDecision[]>(`/cycles/${cycleId}/autonomy/decisions`);
+}
+
+export async function fetchAutonomyReport(cycleId: string): Promise<AutonomyReport> {
+  return apiFetch<AutonomyReport>(`/cycles/${cycleId}/autonomy/report`);
 }
 
 export async function resumeAutonomyGate(
