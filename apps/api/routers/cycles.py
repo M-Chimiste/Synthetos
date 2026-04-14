@@ -2,9 +2,10 @@
 
 from __future__ import annotations
 
-from typing import TYPE_CHECKING
+from uuid import UUID
 
 from fastapi import APIRouter, Depends, HTTPException
+from sqlalchemy.ext.asyncio import AsyncSession
 
 from apps.api.auth import require_scope
 from apps.api.deps import get_db
@@ -17,13 +18,7 @@ from libs.core.services.cycle_service import (
 from libs.schemas.common import PaginatedResponse
 from libs.schemas.cycle import CycleCreate, CycleRead, CycleTransition
 
-if TYPE_CHECKING:
-    from uuid import UUID
-
-    from sqlalchemy.ext.asyncio import AsyncSession
-
 router = APIRouter(prefix="/cycles", tags=["cycles"])
-
 
 @router.post("", response_model=CycleRead, status_code=201)
 async def create_cycle_endpoint(
@@ -33,7 +28,6 @@ async def create_cycle_endpoint(
 ) -> CycleRead:
     """Create a new research cycle."""
     return await create_cycle(db, body)
-
 
 @router.get("", response_model=PaginatedResponse[CycleRead])
 async def list_cycles_endpoint(
@@ -47,7 +41,6 @@ async def list_cycles_endpoint(
     items, total = await list_cycles(db, charter_id=charter_id, offset=offset, limit=limit)
     return PaginatedResponse(items=items, total=total, offset=offset, limit=limit)
 
-
 @router.get("/{cycle_id}", response_model=CycleRead)
 async def get_cycle_endpoint(
     cycle_id: UUID,
@@ -59,7 +52,6 @@ async def get_cycle_endpoint(
     if cycle is None:
         raise HTTPException(status_code=404, detail="Cycle not found")
     return cycle
-
 
 @router.post("/{cycle_id}/transition", response_model=CycleRead)
 async def transition_cycle_endpoint(

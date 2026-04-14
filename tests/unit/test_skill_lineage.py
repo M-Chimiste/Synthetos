@@ -31,6 +31,11 @@ class _FakeSession:
     def add(self, obj):
         self.added.append(obj)
 
+    def get(self, _model, _key):
+        # No cycle row in the fake session -- enforcement falls back to
+        # cycle_config={} which still allows first-party skills.
+        return None
+
 
 def test_record_skill_usage_creates_binding() -> None:
     skill_def = SkillDefinition(

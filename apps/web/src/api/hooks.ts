@@ -201,3 +201,83 @@ export function useDiscoveryReport(sessionId: string) {
     retry: false,
   });
 }
+
+// ---- Patterns (Phase 6) ----
+
+export function usePatterns(filters: api.PatternListFilters = {}) {
+  return useQuery({
+    queryKey: ["patterns", filters],
+    queryFn: () => api.fetchPatterns(filters),
+  });
+}
+
+export function usePattern(id: string) {
+  return useQuery({
+    queryKey: ["patterns", id],
+    queryFn: () => api.fetchPattern(id),
+    enabled: !!id,
+  });
+}
+
+export function useConsolidatePatterns() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: api.consolidatePatterns,
+    onSuccess: () => {
+      void qc.invalidateQueries({ queryKey: ["patterns"] });
+    },
+  });
+}
+
+export function useDecayPatterns() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: api.decayPatterns,
+    onSuccess: () => {
+      void qc.invalidateQueries({ queryKey: ["patterns"] });
+    },
+  });
+}
+
+export function useApprovePattern() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: ({ id, rationale }: { id: string; rationale: string }) =>
+      api.approvePattern(id, { rationale }),
+    onSuccess: (_d, vars) => {
+      void qc.invalidateQueries({ queryKey: ["patterns", vars.id] });
+      void qc.invalidateQueries({ queryKey: ["patterns"] });
+    },
+  });
+}
+
+export function useRejectPattern() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: ({ id, rationale }: { id: string; rationale: string }) =>
+      api.rejectPattern(id, { rationale }),
+    onSuccess: (_d, vars) => {
+      void qc.invalidateQueries({ queryKey: ["patterns", vars.id] });
+      void qc.invalidateQueries({ queryKey: ["patterns"] });
+    },
+  });
+}
+
+export function useUpdateTrustTier() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: ({
+      id,
+      trust_tier,
+      rationale,
+    }: {
+      id: string;
+      trust_tier: string;
+      rationale: string;
+    }) => api.updateTrustTier(id, { trust_tier, rationale }),
+    onSuccess: (_d, vars) => {
+      void qc.invalidateQueries({ queryKey: ["patterns", vars.id] });
+      void qc.invalidateQueries({ queryKey: ["patterns"] });
+    },
+  });
+}

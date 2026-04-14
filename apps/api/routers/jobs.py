@@ -2,10 +2,11 @@
 
 from __future__ import annotations
 
-from typing import TYPE_CHECKING
+from uuid import UUID
 
 from fastapi import APIRouter, Depends, HTTPException, Query
 from sqlalchemy import select
+from sqlalchemy.ext.asyncio import AsyncSession
 
 from apps.api.auth import require_scope
 from apps.api.deps import get_db
@@ -17,13 +18,7 @@ from libs.schemas.jobs import JobRead
 from libs.storage.models.jobs import Job
 from libs.storage.models.research import ResearchCycle
 
-if TYPE_CHECKING:
-    from uuid import UUID
-
-    from sqlalchemy.ext.asyncio import AsyncSession
-
 router = APIRouter(prefix="/jobs", tags=["jobs"])
-
 
 async def _resolve_charter_id_for_job(
     db: AsyncSession,
@@ -36,7 +31,6 @@ async def _resolve_charter_id_for_job(
         select(ResearchCycle.charter_id).where(ResearchCycle.id == job.cycle_id)
     )
     return result.scalar_one_or_none()
-
 
 @router.get("", response_model=PaginatedResponse[JobRead])
 async def list_jobs(
@@ -61,7 +55,6 @@ async def list_jobs(
     items = [JobRead.model_validate(j) for j in result.scalars().all()]
     return PaginatedResponse(items=items, total=total, offset=offset, limit=limit)
 
-
 @router.get("/{job_id}", response_model=JobRead)
 async def get_job(
     job_id: UUID,
@@ -74,7 +67,6 @@ async def get_job(
     if job is None:
         raise HTTPException(status_code=404, detail="Job not found")
     return JobRead.model_validate(job)
-
 
 @router.post("/{job_id}/cancel", response_model=JobRead)
 async def cancel_job(
@@ -107,7 +99,6 @@ async def cancel_job(
     await db.flush()
     return JobRead.model_validate(job)
 
-
 @router.post("/{job_id}/pause", response_model=JobRead)
 async def pause_job(
     job_id: UUID,
@@ -133,7 +124,6 @@ async def pause_job(
     )
     await db.flush()
     return JobRead.model_validate(job)
-
 
 @router.post("/{job_id}/resume", response_model=JobRead)
 async def resume_job(

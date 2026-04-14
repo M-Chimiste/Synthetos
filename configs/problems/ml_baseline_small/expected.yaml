@@ -1,0 +1,7 @@
+reference_metrics:
+  accuracy: 0.95
+frontier_progression:
+  min_successful_runs: 1
+pattern_reuse:
+  expect_failure_patterns: false
+  expect_successful_line: true

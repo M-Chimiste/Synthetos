@@ -2,22 +2,17 @@
 
 from __future__ import annotations
 
-from typing import TYPE_CHECKING
+from uuid import UUID
 
 from fastapi import APIRouter, Depends, HTTPException
+from sqlalchemy.ext.asyncio import AsyncSession
 
 from apps.api.auth import require_scope
 from apps.api.deps import get_db
 from libs.core.research_state import assemble_research_state
 from libs.schemas.state import ResearchStateSnapshot
 
-if TYPE_CHECKING:
-    from uuid import UUID
-
-    from sqlalchemy.ext.asyncio import AsyncSession
-
 router = APIRouter(prefix="/state", tags=["state"])
-
 
 @router.get("/{charter_id}", response_model=ResearchStateSnapshot)
 async def get_research_state(

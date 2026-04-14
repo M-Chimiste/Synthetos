@@ -4,11 +4,13 @@ from __future__ import annotations
 
 import asyncio
 import json
-from typing import TYPE_CHECKING
+from collections.abc import AsyncGenerator
+from uuid import UUID
 
 from fastapi import APIRouter, Depends, HTTPException, Query
 from fastapi.responses import StreamingResponse
 from sqlalchemy import select
+from sqlalchemy.ext.asyncio import AsyncSession
 
 from apps.api.auth import require_scope
 from apps.api.deps import get_db
@@ -52,17 +54,10 @@ from libs.schemas.experiment import (
 )
 from libs.storage.models.experiment import RunRecord, RunTelemetry
 
-if TYPE_CHECKING:
-    from collections.abc import AsyncGenerator
-    from uuid import UUID
-
-    from sqlalchemy.ext.asyncio import AsyncSession
-
 router = APIRouter(tags=["experiment"])
 
 _TERMINAL_STATUSES = frozenset({"completed", "failed", "cancelled"})
 _TELEMETRY_POLL_INTERVAL = 1.0  # seconds
-
 
 async def _telemetry_stream(
     db: AsyncSession,
@@ -99,9 +94,7 @@ async def _telemetry_stream(
 
         await asyncio.sleep(_TELEMETRY_POLL_INTERVAL)
 
-
 # ---- Hypothesis sessions ---------------------------------------------------
-
 
 @router.post(
     "/hypotheses/sessions",
@@ -124,7 +117,6 @@ async def start_hypothesis_session_endpoint(
         raise HTTPException(status_code=400, detail=str(exc)) from exc
     return HypothesisSessionStartResponse(session=session_read, job_id=job_id)
 
-
 @router.get("/hypotheses/sessions", response_model=PaginatedResponse[HypothesisSessionRead])
 async def list_hypothesis_sessions_endpoint(
     charter_id: UUID | None = Query(default=None),
@@ -139,7 +131,6 @@ async def list_hypothesis_sessions_endpoint(
     )
     return PaginatedResponse(items=items, total=total, offset=offset, limit=limit)
 
-
 @router.get("/hypotheses/sessions/{session_id}", response_model=HypothesisSessionRead)
 async def get_hypothesis_session_endpoint(
     session_id: UUID,
@@ -151,9 +142,7 @@ async def get_hypothesis_session_endpoint(
         raise HTTPException(status_code=404, detail="Hypothesis session not found")
     return result
 
-
 # ---- Hypothesis cards ------------------------------------------------------
-
 
 @router.get("/hypotheses/cards", response_model=PaginatedResponse[HypothesisCardRead])
 async def list_hypothesis_cards_endpoint(
@@ -169,7 +158,6 @@ async def list_hypothesis_cards_endpoint(
     )
     return PaginatedResponse(items=items, total=total, offset=offset, limit=limit)
 
-
 @router.get("/hypotheses/cards/{card_id}", response_model=HypothesisCardRead)
 async def get_hypothesis_card_endpoint(
     card_id: UUID,
@@ -180,7 +168,6 @@ async def get_hypothesis_card_endpoint(
     if result is None:
         raise HTTPException(status_code=404, detail="Hypothesis card not found")
     return result
-
 
 @router.patch("/hypotheses/cards/{card_id}", response_model=HypothesisCardRead)
 async def update_hypothesis_card_endpoint(
@@ -194,9 +181,7 @@ async def update_hypothesis_card_endpoint(
     except ExperimentServiceError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
 
-
 # ---- Experiment specs ------------------------------------------------------
-
 
 @router.get("/protocols/specs", response_model=PaginatedResponse[ExperimentSpecRead])
 async def list_experiment_specs_endpoint(
@@ -212,7 +197,6 @@ async def list_experiment_specs_endpoint(
     )
     return PaginatedResponse(items=items, total=total, offset=offset, limit=limit)
 
-
 @router.get("/protocols/specs/{spec_id}", response_model=ExperimentSpecRead)
 async def get_experiment_spec_endpoint(
     spec_id: UUID,
@@ -224,9 +208,7 @@ async def get_experiment_spec_endpoint(
         raise HTTPException(status_code=404, detail="Experiment spec not found")
     return result
 
-
 # ---- Protocol compilation ---------------------------------------------------
-
 
 @router.post(
     "/protocols/compile",
@@ -244,9 +226,7 @@ async def compile_protocols_endpoint(
         raise HTTPException(status_code=400, detail=str(exc)) from exc
     return ExperimentSpecCompileResponse(specs=specs, job_id=job_id)
 
-
 # ---- Run records -----------------------------------------------------------
-
 
 @router.post("/runs", response_model=RunStartResponse, status_code=201)
 async def start_run_endpoint(
@@ -261,7 +241,6 @@ async def start_run_endpoint(
     except ExperimentServiceError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
     return RunStartResponse(run=run_read, job_id=job_id)
-
 
 @router.get("/runs", response_model=PaginatedResponse[RunRecordRead])
 async def list_run_records_endpoint(
@@ -283,7 +262,6 @@ async def list_run_records_endpoint(
     )
     return PaginatedResponse(items=items, total=total, offset=offset, limit=limit)
 
-
 @router.get("/runs/{run_id}", response_model=RunRecordRead)
 async def get_run_record_endpoint(
     run_id: UUID,
@@ -295,9 +273,7 @@ async def get_run_record_endpoint(
         raise HTTPException(status_code=404, detail="Run record not found")
     return result
 
-
 # ---- Run control -----------------------------------------------------------
-
 
 @router.post("/runs/{run_id}/control", response_model=RunRecordRead)
 async def control_run_endpoint(
@@ -311,9 +287,7 @@ async def control_run_endpoint(
     except ExperimentServiceError as exc:
         raise HTTPException(status_code=409, detail=str(exc)) from exc
 
-
 # ---- Run telemetry ---------------------------------------------------------
-
 
 @router.get("/runs/{run_id}/telemetry", response_model=list[RunTelemetryRead])
 async def list_run_telemetry_endpoint(
@@ -324,7 +298,6 @@ async def list_run_telemetry_endpoint(
     db: AsyncSession = Depends(get_db),
 ) -> list[RunTelemetryRead]:
     return await list_run_telemetry(db, run_id, since=since, limit=limit)
-
 
 @router.get("/runs/{run_id}/telemetry/stream")
 async def stream_run_telemetry(
@@ -348,9 +321,7 @@ async def stream_run_telemetry(
         },
     )
 
-
 # ---- Verification ----------------------------------------------------------
-
 
 @router.get("/runs/{run_id}/verification", response_model=VerificationReportRead)
 async def get_verification_report_endpoint(
@@ -363,7 +334,6 @@ async def get_verification_report_endpoint(
         raise HTTPException(status_code=404, detail="Verification report not found")
     return result
 
-
 @router.get("/runs/{run_id}/postmortem", response_model=FailurePostmortemRead)
 async def get_failure_postmortem_endpoint(
     run_id: UUID,
@@ -374,7 +344,6 @@ async def get_failure_postmortem_endpoint(
     if result is None:
         raise HTTPException(status_code=404, detail="Failure postmortem not found")
     return result
-
 
 @router.get("/verifications", response_model=PaginatedResponse[VerificationReportRead])
 async def list_verifications_endpoint(

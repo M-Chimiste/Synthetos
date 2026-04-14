@@ -20,6 +20,7 @@ from libs.core.event_types import AutonomyEvents
 from libs.core.events import emit_event_sync
 from libs.core.logging import get_logger
 from libs.core.operators import OperatorInput, OperatorResult
+from libs.core.services.job_service import create_job
 from libs.core.types import CycleStatus
 from libs.storage.base import get_sync_session_factory
 from libs.storage.models.autonomy import AutonomyBudget, LoopDecision
@@ -33,6 +34,36 @@ from libs.storage.models.remediation import (
 )
 
 log = get_logger("autonomy.loop_report")
+
+
+def _enqueue_consolidation_job(
+    *,
+    factory,
+    charter_id: UUID,
+    cycle_id: UUID,
+) -> None:
+    """Enqueue Phase 6 consolidation in a fresh transaction.
+
+    This keeps consolidation scheduling from poisoning the completion-report
+    transaction if job creation fails.
+    """
+    with factory() as db:
+        try:
+            create_job(
+                db,
+                cycle_id=cycle_id,
+                job_type="consolidate_patterns",
+                payload={"charter_id": str(charter_id), "cycle_id": str(cycle_id)},
+                priority=0,
+            )
+            db.commit()
+        except Exception as exc:
+            db.rollback()
+            log.warning(
+                "loop_report.consolidation_enqueue_failed",
+                error=str(exc),
+                cycle_id=str(cycle_id),
+            )
 
 
 def loop_report_operator(op_input: OperatorInput) -> OperatorResult:
@@ -136,7 +167,14 @@ def loop_report_operator(op_input: OperatorInput) -> OperatorResult:
                 "iterations": len(decisions),
             },
         )
+
         db.commit()
+
+    _enqueue_consolidation_job(
+        factory=factory,
+        charter_id=charter_id,
+        cycle_id=cycle_id,
+    )
 
     return OperatorResult(
         success=True,

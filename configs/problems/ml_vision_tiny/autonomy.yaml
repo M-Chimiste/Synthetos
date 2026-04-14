@@ -1,0 +1,9 @@
+mode: "autonomous"
+max_total_runs: 6
+max_wall_clock_hours: 2.0
+max_runs_per_hypothesis: 3
+compute_cap:
+  cpu_cores: 8
+  memory_gb: 16
+  gpu: true
+  vram_gb: 8

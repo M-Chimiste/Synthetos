@@ -1,0 +1,8 @@
+mode: "autonomous"
+max_total_runs: 10
+max_wall_clock_hours: 0.5
+max_runs_per_hypothesis: 4
+compute_cap:
+  cpu_cores: 4
+  memory_gb: 4
+  gpu: false

@@ -34,6 +34,8 @@ from libs.core.logging import get_logger
 from libs.core.operators import OperatorInput, OperatorResult
 from libs.core.services.job_service import create_job
 from libs.core.types import CycleStatus, JobStatus
+from libs.patterns.embedding import embed_text
+from libs.patterns.injection import InjectionPolicy, inject_patterns
 from libs.storage.base import get_sync_session_factory
 from libs.storage.models.autonomy import LoopDecision
 from libs.storage.models.experiment import ExperimentSpec, HypothesisCard, RunRecord
@@ -115,6 +117,30 @@ def loop_decide_operator(op_input: OperatorInput) -> OperatorResult:
 
         policy = AutonomyPolicy.model_validate(
             (cycle.config or {}).get("autonomy", {})
+        )
+
+        # Phase 6: retrieve signal_trajectory + retrieval_heuristic patterns to
+        # bias loop decisions. For now we surface them in the audit trail
+        # (via pattern.applied events emitted by inject_patterns); deeper
+        # biasing of continue/vary/pivot decisions is left as future tightening.
+        pattern_injection_policy = InjectionPolicy.from_cycle_config(cycle.config)
+        _loop_patterns = inject_patterns(
+            db,
+            charter_id=run.charter_id,
+            current_cycle_id=run.cycle_id,
+            types=["signal_trajectory", "retrieval_heuristic"],
+            policy=pattern_injection_policy,
+            problem_profile_embedding=embed_text(
+                "\n".join(
+                    [
+                        getattr(spec, "title", "") if spec else "",
+                        getattr(spec, "description", "") if spec else "",
+                        rec.recommendation_type,
+                        rec.reasoning,
+                    ]
+                )
+            ),
+            operator_name="loop_decide",
         )
 
         # 2. Load/create budget and check for gate-resume before mutating counters.

@@ -4,27 +4,22 @@ from __future__ import annotations
 
 import asyncio
 import json
-from typing import TYPE_CHECKING
+from collections.abc import AsyncGenerator
+from uuid import UUID
 
 from fastapi import APIRouter, Depends, Query
 from fastapi.responses import StreamingResponse
 from sqlalchemy import select
+from sqlalchemy.ext.asyncio import AsyncSession
 
 from apps.api.auth import require_scope
 from apps.api.deps import get_db
 from libs.schemas.events import EventRead
 from libs.storage.models.events import DomainEvent
 
-if TYPE_CHECKING:
-    from collections.abc import AsyncGenerator
-    from uuid import UUID
-
-    from sqlalchemy.ext.asyncio import AsyncSession
-
 router = APIRouter(prefix="/events", tags=["events"])
 
 _POLL_INTERVAL = 0.5  # seconds
-
 
 async def _event_stream(
     db: AsyncSession,
@@ -59,7 +54,6 @@ async def _event_stream(
             cursor = event.id
 
         await asyncio.sleep(_POLL_INTERVAL)
-
 
 @router.get("/stream")
 async def stream_events(

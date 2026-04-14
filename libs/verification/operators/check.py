@@ -4,6 +4,7 @@ artifact presence, validates output contracts, and creates a VerificationReport.
 
 from __future__ import annotations
 
+import json
 from pathlib import Path
 
 from sqlalchemy import select
@@ -19,8 +20,11 @@ from libs.execution.operators._common import (
     load_run_record,
     run_record_id_from_payload,
 )
+from libs.patterns.embedding import embed_text
+from libs.patterns.injection import InjectionPolicy, inject_patterns
 from libs.storage.base import get_sync_session_factory
-from libs.storage.models.experiment import ExperimentSpec, VerificationReport
+from libs.storage.models.experiment import ExperimentSpec, RunRecord, VerificationReport
+from libs.storage.models.research import ResearchCycle
 from libs.verification.baseline import compare_to_baseline
 from libs.verification.contracts import check_artifact_contract
 from libs.verification.operators._common import enqueue_next_verification
@@ -126,6 +130,7 @@ def verification_check_operator(op_input: OperatorInput) -> OperatorResult:
         spec = db.get(ExperimentSpec, run.experiment_spec_id)
         if spec is None:
             return OperatorResult(success=False, error="experiment spec not found")
+        cycle = db.get(ResearchCycle, run.cycle_id)
 
         emit_event_sync(
             db,
@@ -184,12 +189,32 @@ def verification_check_operator(op_input: OperatorInput) -> OperatorResult:
         expected_artifacts = spec.expected_artifacts or []
         artifact_manifest = run.artifact_manifest or []
 
+        pattern_context = "\n".join(
+            [
+                spec.title,
+                spec.description,
+                json.dumps(spec.metrics or [], sort_keys=True),
+                json.dumps(run.metrics_output or {}, sort_keys=True),
+                run.failure_class or "",
+            ]
+        ).strip()
+        pattern_matches = inject_patterns(
+            db,
+            charter_id=run.charter_id,
+            current_cycle_id=run.cycle_id,
+            types=["signal_trajectory", "failure"],
+            policy=InjectionPolicy.from_cycle_config(cycle.config if cycle else None),
+            problem_profile_embedding=embed_text(pattern_context),
+            operator_name="verification_check",
+        )
+        pattern_ids = [str(match.pattern.id) for match in pattern_matches]
+
         prior_run = db.execute(
-            select(type(run))
-            .where(type(run).experiment_spec_id == run.experiment_spec_id)
-            .where(type(run).id != run.id)
-            .where(type(run).status == "completed")
-            .order_by(type(run).completed_at.desc())
+            select(RunRecord)
+            .where(RunRecord.experiment_spec_id == run.experiment_spec_id)
+            .where(RunRecord.id != run.id)
+            .where(RunRecord.status == "completed")
+            .order_by(RunRecord.completed_at.desc())
             .limit(1)
         ).scalar_one_or_none()
         prior_metrics = dict(prior_run.metrics_output or {}) if prior_run else None
@@ -268,6 +293,8 @@ def verification_check_operator(op_input: OperatorInput) -> OperatorResult:
                 warnings.append(f"metric sanity issues: {', '.join(failed_sanity_checks)}")
         if prior_run is not None:
             warnings.append(f"historical comparison anchor: run {prior_run.id}")
+        if pattern_ids:
+            warnings.append(f"pattern priors applied: {', '.join(pattern_ids)}")
 
         summary_parts = [f"Verdict: {verdict}"]
         if metric_verdicts:

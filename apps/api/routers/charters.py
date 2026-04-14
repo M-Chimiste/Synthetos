@@ -2,9 +2,10 @@
 
 from __future__ import annotations
 
-from typing import TYPE_CHECKING
+from uuid import UUID
 
 from fastapi import APIRouter, Depends, HTTPException
+from sqlalchemy.ext.asyncio import AsyncSession
 
 from apps.api.auth import require_scope
 from apps.api.deps import get_db
@@ -17,13 +18,7 @@ from libs.core.services.charter_service import (
 from libs.schemas.charter import CharterCreate, CharterRead, CharterUpdate
 from libs.schemas.common import PaginatedResponse
 
-if TYPE_CHECKING:
-    from uuid import UUID
-
-    from sqlalchemy.ext.asyncio import AsyncSession
-
 router = APIRouter(prefix="/charters", tags=["charters"])
-
 
 @router.post("", response_model=CharterRead, status_code=201)
 async def create_charter_endpoint(
@@ -33,7 +28,6 @@ async def create_charter_endpoint(
 ) -> CharterRead:
     """Create a new research charter."""
     return await create_charter(db, body)
-
 
 @router.get("", response_model=PaginatedResponse[CharterRead])
 async def list_charters_endpoint(
@@ -46,7 +40,6 @@ async def list_charters_endpoint(
     items, total = await list_charters(db, offset=offset, limit=limit)
     return PaginatedResponse(items=items, total=total, offset=offset, limit=limit)
 
-
 @router.get("/{charter_id}", response_model=CharterRead)
 async def get_charter_endpoint(
     charter_id: UUID,
@@ -58,7 +51,6 @@ async def get_charter_endpoint(
     if charter is None:
         raise HTTPException(status_code=404, detail="Charter not found")
     return charter
-
 
 @router.patch("/{charter_id}", response_model=CharterRead)
 async def update_charter_endpoint(

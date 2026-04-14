@@ -46,6 +46,15 @@ class Settings(BaseSettings):
     # Repo root (for git worktree operations)
     repo_root: Path = Field(default=Path("."))
 
+    # Worker: stale-job reclaim (Phase 6 §5.1)
+    job_heartbeat_timeout_s: int = 120
+    job_max_reclaims: int = 3
+    worker_periodic_tick_s: int = 30
+
+    # Pattern decay scheduling (Phase 6 §1.5)
+    pattern_decay_interval_h: int = 24
+    pattern_max_staleness_days: int = 90
+
     @property
     def skill_path_list(self) -> list[Path]:
         return [Path(p.strip()) for p in self.skill_paths.split(":") if p.strip()]

@@ -1,7 +1,9 @@
 """Skill and model call lineage recording.
 
 Phase 3 operators use these helpers to write SkillBinding and
-ModelCallRecord rows, closing the lineage gap left by Phases 1-2.
+ModelCallRecord rows. Phase 6 adds runtime trust-tier enforcement here:
+this is the real binding boundary, so blocking a binding at this call
+prevents the skill's prompt/content from influencing the operator.
 """
 
 from __future__ import annotations
@@ -14,8 +16,13 @@ from sqlalchemy.orm import Session
 from uuid_utils import uuid7
 
 from libs.core.clock import utcnow
+from libs.core.event_types import SkillRuntimeEvents
+from libs.core.events import emit_event_sync
 from libs.schemas.model_gateway import CompletionResponse
+from libs.skills.enforcement import SkillTrustViolation
+from libs.skills.enforcement import evaluate as evaluate_skill_binding
 from libs.storage.models.lineage import ModelCallRecord
+from libs.storage.models.research import ResearchCycle
 from libs.storage.models.skills import SkillBinding, SkillDefinition
 
 
@@ -27,10 +34,18 @@ def record_skill_usage(
     operator_type: str,
     job_id: UUID,
     config: dict[str, Any] | None = None,
+    raise_on_block: bool = False,
 ) -> UUID | None:
-    """Record a SkillBinding row when an operator loads and uses a skill.
+    """Record a SkillBinding row after runtime trust enforcement.
 
-    Returns the binding ID, or None if the skill definition was not found.
+    Looks up the skill's trust tier + manifest and evaluates it against the
+    current cycle's policy. On violation: emits ``skill.blocked`` and returns
+    None (or raises ``SkillTrustViolation`` when ``raise_on_block=True``).
+    On success: emits ``skill.invoked`` when elevated capabilities are
+    declared, then creates the ``SkillBinding`` row.
+
+    Returns the binding ID, or None if the skill definition was not found or
+    was blocked by policy (non-raising).
     """
     result = session.execute(
         select(SkillDefinition).where(SkillDefinition.skill_id == skill_id)
@@ -38,6 +53,45 @@ def record_skill_usage(
     skill_def = result.scalar_one_or_none()
     if skill_def is None:
         return None
+
+    cycle = session.get(ResearchCycle, cycle_id)
+    cycle_config = (cycle.config if cycle is not None else None) or {}
+
+    decision = evaluate_skill_binding(
+        skill_id=skill_id,
+        trust_tier=skill_def.trust_tier,
+        manifest=skill_def.manifest,
+        cycle_config=cycle_config,
+    )
+    if not decision.allowed:
+        emit_event_sync(
+            session,
+            event_type=SkillRuntimeEvents.blocked.value,
+            cycle_id=cycle_id,
+            payload={
+                "skill_id": skill_id,
+                "trust_tier": str(skill_def.trust_tier),
+                "reason": decision.reason,
+                "operator_type": operator_type,
+                "job_id": str(job_id),
+            },
+        )
+        if raise_on_block:
+            raise SkillTrustViolation(skill_id=skill_id, reason=decision.reason)
+        return None
+
+    if decision.elevated:
+        emit_event_sync(
+            session,
+            event_type=SkillRuntimeEvents.invoked.value,
+            cycle_id=cycle_id,
+            payload={
+                "skill_id": skill_id,
+                "trust_tier": str(skill_def.trust_tier),
+                "operator_type": operator_type,
+                "job_id": str(job_id),
+            },
+        )
 
     binding = SkillBinding(
         id=uuid7(),

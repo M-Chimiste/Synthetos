@@ -90,6 +90,9 @@ class _LoopDecideSession:
             return _ScalarResult(None)
         if "FROM metric_frontiers" in query_text:
             return _ScalarResult(None)
+        if "FROM canonical_patterns" in query_text:
+            # Phase 6 pattern injection: no patterns in unit-test fixture.
+            return _ScalarResult(list_value=[])
         raise AssertionError(f"Unexpected query in loop_decide test: {query_text}")
 
     def add(self, obj: Any) -> None:
@@ -193,6 +196,21 @@ class _LoopReportSession:
         if "FROM run_recommendations" in query_text:
             return _ScalarResult(self.recommendation)
         raise AssertionError(f"Unexpected query in loop_report test: {query_text}")
+
+    def commit(self) -> None:
+        self.committed = True
+
+    def rollback(self) -> None:
+        return None
+
+
+class _EnqueueSession:
+    def __init__(self) -> None:
+        self.committed = False
+        self.rolled_back = False
+
+    def rollback(self) -> None:
+        self.rolled_back = True
 
     def commit(self) -> None:
         self.committed = True
@@ -609,12 +627,13 @@ def test_loop_report_writes_sections_and_canonical_event(
         frontiers=[frontier],
         recommendation=recommendation,
     )
+    enqueue_session = _EnqueueSession()
     events: list[str] = []
 
     monkeypatch.setattr(
         loop_report_module,
         "get_sync_session_factory",
-        lambda: _SequentialFactory([session]),
+        lambda: _SequentialFactory([session, enqueue_session]),
     )
     monkeypatch.setattr(
         loop_report_module,
@@ -630,6 +649,11 @@ def test_loop_report_writes_sections_and_canonical_event(
         loop_report_module,
         "emit_event_sync",
         lambda _db, *, event_type, **_kwargs: events.append(event_type),
+    )
+    monkeypatch.setattr(
+        loop_report_module,
+        "create_job",
+        lambda *_args, **_kwargs: None,
     )
 
     result = loop_report_module.loop_report_operator(
@@ -649,6 +673,88 @@ def test_loop_report_writes_sections_and_canonical_event(
     assert "## Executive Summary" in markdown
     assert "## Frontier Progression" in markdown
     assert "## Recommendations" in markdown
+
+
+def test_loop_report_still_closes_cycle_when_consolidation_enqueue_fails(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    cycle_id = uuid7()
+    charter_id = uuid7()
+    recommendation_id = uuid7()
+    decision = SimpleNamespace(
+        id=uuid7(),
+        cycle_id=cycle_id,
+        charter_id=charter_id,
+        run_record_id=uuid7(),
+        recommendation_id=recommendation_id,
+        iteration_number=1,
+        decision="stop_exhausted",
+        gate_triggered=None,
+        next_action=None,
+        context_summary_path=None,
+        reasoning="No remaining viable hypotheses.",
+        hypothesis_card_id=None,
+        next_hypothesis_card_id=None,
+    )
+    main_session = _LoopReportSession(
+        decisions=[decision],
+        budget=SimpleNamespace(
+            total_runs=2,
+            wall_clock_elapsed_s=120.0,
+            runs_per_hypothesis={},
+        ),
+        cards=[SimpleNamespace(id=uuid7(), title="Hypothesis A", status="stalled")],
+        frontiers=[],
+        recommendation=SimpleNamespace(
+            id=recommendation_id,
+            recommendation_type="halt",
+            action="Stop",
+            reasoning="Done.",
+        ),
+    )
+    enqueue_session = _EnqueueSession()
+
+    monkeypatch.setattr(
+        loop_report_module,
+        "get_sync_session_factory",
+        lambda: _SequentialFactory([main_session, enqueue_session]),
+    )
+    monkeypatch.setattr(
+        loop_report_module,
+        "get_settings",
+        lambda: SimpleNamespace(data_root=tmp_path),
+    )
+    monkeypatch.setattr(
+        loop_report_module,
+        "generate_executive_summary",
+        lambda *_args, **_kwargs: "Executive summary for the autonomy loop.",
+    )
+    monkeypatch.setattr(
+        loop_report_module,
+        "emit_event_sync",
+        lambda *_args, **_kwargs: None,
+    )
+    monkeypatch.setattr(
+        loop_report_module,
+        "create_job",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(RuntimeError("db flush failed")),
+    )
+
+    result = loop_report_module.loop_report_operator(
+        _op_input(
+            run_id=uuid7(),
+            cycle_id=cycle_id,
+            charter_id=charter_id,
+            payload={"cycle_id": str(cycle_id)},
+        )
+    )
+
+    assert result.success is True
+    assert main_session.committed is True
+    assert enqueue_session.rolled_back is True
+    report_path = tmp_path / "reports" / "cycles" / str(cycle_id) / "completion" / "report.md"
+    assert report_path.exists()
 
 
 @pytest.mark.asyncio

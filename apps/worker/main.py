@@ -20,6 +20,7 @@ from uuid_utils import uuid7
 from apps.worker.claimer import try_claim
 from apps.worker.executor import execute
 from apps.worker.heartbeat import HeartbeatThread
+from apps.worker.periodic import run_periodic_tasks
 from libs.analysis.operators._common import (
     AnalysisStateError,
     analysis_session_id_from_payload,
@@ -328,8 +329,21 @@ def run(*, poll_interval: float = _DEFAULT_POLL_INTERVAL) -> None:
     signal.signal(signal.SIGINT, _handle_signal)
     signal.signal(signal.SIGTERM, _handle_signal)
 
+    # Startup: reclaim any stale jobs left over from a prior worker crash and
+    # seed the periodic-tick timer.
+    startup_counts = run_periodic_tasks(session_factory, settings=settings)
+    log.info("worker_startup_periodic", **startup_counts)
+    last_periodic = time.monotonic()
+
     try:
         while not shutdown_requested:
+            now_mono = time.monotonic()
+            if now_mono - last_periodic >= settings.worker_periodic_tick_s:
+                counts = run_periodic_tasks(session_factory, settings=settings)
+                if counts.get("reclaimed") or counts.get("failed_exhausted"):
+                    log.info("worker_periodic_tick", **counts)
+                last_periodic = now_mono
+
             job = try_claim(session_factory, worker_id)
             if job is None:
                 time.sleep(poll_interval)

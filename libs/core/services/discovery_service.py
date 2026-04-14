@@ -72,25 +72,16 @@ async def _resolve_or_create_active_cycle(
     return cycle
 
 
-async def start_discovery_session(
+async def _start_discovery_session_on_cycle(
     session: AsyncSession,
     *,
     charter_id: UUID,
+    cycle: ResearchCycle,
     body: ProblemProfileCreate,
-    actor_type: ActorType = ActorType.user,
-    actor_id: str | None = None,
+    actor_type: ActorType,
+    actor_id: str | None,
 ) -> tuple[DiscoverySessionRead, ProblemProfileRead, UUID]:
-    """Create a profile + session and enqueue ``discovery_intake``.
-
-    Returns ``(session, profile, intake_job_id)``.
-    """
-    charter = await session.get(ResearchCharter, charter_id)
-    if charter is None:
-        raise DiscoveryServiceError(f"charter {charter_id} not found")
-
-    cycle = await _resolve_or_create_active_cycle(session, charter_id)
-
-    # Reject if a profile already exists for this cycle (one per cycle in v1).
+    """Create a discovery profile/session on an already chosen cycle."""
     existing_profile = await session.execute(
         select(ProblemProfile).where(ProblemProfile.cycle_id == cycle.id)
     )
@@ -129,7 +120,6 @@ async def start_discovery_session(
     session.add(discovery)
     await session.flush()
 
-    # Enqueue the intake job synchronously via raw SQL-friendly construction.
     intake_job_id = uuid7()
     job = Job(
         id=intake_job_id,
@@ -160,6 +150,64 @@ async def start_discovery_session(
         DiscoverySessionRead.model_validate(discovery),
         ProblemProfileRead.model_validate(profile),
         UUID(str(intake_job_id)),
+    )
+
+
+async def start_discovery_session(
+    session: AsyncSession,
+    *,
+    charter_id: UUID,
+    body: ProblemProfileCreate,
+    actor_type: ActorType = ActorType.user,
+    actor_id: str | None = None,
+) -> tuple[DiscoverySessionRead, ProblemProfileRead, UUID]:
+    """Create a profile + session and enqueue ``discovery_intake``.
+
+    Returns ``(session, profile, intake_job_id)``.
+    """
+    charter = await session.get(ResearchCharter, charter_id)
+    if charter is None:
+        raise DiscoveryServiceError(f"charter {charter_id} not found")
+
+    cycle = await _resolve_or_create_active_cycle(session, charter_id)
+
+    return await _start_discovery_session_on_cycle(
+        session,
+        charter_id=charter_id,
+        cycle=cycle,
+        body=body,
+        actor_type=actor_type,
+        actor_id=actor_id,
+    )
+
+
+async def start_discovery_session_for_cycle(
+    session: AsyncSession,
+    *,
+    charter_id: UUID,
+    cycle_id: UUID,
+    body: ProblemProfileCreate,
+    actor_type: ActorType = ActorType.system,
+    actor_id: str | None = None,
+) -> tuple[DiscoverySessionRead, ProblemProfileRead, UUID]:
+    """Create a discovery session on a specific pre-created cycle."""
+    charter = await session.get(ResearchCharter, charter_id)
+    if charter is None:
+        raise DiscoveryServiceError(f"charter {charter_id} not found")
+
+    cycle = await session.get(ResearchCycle, cycle_id)
+    if cycle is None or cycle.charter_id != charter_id:
+        raise DiscoveryServiceError(
+            f"cycle {cycle_id} not found for charter {charter_id}"
+        )
+
+    return await _start_discovery_session_on_cycle(
+        session,
+        charter_id=charter_id,
+        cycle=cycle,
+        body=body,
+        actor_type=actor_type,
+        actor_id=actor_id,
     )
 
 

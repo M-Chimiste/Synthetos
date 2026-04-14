@@ -1,0 +1,7 @@
+reference_metrics:
+  macro_f1: 0.92
+frontier_progression:
+  min_successful_runs: 2
+pattern_reuse:
+  expect_failure_patterns: false
+  expect_successful_line: true

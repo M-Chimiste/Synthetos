@@ -17,6 +17,8 @@ from libs.core.events import emit_event_sync
 from libs.core.logging import get_logger
 from libs.core.operators import OperatorInput, OperatorResult
 from libs.core.types import CycleStatus
+from libs.patterns.embedding import embed_text
+from libs.patterns.injection import InjectionPolicy, inject_patterns
 from libs.remediation.operators._common import (
     ExecutionStateError,
     count_lineage_attempts,
@@ -30,6 +32,7 @@ from libs.remediation.strategies import select_strategy
 from libs.storage.base import get_sync_session_factory
 from libs.storage.models.experiment import RunRecord
 from libs.storage.models.remediation import RemediationAction
+from libs.storage.models.research import ResearchCycle
 
 log = get_logger("remediation.remediate")
 
@@ -50,6 +53,7 @@ async def _broad_debug_llm(
     error_trace: str,
     code_plan: dict[str, Any] | None,
     prior_remediation: list[dict[str, Any]],
+    pattern_hints: list[dict[str, Any]] | None = None,
 ) -> _BroadDebugOutput | None:
     """Call LLM for broad debug remediation. Returns None on failure."""
     from libs.adapters.llm.router import ModelRouter
@@ -62,10 +66,22 @@ async def _broad_debug_llm(
             "and source code, suggest specific file patches to fix the issue. "
             "Only suggest changes that are likely to fix the root cause."
         )
+        hint_text = ""
+        if pattern_hints:
+            hint_lines = [
+                f"- [{h['pattern_type']}] {h['title']}: {h['summary']}"
+                for h in pattern_hints
+            ]
+            hint_text = (
+                "Canonical remediation patterns that previously matched this failure:\n"
+                + "\n".join(hint_lines)
+                + "\n\n"
+            )
         user_msg = (
             f"Error trace (last 50 lines):\n{error_trace}\n\n"
             f"Code plan files:\n{_format_code_plan(code_plan)}\n\n"
             f"Prior remediation attempts:\n{prior_remediation}\n\n"
+            f"{hint_text}"
             "Provide patched file contents to fix this error."
         )
         result = await router.complete_structured(
@@ -185,6 +201,39 @@ def auto_remediate_operator(op_input: OperatorInput) -> OperatorResult:
         prior_strategies = [a.strategy for a in prior_actions]
         prior_failure_classes = [a.failure_class for a in prior_actions]
 
+        # Phase 6: retrieve remediation patterns matching this failure_class as
+        # priors. We don't override strategy selection (deterministic path stays
+        # in charge), but we record matched patterns on the action for audit and
+        # feed them to the broad-debug LLM as additional context.
+        cycle = db.get(ResearchCycle, run.cycle_id)
+        pattern_policy = InjectionPolicy.from_cycle_config(
+            cycle.config if cycle else None
+        )
+        remediation_pattern_matches = inject_patterns(
+            db,
+            charter_id=run.charter_id,
+            current_cycle_id=run.cycle_id,
+            types=["remediation", "failure"],
+            policy=pattern_policy,
+            problem_profile_embedding=embed_text(
+                "\n".join(
+                    [
+                        run.failure_class or "unknown",
+                        stderr_tail,
+                        spec.title,
+                        spec.description,
+                    ]
+                )
+            ),
+            operator_name="auto_remediate",
+        )
+        remediation_pattern_hints = [
+            m.to_context()
+            for m in remediation_pattern_matches
+            if m.pattern.structured_body.get("failure_class")
+            == (run.failure_class or "unknown")
+        ]
+
         # Select strategy
         strat = select_strategy(
             failure_class=run.failure_class or "unknown",
@@ -263,7 +312,12 @@ def auto_remediate_operator(op_input: OperatorInput) -> OperatorResult:
             ]
             try:
                 debug_result = asyncio.run(
-                    _broad_debug_llm(stderr_tail, spec.code_plan, prior_detail)
+                    _broad_debug_llm(
+                        stderr_tail,
+                        spec.code_plan,
+                        prior_detail,
+                        pattern_hints=remediation_pattern_hints,
+                    )
                 )
             except Exception:
                 debug_result = None

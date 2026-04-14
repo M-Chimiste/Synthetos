@@ -32,8 +32,11 @@ from libs.discovery.operators._common import (
     session_id_from_payload,
 )
 from libs.discovery.ranking import normalize_scores, rrf_fuse
+from libs.patterns.embedding import embed_text
+from libs.patterns.injection import InjectionPolicy, inject_patterns
 from libs.storage.base import get_async_session_factory, get_sync_session_factory
 from libs.storage.models.papers import PaperCard
+from libs.storage.models.research import ResearchCycle
 
 log = get_logger(__name__)
 
@@ -152,6 +155,50 @@ def _search_hints(profile_scope: dict[str, Any] | None) -> tuple[str | None, lis
     )
 
 
+def _apply_pattern_hints(
+    *,
+    query_text: str,
+    categories: list[str],
+    pattern_matches: list,
+) -> tuple[str, list[str], list[str]]:
+    """Turn retrieval-heuristic patterns into deterministic search hints."""
+    extra_terms: list[str] = []
+    extra_categories: list[str] = []
+    applied_ids: list[str] = []
+    seen_terms: set[str] = set()
+    seen_categories: set[str] = set(categories)
+
+    for match in pattern_matches:
+        applied_ids.append(str(match.pattern.id))
+        body = match.pattern.structured_body or {}
+        heuristic_kind = body.get("heuristic_kind")
+        if isinstance(heuristic_kind, str) and heuristic_kind.strip():
+            term = heuristic_kind.replace("_", " ").strip()
+            if term and term not in seen_terms:
+                seen_terms.add(term)
+                extra_terms.append(term)
+
+        params = body.get("parameters") or {}
+        next_action = params.get("next_action")
+        if isinstance(next_action, str) and next_action.strip():
+            term = next_action.replace("_", " ").strip()
+            if term and term not in seen_terms:
+                seen_terms.add(term)
+                extra_terms.append(term)
+
+        raw_categories = body.get("categories") or []
+        if isinstance(raw_categories, list):
+            for category in raw_categories:
+                value = str(category).strip()
+                if value and value not in seen_categories:
+                    seen_categories.add(value)
+                    extra_categories.append(value)
+
+    if extra_terms:
+        query_text = " ".join([query_text, *extra_terms]).strip()
+    return query_text, categories + extra_categories, applied_ids
+
+
 def _hit_to_card(
     hit: SourceHit,
     *,
@@ -209,6 +256,24 @@ def discovery_search_operator(op_input: OperatorInput) -> OperatorResult:
         if synonyms:
             query_text = " ".join([query_text, *synonyms[:8]])
 
+        cycle = session.get(ResearchCycle, discovery.cycle_id)
+        pattern_policy = InjectionPolicy.from_cycle_config(cycle.config if cycle else None)
+        query_embedding = embed_text(query_text)
+        pattern_matches = inject_patterns(
+            session,
+            charter_id=discovery.charter_id,
+            current_cycle_id=discovery.cycle_id,
+            types=["retrieval_heuristic"],
+            policy=pattern_policy,
+            problem_profile_embedding=query_embedding,
+            operator_name="discovery_search",
+        )
+        query_text, categories, pattern_ids = _apply_pattern_hints(
+            query_text=query_text,
+            categories=categories,
+            pattern_matches=pattern_matches,
+        )
+
         try:
             hits, counts = asyncio.run(
                 _run_search(
@@ -240,6 +305,7 @@ def discovery_search_operator(op_input: OperatorInput) -> OperatorResult:
                 "scope": scope,
                 "query_text": query_text,
                 "categories": categories,
+                "pattern_ids": pattern_ids,
                 "counts": counts,
             },
         )

@@ -2,8 +2,147 @@
 
 **Product:** Synthetos (ML Laboratory Co-Scientist)
 **Date:** 2026-04-14
-**Phase:** 5 — Autonomous Loop and Configurable Gating
-**Status:** Phase 5 is now remediated and code-level complete. The autonomy loop no longer double-counts budget on gate resume, concrete hardware/network gates can pause before `execution_setup`, manual stops are durable in `loop_decisions`, completion reports are real markdown+JSON artifacts with an API read surface and UI viewer, and the Phase 5 event contract is aligned. All quality gates are green: `ruff check`, `pyright` — 0 errors, `pytest` — 238 passed, and web build. The remaining work is live integration testing of the full loop against real Postgres, Docker, and model endpoints.
+**Phase:** 6 — Cross-Charter Pattern Memory and Pilot Hardening
+**Status:** Phase 6 landed end-to-end and is code-level complete after a focused remediation pass. Canonical pattern memory consolidates postmortems, remediation actions, signal trajectories, frontiers, and loop decisions into reusable cross-charter patterns; high-confidence patterns auto-inject into hypothesis generation, remediation, the autonomous loop, discovery retrieval, and verification; curation flows through a typed approval surface; the worker periodically reclaims stale jobs and runs pattern decay; the skill runtime now enforces trust tiers at the lineage boundary; the orchestrator API exposes a versioned patterns surface; the UI ships a patterns list/detail with curation actions, a per-cycle phase-grouped timeline, and rich markdown rendering for reports. A pilot harness with three tiered fixtures (CI-safe, workstation CPU, workstation GPU), a runner that now kicks off discovery automatically, and evaluation plus comparison tooling is in place. All quality gates pass: `ruff` clean, `pyright` 0 errors, `pytest` 304 passed (was 238), and `npm run build` succeeds. The remaining work is live integration runs of the pilot fixtures against a real worker + Postgres + GPU and validating cross-charter pattern reuse over consecutive cycles.
+
+---
+
+## Phase 6 Session Summary
+
+Phase 6 turns Synthetos from a single-cycle laboratory into a system that learns across cycles. Phases 1–5 produced rich per-cycle artifacts (postmortems, remediation actions, directional signals, frontiers, loop decisions) but every cycle started from zero — there was no shared memory and no cross-charter querying. Phase 6 closes that gap with a canonical pattern store, a single injection helper that operators call from four sites, an opt-in curation surface, runtime trust enforcement for skills, and product hardening (stale-job reclaim, contract tests, timeline UI, rich markdown). It also lays down a pilot harness so the whole chain can be exercised end-to-end against tiered fixtures.
+
+Key design decisions:
+
+- **Patterns are mined post-hoc, not authored.** A `consolidate_patterns` operator runs against the existing artifact tables and upserts into `canonical_patterns` keyed on a deterministic `(pattern_type, content_key)`. Re-running over the same evidence reinforces existing rows rather than producing duplicates. No human authors patterns directly.
+- **Single canonical consolidation trigger.** `loop_report` commits the completion report and cycle-close transaction first, then enqueues `consolidate_patterns` in a fresh session. CLI and API enqueue the same job. Failure of the enqueue never blocks report generation or cycle close.
+- **Auto-apply policy is the default; curation is an explicit escalation.** `trust_tier="auto"` patterns above `min_confidence_auto` (default 0.7) inject without ceremony and emit `pattern.applied` events for audit. `trust_tier="curated"` requires a `PatternApproval` (global or per-charter, optionally time-boxed). Decay transitions auto patterns to curated, then to deprecated; deprecated patterns are excluded at retrieval.
+- **Cross-charter retrieval is the default, with a current-cycle exclusion.** `find_relevant_patterns` returns patterns from any charter whose observations include at least one cycle other than the calling cycle. Same-charter reinforcement is allowed but cross-charter evidence is weighted higher (`cross_charter_weight_boost`, default 1.15).
+- **Skill runtime enforcement lives at the binding boundary.** Validator-time checks were not authoritative — the actual call is `record_skill_usage` in `libs/skills/lineage.py`. That function is now the gate: it loads the cycle policy, evaluates against the skill's manifest + trust tier, blocks elevated capabilities for untrusted skills, and emits `skill.invoked` / `skill.blocked` events on every elevated binding.
+- **Worker periodic loop owns recovery + decay.** No new scheduler. The worker reclaims jobs whose heartbeat is older than `job_heartbeat_timeout_s` (default 120s, max 3 reclaims) and gates `decay_patterns` enqueue on a `periodic_job_state` row so decay fires at most every `pattern_decay_interval_h` (default 24h). Both are exposed via a `pilot patterns decay` CLI / API for on-demand runs.
+- **OpenAPI was unblocked across the whole API.** A pre-existing Pydantic v2 / FastAPI ForwardRef interaction (caused by importing `UUID` and `AsyncSession` inside `if TYPE_CHECKING:`) broke `/openapi.json` for every router. Phase 6 moved those imports to module scope across all routers; the contract test now snapshots the live schema.
+- **Pilot fixtures are tiered, not graded as a single class.** `ci_safe` runs in <5 min on CPU and is meant to gate CI. `workstation_cpu` is autonomous-mode tabular work. `workstation_gpu` is realistic small-scale ML on a researcher GPU. Each fixture validates against a strict contract (charter / autonomy / seeds / expected / README) before any run is started.
+
+The main outcomes:
+
+- 1 Alembic migration adds 4 tables (`canonical_patterns`, `pattern_observations`, `pattern_approvals`, `periodic_job_state`), an HNSW index on the pattern embedding, and a `jobs.reclaim_count` column.
+- New `libs/patterns/` package: `content_key`, `consolidation`, `upsert`, `embedding`, `retrieval`, `injection`, `decay`, plus `consolidate_patterns` and `decay_patterns` operators registered with the worker executor.
+- New `libs/skills/enforcement.py` and an extended `record_skill_usage` that emits `skill.invoked` / `skill.blocked` events.
+- New `libs/pilot/` package: `fixture` (contract validator), `runner` (DB-side charter+cycle creator plus discovery kickoff), `evaluation` (grading + artifact writer + comparison helpers).
+- New API router `apps/api/routers/patterns.py` (9 endpoints, `patterns.read` / `patterns.write` scopes); `decay` operator + endpoint; the `consolidate` and `decay` endpoints both return 202 Accepted.
+- Added `apps/cli/commands/patterns.py` and registered `synthetos patterns consolidate|decay`.
+- Wired `inject_patterns` into `libs/ideation/operators/generate.py` (hypothesis priors), `libs/remediation/operators/remediate.py` (broad-debug LLM hints + `remediation` pattern audit), `libs/autonomy/operators/loop_decide.py` (signal/heuristic audit), `libs/discovery/operators/search.py` (retrieval heuristics), and `libs/verification/operators/check.py` (signal/failure priors).
+- Worker startup + periodic tick (`apps/worker/periodic.py`) for stale-job reclaim and gated decay enqueue.
+- New CLI `synthetos pilot {list,validate,show,run,evaluate,compare}` and three bundled fixtures: `ml_baseline_small` (ci_safe), `ml_sklearn_iris` (workstation_cpu), `ml_vision_tiny` (workstation_gpu).
+- Web UI: new routes `/patterns` (list with filters, consolidate/decay buttons), `/patterns/$patternId` (detail + approve/reject/trust-tier curation), `/cycles/$cycleId/timeline` (phase-grouped live event stream), shared `<Markdown>` component (uses `react-markdown` + `remark-gfm`), and `Patterns` added to the sidebar.
+- Pre-existing OpenAPI generation failure fixed; `/openapi.json` now serves 79 paths and 105 component schemas.
+- Tests added: contract coverage now explicitly pins the patterns surface, pilot kickoff has an integration test, stale-job reclaim has direct unit coverage, and the repo now passes `304` tests total.
+
+---
+
+---
+
+## What Was Added in Phase 6
+
+### 1. Schema and migrations
+
+- New ORM models (`libs/storage/models/patterns.py`):
+  - `CanonicalPattern` — `(pattern_type, content_key)` unique, JSONB `structured_body`, 768-dim pgvector embedding (HNSW indexed), `evidence_count`, `confidence`, `trust_tier` (`auto|curated|deprecated`), `staleness_score`, `source_charter_ids` (UUID array), `consolidation_version`, `first/last_observed_at`, `last_reinforced_at`.
+  - `PatternObservation` — `(pattern_id, source_artifact_type, source_artifact_id)` unique; lineage rows linking patterns back to postmortems, remediation actions, directional signals, frontiers, or loop decisions.
+  - `PatternApproval` — typed approve/reject decisions with optional charter scope and `expires_at`.
+  - `PeriodicJobState` — `job_kind`-keyed last-run bookkeeping for the worker periodic loop.
+- Migration `20260416_000001_phase6_patterns.py` creates all four tables, the HNSW cosine index on the embedding column, and adds `jobs.reclaim_count`.
+- New Pydantic schemas in `libs/schemas/patterns.py` (`PatternSummary`, `PatternDetail`, `PatternObservationRead`, `PatternList`, `ObservationList`, `PatternMatchRead`, `PatternApprovalRead`, request bodies).
+
+### 2. Pattern subsystem (`libs/patterns/`)
+
+- `content_key.py` — deterministic SHA-256 dedupe keys per pattern type (failure / remediation / signal_trajectory / successful_line / retrieval_heuristic), with normalized inputs so re-consolidating reinforces rather than duplicates.
+- `consolidation.py` — pure extractors (one per source-artifact type), aggregation by `(pattern_type, content_key)`, and the `compute_confidence` baseline (evidence_count → 0.35..0.80, +0.10 boost for cross-charter, hard cap 0.95).
+- `upsert.py` — sync-session upserts that reinforce existing patterns (never lower confidence, refresh `last_reinforced_at`, lift `deprecated → curated` when cross-charter evidence reappears) and append observations idempotently.
+- `embedding.py` — best-effort embedding via the existing `EmbeddingsRouter`; consolidation persists rows even if embedding fails.
+- `retrieval.py` — `find_relevant_patterns(charter_id, current_cycle_id, problem_profile_embedding, …)` with `trust_tier != deprecated`, current-cycle exclusion (a pattern is retained only if it has at least one observation outside the current cycle), staleness decay applied to confidence, and cross-charter weighting.
+- `injection.py` — `InjectionPolicy.from_cycle_config` plus `inject_patterns(...)` — the single helper every operator calls. Auto patterns auto-apply if `effective_confidence >= min_confidence_auto`; curated patterns require a non-expired approval; deprecated never inject. Every applied match emits a `pattern.applied` event.
+- `decay.py` + `operators/decay.py` — pure `evaluate(...)` plus a worker operator that decays staleness, demotes `auto → curated` past `max_staleness_days`, deprecates `curated` past 2× the threshold, and emits `pattern.demoted` / `pattern.deprecated` events.
+- `operators/consolidate.py` — `consolidate_patterns_operator` wires extractors to upsert + observation persistence and emits per-pattern `pattern.consolidated` events plus a final `pattern.consolidation_completed`.
+
+### 3. Wiring into existing operators
+
+- `libs/autonomy/operators/loop_report.py` enqueues `consolidate_patterns` after the report transaction commits, in a fresh session, so enqueue failure cannot poison cycle close.
+- `libs/ideation/operators/generate.py` retrieves `successful_line` + `failure` patterns and threads them into the hypothesis-generation prompt; the LLM call gets a `pattern_hints` block alongside evidence.
+- `libs/remediation/operators/remediate.py` retrieves `remediation` + `failure` patterns matching the run's failure class and feeds them into the broad-debug LLM prompt; `pattern.applied` events provide the audit trail.
+- `libs/autonomy/operators/loop_decide.py` retrieves `signal_trajectory` + `retrieval_heuristic` patterns at the top of the loop iteration so the audit trail records what biased the decision.
+
+### 4. Skill runtime trust enforcement
+
+- New `libs/skills/enforcement.py` with a typed `SkillTrustViolation` and a pure `evaluate(...)` function that gates elevated capabilities (`python.hooks`, `fs.write`, `network.access`, `run.control`) and the `skills.require_first_party_for_execution` policy.
+- `libs/skills/lineage.record_skill_usage` is now the runtime gate: it loads the cycle config, runs `evaluate`, emits `skill.blocked` and refuses the binding on violation, and emits `skill.invoked` whenever an elevated binding is allowed.
+
+### 5. Worker recovery and decay scheduling
+
+- New `libs/core/services/job_service.reclaim_stale_jobs(...)` — resets `claimed`/`running` jobs whose heartbeat is older than `LAB_JOB_HEARTBEAT_TIMEOUT_S` back to `pending` (or to `failed` after `LAB_JOB_MAX_RECLAIMS`), incrementing `reclaim_count` and emitting `job.reclaimed` / `job.reclaim_exhausted`.
+- New `apps/worker/periodic.py` — runs at worker startup and every `LAB_WORKER_PERIODIC_TICK_S` (default 30s) seconds. Reclaims stale jobs and gates `decay_patterns` enqueue on `periodic_job_state.last_enqueued_at + LAB_PATTERN_DECAY_INTERVAL_H` (default 24h).
+- `apps/worker/main.py` integrates the periodic loop alongside the existing job-claim path.
+
+### 6. Patterns API surface
+
+- New router `apps/api/routers/patterns.py` mounted under `/api/v1/patterns`.
+- Endpoints: `GET /` (paginated list with `pattern_type` / `trust_tier` / `min_confidence` / `charter_id` filters), `GET /{pattern_id}`, `GET /{pattern_id}/observations`, `POST /consolidate` (202), `POST /decay` (202), `POST /{pattern_id}/approve`, `POST /{pattern_id}/reject`, `PATCH /{pattern_id}/trust-tier`, `POST /retrieve-preview` (collection debug aid), and `POST /{pattern_id}/retrieve-preview` (pattern-scoped debug aid).
+- Two new auth scopes: `patterns.read` and `patterns.write`. Every mutating endpoint requires `patterns.write`; every read endpoint requires `patterns.read`. Contract tests pin this.
+
+### 7. OpenAPI generation fix
+
+- A pre-existing combination of `from __future__ import annotations` + `if TYPE_CHECKING:` imports of `UUID` / `AsyncSession` broke `/openapi.json` generation across all routers. Phase 6 moved those imports to module scope in `apps/api/routers/{health,charters,cycles,jobs,state,events,discovery,analysis,experiment}.py`. The OpenAPI document now generates cleanly (79 paths, 105 components) and orchestrators can fetch the schema again.
+
+### 8. Pilot harness
+
+- New `libs/pilot/`:
+  - `fixture.py` — `PilotFixture` dataclass and `load_fixture(...)` enforcing the contract (`charter.yaml`, `autonomy.yaml`, `seeds.yaml`, optional `expected.yaml`, required `README.md`) and validating the runtime tier is one of `ci_safe` / `workstation_cpu` / `workstation_gpu`.
+  - `runner.py` — `start_pilot(...)` upserts a `pilot:<problem_id>` charter (so repeated runs share one learning history), creates a fresh cycle with the fixture's autonomy config + seeds + expected block in `cycle.config`, and emits `pilot.cycle_started` plus (in autonomous mode) `autonomy.loop_started`.
+  - `evaluation.py` — `evaluate_cycle(...)` reads the cycle's runs, postmortems, remediations, frontiers, and pattern observations, grades against the fixture's `expected.yaml`, and `write_evaluation(...)` persists `evaluation.json` + `evaluation.md` under `<data_root>/artifacts/pilot/<problem_id>/<timestamp>/`.
+- New CLI subgroup `synthetos pilot {list,validate,show,run,evaluate}`.
+- Three bundled fixtures under `configs/problems/`:
+  - `ml_baseline_small` — `ci_safe`, supervised, 3 runs, CPU-only, deterministic seeds; meant for CI smoke.
+  - `ml_sklearn_iris` — `workstation_cpu`, autonomous, 10-run / 30-min budget; expects at least one `successful_line` pattern.
+  - `ml_vision_tiny` — `workstation_gpu`, autonomous, 6-run / 2-hour budget, requires GPU; expects both `signal_trajectory` and `successful_line` patterns plus at least one mechanical-failure remediation.
+
+### 9. Web UI
+
+- New shared `apps/web/src/components/Markdown.tsx` using `react-markdown` + `remark-gfm` (added to `package.json`). The discovery report page now renders rich markdown instead of a `<pre>` block; the postmortem and pattern detail views also use it.
+- New routes:
+  - `/patterns` — paginated table with type + trust filters, `Consolidate now` and `Run decay` buttons that enqueue jobs through the API, and links into the detail view.
+  - `/patterns/$patternId` — full pattern view with structured-body JSON, recent observations list, and a curation panel (approve / reject / mark curated / deprecate, all require a typed rationale).
+  - `/cycles/$cycleId/timeline` — live phase-grouped event stream (Discovery / Analysis / Ideation / Protocol / Execution / Verification / Remediation / Signal / Autonomy / Patterns / Skills / Job lifecycle / Pilot), filterable by group, scrolls and updates from the existing SSE stream.
+- `Patterns` added to the sidebar nav.
+- `npm run build` succeeds; route tree regenerated via `@tanstack/router-cli generate`.
+
+### 10. Tests
+
+- 11 contract tests under `tests/contract/`:
+  - `test_openapi_stability.py` — pins required routes (including all `/patterns/*`), required components, 202 status on async-enqueue endpoints, and `patterns.write` scope on every mutating endpoint.
+  - `test_cycle_lifecycle.py` — hermetic shape checks (DB dependency overridden) for empty bodies, unknown pattern types, missing rationale, and bad trust-tier values returning 422 instead of 500.
+- 18 new unit tests under `tests/unit/`:
+  - `test_pattern_content_key.py` (6) — stable hashing across normalization, parameter ordering, and unknown-type errors.
+  - `test_pattern_consolidation.py` (10) — aggregation grouping, charter-set uniqueness, cross-charter flag, first/last observed extremes, confidence ladder + cap + cross-charter boost, failure/remediation extractor key derivation.
+  - `test_pattern_decay.py` (5) — fresh / stale / 2× stale / forced-deprecation / no-reinforcement-record paths.
+  - `test_skill_runtime_gate.py` (7) — first-party + elevated allowed, third-party + elevated blocked, user-local + elevated allowed, `require_first_party_for_execution` blocking user-local while allowing first-party, unknown trust tier rejected, no-capability binding not flagged elevated.
+  - `test_pattern_injection_policy.py` (3) — defaults, config overrides, empty/`None` config falls back to defaults.
+  - `test_pilot_fixture.py` (7) — load bundled CI-safe fixture; `list_fixtures` includes all three bundled; workstation_cpu fixture is autonomous; workstation_gpu fixture requires GPU; missing directory / invalid tier / missing seeds rejected.
+  - `test_pilot_runner.py` (2) — `_cycle_config` carries autonomy + seeds + pilot block, including the `expected` block needed for evaluation.
+- Fixed two pre-existing tests (`test_skill_lineage.py`, `test_phase5_autonomy_runtime.py`) that used minimal session stubs by adding the small surface the new pattern-injection / skill-runtime paths now require.
+- Total: **289 passing** (was 238 at end of Phase 5; net +51 — 18 new unit, 11 new contract, plus prior Phase 5 / 4 tests still green).
+
+### 11. Configuration knobs
+
+New `LAB_*` settings in `libs/core/config.py`:
+
+- `LAB_JOB_HEARTBEAT_TIMEOUT_S` (default 120) — stale job reclaim threshold.
+- `LAB_JOB_MAX_RECLAIMS` (default 3) — reclaims allowed before a job is force-failed.
+- `LAB_WORKER_PERIODIC_TICK_S` (default 30) — interval between periodic-task runs in the worker loop.
+- `LAB_PATTERN_DECAY_INTERVAL_H` (default 24) — minimum interval between auto-enqueued decay jobs.
+- `LAB_PATTERN_MAX_STALENESS_DAYS` (default 90) — staleness window past which patterns demote.
+
+Cycle-config `patterns` block read by `InjectionPolicy.from_cycle_config`: `min_confidence_auto` (default 0.7), `max_staleness_days` (default 90), `cross_charter_weight_boost` (default 1.15), `cross_charter_only` (default false), `injection_limit` (default 10).
+
+Cycle-config `skills` block: `require_first_party_for_execution` (default false).
 
 ---
 
@@ -38,7 +177,7 @@ The main outcomes:
 - Added 5 new CLI subcommands under `synthetos autonomy`: policy, budget, decisions, resume, stop
 - Added the canonical `autonomy.completion_report_generated` event and now emit `loop_started`, `budget_updated`, and `budget_exceeded`
 - Added focused runtime coverage for resume accounting, compile-time network gating, manual stop persistence, report generation/readback, and first-iteration `loop_started`
-- All code-level quality gates pass: `ruff` clean, `pyright` 0 errors, `pytest` 238 passed, web build succeeds
+- All code-level quality gates pass: `ruff` clean, `pyright` 0 errors, `pytest` 304 passed, web build succeeds
 
 ---
 

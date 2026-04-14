@@ -1,5 +1,6 @@
 import { createFileRoute, Link } from "@tanstack/react-router";
 import { useDiscoveryReport, useDiscoverySession } from "../../../api/hooks";
+import Markdown from "../../../components/Markdown";
 
 export const Route = createFileRoute("/discovery/$sessionId/report")({
   component: ReportPage,
@@ -39,9 +40,9 @@ function ReportPage() {
       )}
 
       {report.data?.markdown && (
-        <pre className="mt-4 whitespace-pre-wrap rounded-lg border border-gray-200 bg-white p-5 font-sans text-sm leading-relaxed text-gray-800">
-          {report.data.markdown}
-        </pre>
+        <div className="mt-4 rounded-lg border border-gray-200 bg-white p-5">
+          <Markdown>{report.data.markdown}</Markdown>
+        </div>
       )}
 
       {!report.data?.markdown && report.data?.json && (

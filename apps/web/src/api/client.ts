@@ -351,3 +351,111 @@ export interface DiscoveryReport {
 export function fetchDiscoveryReport(sessionId: string) {
   return apiFetch<DiscoveryReport>(`/discovery/${sessionId}/report`);
 }
+
+// ---- Patterns (Phase 6) ----
+
+export interface PatternSummary {
+  id: string;
+  pattern_type: string;
+  title: string;
+  summary: string;
+  trust_tier: string;
+  evidence_count: number;
+  confidence: number;
+  staleness_score: number;
+  source_charter_ids: string[];
+  last_reinforced_at: string;
+}
+
+export interface PatternObservationRead {
+  id: string;
+  pattern_id: string;
+  charter_id: string;
+  cycle_id: string;
+  source_artifact_type: string;
+  source_artifact_id: string;
+  contribution: Record<string, unknown> | null;
+  observed_at: string;
+}
+
+export interface PatternDetail extends PatternSummary {
+  structured_body: Record<string, unknown>;
+  consolidation_version: number;
+  first_observed_at: string;
+  last_observed_at: string;
+  created_at: string;
+  updated_at: string;
+  recent_observations: PatternObservationRead[];
+}
+
+export interface JobAcceptedResponse {
+  job_id: string;
+}
+
+export interface PatternListFilters {
+  pattern_type?: string;
+  trust_tier?: string;
+  min_confidence?: number;
+  charter_id?: string;
+}
+
+export function fetchPatterns(filters: PatternListFilters = {}, offset = 0, limit = 50) {
+  const params = new URLSearchParams();
+  params.set("offset", String(offset));
+  params.set("limit", String(limit));
+  if (filters.pattern_type) params.set("pattern_type", filters.pattern_type);
+  if (filters.trust_tier) params.set("trust_tier", filters.trust_tier);
+  if (filters.min_confidence) params.set("min_confidence", String(filters.min_confidence));
+  if (filters.charter_id) params.set("charter_id", filters.charter_id);
+  return apiFetch<PaginatedResponse<PatternSummary>>(
+    `/patterns?${params.toString()}`,
+  );
+}
+
+export function fetchPattern(id: string) {
+  return apiFetch<PatternDetail>(`/patterns/${id}`);
+}
+
+export function consolidatePatterns(body: {
+  charter_id?: string;
+  pattern_types?: string[];
+} = {}) {
+  return apiFetch<JobAcceptedResponse>("/patterns/consolidate", {
+    method: "POST",
+    body: JSON.stringify(body),
+  });
+}
+
+export function decayPatterns(body: { force?: boolean } = {}) {
+  return apiFetch<JobAcceptedResponse>("/patterns/decay", {
+    method: "POST",
+    body: JSON.stringify(body),
+  });
+}
+
+export function approvePattern(
+  id: string,
+  body: { rationale: string; charter_id?: string; expires_at?: string },
+) {
+  return apiFetch<unknown>(`/patterns/${id}/approve`, {
+    method: "POST",
+    body: JSON.stringify(body),
+  });
+}
+
+export function rejectPattern(id: string, body: { rationale: string }) {
+  return apiFetch<unknown>(`/patterns/${id}/reject`, {
+    method: "POST",
+    body: JSON.stringify(body),
+  });
+}
+
+export function updateTrustTier(
+  id: string,
+  body: { trust_tier: string; rationale: string },
+) {
+  return apiFetch<PatternDetail>(`/patterns/${id}/trust-tier`, {
+    method: "PATCH",
+    body: JSON.stringify(body),
+  });
+}

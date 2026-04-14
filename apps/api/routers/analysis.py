@@ -2,9 +2,10 @@
 
 from __future__ import annotations
 
-from typing import TYPE_CHECKING
+from uuid import UUID
 
 from fastapi import APIRouter, Depends, HTTPException, Query
+from sqlalchemy.ext.asyncio import AsyncSession
 
 from apps.api.auth import require_scope
 from apps.api.deps import get_db
@@ -46,16 +47,9 @@ from libs.schemas.analysis import (
 )
 from libs.schemas.common import PaginatedResponse
 
-if TYPE_CHECKING:
-    from uuid import UUID
-
-    from sqlalchemy.ext.asyncio import AsyncSession
-
 router = APIRouter(tags=["analysis"])
 
-
 # ---- Start analysis -------------------------------------------------------
-
 
 @router.post(
     "/papers/{paper_card_id}/analyze",
@@ -84,9 +78,7 @@ async def start_analysis_endpoint(
     await db.commit()
     return AnalysisSessionStartResponse(session=session_read, job_id=job_id)
 
-
 # ---- Analysis sessions ----------------------------------------------------
-
 
 @router.get("/analysis", response_model=PaginatedResponse[AnalysisSessionRead])
 async def list_sessions_endpoint(
@@ -108,7 +100,6 @@ async def list_sessions_endpoint(
     )
     return PaginatedResponse(items=items, total=total, offset=offset, limit=limit)
 
-
 @router.get(
     "/analysis/{session_id}",
     response_model=AnalysisSessionRead,
@@ -123,9 +114,7 @@ async def get_session_endpoint(
         raise HTTPException(status_code=404, detail="Analysis session not found")
     return result
 
-
 # ---- Ingested document -----------------------------------------------------
-
 
 @router.get(
     "/analysis/{session_id}/document",
@@ -141,9 +130,7 @@ async def get_document_endpoint(
         raise HTTPException(status_code=404, detail="Ingested document not found")
     return result
 
-
 # ---- Chunks ----------------------------------------------------------------
-
 
 @router.get(
     "/analysis/{session_id}/chunks",
@@ -166,9 +153,7 @@ async def list_chunks_endpoint(
     )
     return PaginatedResponse(items=items, total=total, offset=offset, limit=limit)
 
-
 # ---- Graph nodes / edges ---------------------------------------------------
-
 
 @router.get(
     "/analysis/{session_id}/graph/nodes",
@@ -191,7 +176,6 @@ async def list_nodes_endpoint(
     )
     return PaginatedResponse(items=items, total=total, offset=offset, limit=limit)
 
-
 @router.get(
     "/analysis/{session_id}/graph/edges",
     response_model=PaginatedResponse[GraphEdgeRead],
@@ -213,9 +197,7 @@ async def list_edges_endpoint(
     )
     return PaginatedResponse(items=items, total=total, offset=offset, limit=limit)
 
-
 # ---- Coverage --------------------------------------------------------------
-
 
 @router.get(
     "/analysis/{session_id}/coverage",
@@ -231,9 +213,7 @@ async def get_coverage_endpoint(
         raise HTTPException(status_code=404, detail="Coverage diagnostic not found")
     return result
 
-
 # ---- Paper-keyed endpoints (latest-wins) -----------------------------------
-
 
 @router.get(
     "/papers/{paper_card_id}/analysis-packet",
@@ -249,7 +229,6 @@ async def get_packet_endpoint(
         raise HTTPException(status_code=404, detail="Analysis packet not found")
     return result
 
-
 @router.get(
     "/papers/{paper_card_id}/review",
     response_model=PaperReviewArtifactRead,
@@ -263,7 +242,6 @@ async def get_review_endpoint(
     if result is None:
         raise HTTPException(status_code=404, detail="Review artifact not found")
     return result
-
 
 @router.post("/papers/{paper_card_id}/qa", response_model=QAResponse)
 async def qa_endpoint(
@@ -283,7 +261,6 @@ async def qa_endpoint(
     except AnalysisServiceError as exc:
         raise HTTPException(status_code=404, detail=str(exc)) from exc
 
-
 @router.post("/papers/{paper_card_id}/locate", response_model=LocateResponse)
 async def locate_endpoint(
     paper_card_id: UUID,
@@ -297,7 +274,6 @@ async def locate_endpoint(
         entity_type=body.entity_type,
         query=body.query,
     )
-
 
 @router.get("/analysis/{session_id}/report", response_model=AnalysisReportResponse)
 async def get_report_endpoint(
@@ -316,9 +292,7 @@ async def get_report_endpoint(
         )
     return report
 
-
 # ---- Evidence cards --------------------------------------------------------
-
 
 @router.get("/evidence", response_model=PaginatedResponse[EvidenceCardRead])
 async def list_evidence_endpoint(
@@ -341,7 +315,6 @@ async def list_evidence_endpoint(
         limit=limit,
     )
     return PaginatedResponse(items=items, total=total, offset=offset, limit=limit)
-
 
 @router.get("/evidence/{evidence_id}", response_model=EvidenceCardRead)
 async def get_evidence_endpoint(

@@ -2,9 +2,10 @@
 
 from __future__ import annotations
 
-from typing import TYPE_CHECKING
+from uuid import UUID
 
 from fastapi import APIRouter, Depends, HTTPException, Query
+from sqlalchemy.ext.asyncio import AsyncSession
 
 from apps.api.auth import require_scope
 from apps.api.deps import get_db
@@ -33,16 +34,9 @@ from libs.schemas.discovery import (
 )
 from libs.schemas.papers import PaperCardRead
 
-if TYPE_CHECKING:
-    from uuid import UUID
-
-    from sqlalchemy.ext.asyncio import AsyncSession
-
 router = APIRouter(tags=["discovery"])
 
-
 # ---- Start a discovery session on a charter ------------------------------
-
 
 @router.post(
     "/charters/{charter_id}/discovery",
@@ -65,9 +59,7 @@ async def start_discovery_endpoint(
         raise HTTPException(status_code=400, detail=str(exc)) from exc
     return DiscoverySessionStartResponse(session=session, profile=profile, job_id=job_id)
 
-
 # ---- List sessions across charters or for one charter -------------------
-
 
 @router.get(
     "/discovery",
@@ -85,9 +77,7 @@ async def list_discovery_sessions_endpoint(
     )
     return PaginatedResponse(items=items, total=total, offset=offset, limit=limit)
 
-
 # ---- Single session -----------------------------------------------------
-
 
 @router.get("/discovery/{session_id}", response_model=DiscoverySessionRead)
 async def get_discovery_session_endpoint(
@@ -99,7 +89,6 @@ async def get_discovery_session_endpoint(
     if obj is None:
         raise HTTPException(status_code=404, detail="discovery session not found")
     return obj
-
 
 @router.get(
     "/discovery/{session_id}/profile",
@@ -115,9 +104,7 @@ async def get_session_profile_endpoint(
         raise HTTPException(status_code=404, detail="profile not found")
     return obj
 
-
 # ---- Paper cards --------------------------------------------------------
-
 
 @router.get(
     "/discovery/{session_id}/papers",
@@ -144,7 +131,6 @@ async def list_session_papers_endpoint(
     )
     return PaginatedResponse(items=items, total=total, offset=offset, limit=limit)
 
-
 @router.get(
     "/discovery/{session_id}/papers/{paper_id}",
     response_model=PaperCardRead,
@@ -159,7 +145,6 @@ async def get_session_paper_endpoint(
     if obj is None:
         raise HTTPException(status_code=404, detail="paper not found")
     return obj
-
 
 @router.post(
     "/discovery/{session_id}/papers/{paper_id}/triage",
@@ -183,9 +168,7 @@ async def triage_paper_endpoint(
         raise HTTPException(status_code=404, detail="paper not found")
     return obj
 
-
 # ---- Report bundle ------------------------------------------------------
-
 
 @router.get("/discovery/{session_id}/report")
 async def get_session_report_endpoint(
@@ -208,9 +191,7 @@ async def get_session_report_endpoint(
         "json": json_payload,
     }
 
-
 # ---- Evaluation hooks ---------------------------------------------------
-
 
 @router.post(
     "/discovery/{session_id}/evaluation",
@@ -227,7 +208,6 @@ async def submit_evaluation_endpoint(
         return await submit_evaluation(db, session_id=session_id, submission=body)
     except DiscoveryServiceError as exc:
         raise HTTPException(status_code=404, detail=str(exc)) from exc
-
 
 @router.get(
     "/discovery/{session_id}/evaluation",

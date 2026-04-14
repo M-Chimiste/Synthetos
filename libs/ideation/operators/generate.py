@@ -27,11 +27,13 @@ from libs.ideation.operators._common import (
     mark_started_if_needed,
     merge_stats,
 )
+from libs.patterns.embedding import embed_text
+from libs.patterns.injection import InjectionPolicy, inject_patterns
 from libs.schemas.model_gateway import ModelRole
 from libs.skills.lineage import record_model_call, record_skill_usage
 from libs.storage.base import get_sync_session_factory
 from libs.storage.models.experiment import HypothesisCard
-from libs.storage.models.research import ResearchCharter
+from libs.storage.models.research import ResearchCharter, ResearchCycle
 
 log = get_logger("ideation.generate")
 
@@ -54,6 +56,7 @@ async def _generate_hypotheses(
     evidence_summaries: list[dict[str, Any]],
     max_hypotheses: int,
     skill_prompt: str | None,
+    pattern_hints: list[dict[str, Any]] | None = None,
 ) -> tuple[_HypothesisSet, dict[str, Any]]:
     """Call the LLM to generate candidate hypotheses from evidence."""
     router = ModelRouter()
@@ -69,10 +72,24 @@ async def _generate_hypotheses(
             f"Evidence [{e['id']}]: {e['claim']} (type: {e['type']}, confidence: {e['confidence']})"
             for e in evidence_summaries
         )
+        pattern_text = ""
+        if pattern_hints:
+            hint_lines = []
+            for hint in pattern_hints:
+                hint_lines.append(
+                    f"- [{hint['pattern_type']}] {hint['title']} "
+                    f"(conf={hint['effective_confidence']}): {hint['summary']}"
+                )
+            pattern_text = (
+                "\nPrior-cycle patterns to consider (from this system's memory):\n"
+                + "\n".join(hint_lines)
+                + "\n"
+            )
         user_msg = (
             f"Research problem: {charter_title}\n"
             f"Problem statement: {problem_statement}\n\n"
-            f"Available evidence:\n{evidence_text}\n\n"
+            f"Available evidence:\n{evidence_text}\n"
+            f"{pattern_text}\n"
             f"Generate up to {max_hypotheses} testable hypotheses based on this evidence. "
             "For each hypothesis, reference the evidence IDs that support it."
         )
@@ -154,6 +171,28 @@ def hypothesis_generate_operator(op_input: OperatorInput) -> OperatorResult:
                 job_id=op_input.job_id,
             )
 
+        # Phase 6: inject canonical patterns into hypothesis generation context.
+        cycle = db.get(ResearchCycle, hs.cycle_id)
+        policy = InjectionPolicy.from_cycle_config(cycle.config if cycle else None)
+        pattern_matches = inject_patterns(
+            db,
+            charter_id=hs.charter_id,
+            current_cycle_id=hs.cycle_id,
+            types=["successful_line", "failure"],
+            policy=policy,
+            problem_profile_embedding=embed_text(
+                "\n".join(
+                    [
+                        charter.title,
+                        charter.problem_statement,
+                        " ".join(item["summary"] for item in evidence_summaries),
+                    ]
+                )
+            ),
+            operator_name="hypothesis_generate",
+        )
+        pattern_hints = [m.to_context() for m in pattern_matches]
+
         # Call LLM
         try:
             hypothesis_set, role_cfg = asyncio.run(
@@ -163,6 +202,7 @@ def hypothesis_generate_operator(op_input: OperatorInput) -> OperatorResult:
                     evidence_summaries=evidence_summaries,
                     max_hypotheses=max_hypotheses,
                     skill_prompt=skill_result.prompt,
+                    pattern_hints=pattern_hints,
                 )
             )
         except Exception as exc:

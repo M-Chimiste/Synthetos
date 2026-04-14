@@ -1,0 +1,15 @@
+title: "Synthetic Baseline (CI-safe smoke test)"
+description: "End-to-end smoke fixture that runs the full Synthetos chain on a
+  tiny synthetic classification task. No external models, no GPU, no network."
+problem_statement: |
+  Investigate baseline behavior on a 2-class linearly separable toy dataset.
+  The goal is to exercise the full discovery -> analysis -> ideation ->
+  execution -> verification -> consolidation chain, not to discover anything
+  scientifically novel. Any model that reaches > 0.9 accuracy on the
+  held-out split satisfies success.
+domain: "synthetic-classification"
+success_criteria:
+  - "At least one run completes with verification verdict == pass."
+  - "A MetricFrontier row exists for the primary metric."
+  - "Consolidation produces at least one canonical_pattern row after cycle close."
+expected_runtime_bucket: "ci_safe"

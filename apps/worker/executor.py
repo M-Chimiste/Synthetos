@@ -118,6 +118,16 @@ def _register_autonomy_operators() -> None:
 _register_autonomy_operators()
 
 
+def _register_pattern_operators() -> None:
+    """Register the Phase 6 canonical-pattern operators."""
+    from libs.patterns.operators import register as register_patterns
+
+    register_patterns(register_operator)
+
+
+_register_pattern_operators()
+
+
 def execute(op_input: OperatorInput) -> OperatorResult:
     """Dispatch a job to its registered operator handler.
 

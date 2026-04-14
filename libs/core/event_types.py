@@ -104,6 +104,37 @@ class SignalEvents(StrEnum):
     recommendation_produced = "signal.recommendation_produced"
 
 
+class PatternEvents(StrEnum):
+    """Phase 6 canonical pattern event types."""
+
+    consolidation_started = "pattern.consolidation_started"
+    consolidated = "pattern.consolidated"
+    consolidation_completed = "pattern.consolidation_completed"
+    consolidation_failed = "pattern.consolidation_failed"
+    applied = "pattern.applied"
+    approved = "pattern.approved"
+    rejected = "pattern.rejected"
+    trust_tier_changed = "pattern.trust_tier_changed"
+    decay_started = "pattern.decay_started"
+    decay_completed = "pattern.decay_completed"
+    demoted = "pattern.demoted"
+    deprecated = "pattern.deprecated"
+
+
+class SkillRuntimeEvents(StrEnum):
+    """Phase 6 skill runtime enforcement event types."""
+
+    invoked = "skill.invoked"
+    blocked = "skill.blocked"
+
+
+class JobLifecycleEvents(StrEnum):
+    """Phase 6 job lifecycle/reclaim event types."""
+
+    reclaimed = "job.reclaimed"
+    reclaim_exhausted = "job.reclaim_exhausted"
+
+
 class AutonomyEvents(StrEnum):
     """Phase 5 autonomous-loop event types."""
 
