@@ -61,9 +61,26 @@ Services in `libs/core/services/` emit events within the session but **do not co
 ### State Machine
 
 Cycles follow a strict DAG of status transitions defined in `libs/core/state_machine.py`:
-`created → discovery_ready → discovery_screened → analysis_ready → evidence_ready → portfolio_ready → protocol_ready → running → verifying → reporting → closed`
+`created → discovery_ready → discovery_screened → analysis_ready → evidence_ready → portfolio_ready → protocol_ready → running → verifying → (loop_deciding) → reporting → closed`
 
 The worker validates transitions before applying them.
+
+`loop_deciding` is a Phase 5 state entered only in autonomous mode — the `recommend` operator targets `loop_deciding` (instead of `reporting`) when `ResearchCycle.config.autonomy.mode == "autonomous"`, and the `loop_decide` operator transitions to `running` (to continue/vary/pivot) or `reporting` (to stop). Supervised mode skips `loop_deciding` entirely.
+
+### Autonomous Loop (Phase 5)
+
+Opt-in via `ResearchCycle.config.autonomy.mode = "autonomous"`. When set, the `recommend` operator enqueues a `loop_decide` job instead of terminating at `reporting`. `loop_decide` consumes the `RunRecommendation` and acts on it:
+
+- `continue_current` → new `RunRecord` for the same spec → `execution_setup`
+- `parameter_variation` → enqueue `protocol_compile` with `variation_context` + `from_loop=true`
+- `hypothesis_pivot` → deprioritize current card, select next viable card by rank, enqueue execution or compilation
+- `halt` / budget exhausted / gate triggered / no viable hypotheses → enqueue `loop_report`, transition to `reporting`
+
+Budget tracking (`libs/autonomy/budget.py`) covers run count, wall-clock time, and runs-per-hypothesis — dollar-cost budgets are deferred. Checkpoint gates (`libs/autonomy/gates.py`) are all off by default; when one fires, `loop_decide` sets its own Job row to `JobStatus.paused` and the worker's existing pause-handling logic takes over. The `POST /cycles/{id}/autonomy/resume` endpoint re-enqueues the paused job.
+
+Hypothesis lifecycle statuses (`active|promising|stalled|deprioritized|validated`) are set by `loop_decide` via direct ORM writes — the `HypothesisCardUpdate` PATCH schema is unchanged and still only accepts `candidate|selected|rejected|deferred`. Phase 5 statuses are system-managed.
+
+Spec repetition detection (`libs/autonomy/repetition.py`) fingerprints `(code_plan, controls, metrics, baseline)` and escalates `continue_current → vary_parameters` on exact duplicates, or to `pivot_hypothesis` on 3+ near-duplicates in a row. Context summaries are generated every `summary_interval` runs (default 5) and fed into variation prompts.
 
 ### Event Sourcing
 
@@ -103,6 +120,12 @@ The async DB URL requires `postgresql+psycopg://` prefix (not plain `postgresql:
 - `libs/adapters/` — Hexagonal adapters: `llm/`, `embeddings/`, `sources/`, `reranker/`, `ingestion/`, `graph/`
 - `libs/discovery/` — Discovery loop operators and supporting logic (ranking, evaluation, views, metadata analysis)
 - `libs/analysis/` — Analysis loop operators (coverage, graph QA, reports)
+- `libs/ideation/` — Hypothesis generation, critique, and ranking operators (Phase 3)
+- `libs/protocols/` — Protocol compiler (hypotheses → `ExperimentSpec`). Accepts `variation_context` and `from_loop` payload keys when driven by the autonomous loop
+- `libs/execution/` — Workspace setup, containerized run, capture, and telemetry operators
+- `libs/verification/` — Verification check and failure postmortem operators
+- `libs/remediation/` — Phase 4 auto-remediation, directional signal, frontier, and recommendation operators
+- `libs/autonomy/` — Phase 5 autonomous loop: policy, budget, gates, hypothesis lifecycle, repetition detection, context summarization, completion reporting, `loop_decide`/`loop_report` operators
 - `libs/skills/` — Skill loader, parser, validator, registry
 - `skills/` — First-party skill.md packages
 - `configs/` — YAML configs (models.yaml, discovery/, policies/, problems/)
