@@ -1,0 +1,27 @@
+# Phase 1 discovery pipeline default configuration.
+#
+# These values seed the ProblemProfile budget / rerank_policy / view defaults
+# when the API receives a discovery request that omits them. They are loaded
+# by libs.discovery.problem if (and only if) you call the loader -- the
+# Pydantic schemas already carry the same numeric defaults so a missing file
+# is fine.
+
+first_stage:
+  internal_top_k: 200
+  external_top_k: 50
+  rrf_k: 60
+
+rerank:
+  enabled: true
+  top_n: 100
+  budget_seconds: 30
+  model: BAAI/bge-reranker-v2-m3
+
+views:
+  stable_top_k: 25
+  discovery_top_k: 25
+  discovery_mmr_lambda: 0.7
+
+analysis:
+  analyze_top_n: 25
+  concurrency: 4

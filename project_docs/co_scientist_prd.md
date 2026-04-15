@@ -1,6 +1,6 @@
 # Product Requirements Document
 
-**Product:** ML Laboratory Co-Scientist  
+**Product:** Synthetos (ML Laboratory Co-Scientist)  
 **Role:** Product Manager  
 **Status:** Working Draft v4  
 **Scope:** Local small-scale ML laboratory with autonomy roadmap  
@@ -210,6 +210,14 @@ Everything the UI can do should flow through a durable control-plane API so exte
 
 The product should never stuff all history and all documents into every model context.  Context must be assembled per task, per phase, per skill, and per operator.
 
+### 8.13 Charter, cycle, and state terminology
+
+The product should use these terms consistently:
+
+- `ResearchCharter` = the project definition and top-level research container
+- `ResearchCycle` = one bounded research loop or experiment loop executed within a charter
+- `ResearchState` = the derived aggregate view of what has happened and what is ongoing within a charter across its cycles, artifacts, approvals, and reports
+
 ---
 
 ## 9. Product Scope
@@ -224,7 +232,7 @@ The product should never stuff all history and all documents into every model co
 
 #### B. Multi-source discovery and literature triage
 
-- internal corpus retrieval
+- internal corpus retrieval from a seeded local arXiv metadata mirror
 - arXiv metadata warehouse
 - targeted external retrieval for selected sources
 - query expansion and structured retrieval planning where useful
@@ -294,7 +302,7 @@ The product should never stuff all history and all documents into every model co
 
 #### J. Orchestrator API
 
-- create and manage research cycles over API
+- create and manage charters and cycles over API
 - monitor events, discovery state, runs, approvals, and reports
 - steer, pause, cancel, or annotate work through a policy-checked interface
 
@@ -396,11 +404,13 @@ orchestrator authenticates
 - The product must allow a user or orchestrator to create a `ResearchCharter` for a scoped ML problem.
 - The charter must include goal, success criteria, budget envelope, source scope, and stop conditions.
 - The product must persist the charter and expose it through UI and API.
+- `ResearchCharter` is the project-level container. `ResearchCycle` is a bounded loop within a charter. `ResearchState` is the charter-scoped aggregate view over cycles, artifacts, and current progress.
 
 ### FR-2 Multi-Source Retrieval
 
 - The product must retrieve from both internal and external sources.
-- The product must support an arXiv metadata warehouse and incremental updates.
+- The product must treat a seeded local arXiv metadata mirror as the initial internal corpus in v1.
+- The product must support an arXiv metadata warehouse and incremental updates after the initial seed.
 - The product must support targeted source retrieval driven by the charter.
 - The product must support deduplication across sources.
 - The product must support lexical, semantic, and optional reranking paths where beneficial, while preserving measurable trade-offs in cost and latency.
@@ -410,6 +420,7 @@ orchestrator authenticates
 - The product must evaluate title and abstract together during first-pass screening.
 - The product must record why a paper or source was shortlisted.
 - The product must prefer HTML or machine-readable full text over PDF when available.
+- The product must treat PDF as a fallback when HTML is unavailable or low quality.
 - The product must record why any deeper read was requested.
 - The product must support ranking views that balance relevance, recency, novelty, and configured user intent.
 - The product should support diversity-aware postprocessing so the top results are not overly redundant.
@@ -501,7 +512,7 @@ orchestrator authenticates
 ### FR-16 Orchestrator API
 
 - The product must expose a stable control-plane API for external orchestrators.
-- The API must allow create/read/update of research cycles, discovery artifacts, reports, approvals, and run-control actions.
+- The API must allow create/read/update of research charters, research cycles, charter-scoped state snapshots, discovery artifacts, reports, approvals, and run-control actions.
 - The API must expose streaming telemetry for events and run status.
 - The API must support orchestrator identity and scoped permissions.
 - All orchestrator actions must be auditable.
@@ -776,4 +787,3 @@ The next architecture source of truth is `system_patterns.md`, which should tran
 - stable and discovery retrieval modes as the required v1 views
 - configurable autonomy gates with optional checkpoint review behavior
 - trust tiers for third-party skills
-

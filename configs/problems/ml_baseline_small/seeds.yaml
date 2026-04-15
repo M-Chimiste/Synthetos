@@ -1,0 +1,4 @@
+global: 42
+numpy: 42
+torch: 42
+dataset_split: 42

@@ -1,6 +1,6 @@
 # Phased Implementation Plan
 
-**Product:** ML Laboratory Co-Scientist\
+**Product:** Synthetos (ML Laboratory Co-Scientist)\
 **Role:** Planner\
 **Status:** Working Draft v4\
 **Scope:** Local small-scale ML laboratory with autonomy roadmap\
@@ -46,7 +46,7 @@ This implementation plan assumes the following product decisions are already in 
 - Mechanical failures should route through **auto-remediation** before becoming full postmortem cases.
 - Verified runs should eventually gain **directional signal** and **frontier state**.
 - The system should support **full automation as a configurable mode**, with checkpoint gates off unless policy or profile enables them.
-- Modular behavior must be supported through **skill.md**** packages**.
+- Modular behavior must be supported through **`skill.md` packages**.
 - External orchestrators must be supported through a **stable control-plane API and telemetry stream**.
 - Cross-charter pattern memory should be **light-touch by default**, with no mandatory human verification before patterns can begin influencing planning.
 
@@ -65,7 +65,9 @@ The most important early decision is the durable shape of the research record.
 The following entities should be treated as first-class from the start:
 
 - `ResearchCharter`
+- `ResearchCycle`
 - `ResearchState`
+- `ProblemProfile`
 - `DiscoverySession`
 - `DiscoveryView`
 - `PaperCard`
@@ -196,7 +198,7 @@ This phase creates the product backbone:
 - Stand up PostgreSQL as the system of record.
 - Enable `pgvector`.
 - Create migration tooling.
-- Add canonical tables for cycles, jobs, events, discovery sessions, reports, skills, approvals, orchestrator clients, and lineage.
+- Add canonical tables for charters, cycles, jobs, events, discovery sessions, reports, skills, approvals, orchestrator clients, and lineage.
 
 #### C. Shared state model
 
@@ -208,7 +210,7 @@ This phase creates the product backbone:
 #### D. Minimal UI shell
 
 - Create a lightweight local UI for:
-  - creating a research cycle
+  - creating a research charter and initial cycle
   - viewing current state
   - browsing recent events
   - seeing active jobs
@@ -244,7 +246,7 @@ This phase creates the product backbone:
 #### H. Orchestrator API foundation
 
 - Define versioned resource ids and API schemas.
-- Expose endpoints for cycle creation, cycle state, event streaming, and health.
+- Expose endpoints for charter creation, cycle creation/resume, state snapshots, event streaming, and health.
 - Add API token and scope model for external orchestrators.
 - Record orchestrator identity in events.
 
@@ -265,7 +267,7 @@ This phase creates the product backbone:
 
 Phase 0 is done when:
 
-- a user can create a research cycle from UI or CLI
+- a user can create a research charter and initial cycle from UI or CLI
 - the cycle is persisted and visible in the dashboard
 - a worker can claim a job, emit events, and update durable state
 - the UI can stream state changes without manual refresh
@@ -885,4 +887,3 @@ Use `tech_context.md` to lock the first-pass stack and implementation details fo
 - paper-analysis graph storage and export shape
 - remediation and directional-signal schema design
 - autonomy policy, checkpoint settings, and pattern thresholds
-

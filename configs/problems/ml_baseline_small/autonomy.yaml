@@ -1,0 +1,8 @@
+mode: "supervised"
+max_total_runs: 3
+max_wall_clock_hours: 0.1
+max_runs_per_hypothesis: 2
+compute_cap:
+  cpu_cores: 2
+  memory_gb: 2
+  gpu: false

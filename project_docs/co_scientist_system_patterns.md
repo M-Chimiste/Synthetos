@@ -1,6 +1,6 @@
 # System Patterns
 
-**Product:** ML Laboratory Co-Scientist\
+**Product:** Synthetos (ML Laboratory Co-Scientist)\
 **Role:** Architect\
 **Status:** Working Draft v4\
 **Scope:** Local small-scale ML laboratory with autonomy roadmap\
@@ -128,7 +128,7 @@ The architecture should generalize cleanly later, but the first product is an ML
                                 v
 +-------------------------------------------------------------------+
 |                    Control Plane and API Layer                     |
-|  - research cycle API                                              |
+|  - charter and cycle API                                           |
 |  - orchestrator API                                                |
 |  - discovery and analysis APIs                                     |
 |  - approvals and policy entrypoints                                |
@@ -207,7 +207,15 @@ That is what makes the lab debuggable.
 
 ### 5.1 Shared `ResearchState` as source of truth
 
-Each research cycle is represented by a durable `ResearchState`.  Operators and skills do not own hidden state.
+Operators and skills do not own hidden state.
+
+Use the following terminology:
+
+- `ResearchCharter` = the project definition and top-level research container
+- `ResearchCycle` = one bounded research loop executed within a charter
+- `ResearchState` = the logical aggregate of everything that has occurred within a charter across its cycles; it is not a single database row but an aggregate assembled from associated artifacts and records
+
+The system supports one active charter at a time due to GPU constraints.  Users can swap between charters but should not run them concurrently.
 
 A `ResearchState` should reference, at minimum:
 
@@ -242,13 +250,12 @@ Why this pattern exists:
 
 ### 5.2 State machine orchestration
 
-The lab should be implemented as a state machine over a research cycle, not as a freeform conversation.
+Each `ResearchCycle` within a charter should be implemented as a state machine, not as a freeform conversation.
 
 A typical cycle might move through states like:
 
 ```text
 created
--> chartered
 -> discovery_ready
 -> discovery_screened
 -> analysis_ready
@@ -352,6 +359,12 @@ retrieved
 
 Pattern rule: metadata screening happens by default; deeper fetch is an exception that requires a reason.
 
+When full text is required:
+
+- prefer HTML or other machine-readable full text first
+- use PDF as a fallback when HTML is unavailable or low quality
+- normalize both paths into the same internal full-text representation so downstream analysis does not branch on source format
+
 ### 5.6 Two-depth paper analysis pattern
 
 Paper analysis should not be all-or-nothing.
@@ -391,7 +404,7 @@ Why this pattern exists:
 
 Paper analysis and paper review should be stored as separate artifact types.
 
-`` should represent:
+`PaperAnalysisPacket` should represent:
 
 - structured extraction
 - provenance-linked graph state
@@ -399,7 +412,7 @@ Paper analysis and paper review should be stored as separate artifact types.
 - locateable evidence
 - reproducibility cues
 
-`` should represent:
+`PaperReviewArtifact` should represent:
 
 - strengths and weaknesses
 - questions to investigate
@@ -640,6 +653,12 @@ Pattern rules:
 
 A separate policy layer should decide whether an operator, skill, or orchestrator action may proceed.
 
+When multiple policy layers apply, precedence should be:
+
+1. hard system policy and orchestrator token scopes
+2. user-configured policy or charter-level settings
+3. autonomy mode or operator defaults
+
 The policy layer must handle:
 
 - compute budget ceilings
@@ -688,7 +707,7 @@ The API pattern should be:
 
 Core orchestrator actions should include:
 
-- create or resume a research cycle
+- create or resume a charter-scoped cycle
 - request operator or skill execution
 - read state snapshots and reports
 - subscribe to domain events and run telemetry
@@ -761,6 +780,7 @@ Responsibility:
 Primary record types:
 
 - `ResearchCharter`
+- `ResearchCycle`
 - `ResearchState`
 - `ProblemProfile`
 - `PaperCard`
@@ -1278,7 +1298,7 @@ The product should feel like a researcher’s control tower, not a black box.
 
 ### 15.2 Orchestrator interaction model
 
-- use the API to create cycles, query state, monitor events, and issue allowed commands
+- use the API to create charters and cycles, query state, monitor events, and issue allowed commands
 - provide scoped read and write permissions
 - treat telemetry streams as the primary monitoring interface
 
@@ -1533,4 +1553,3 @@ The next document should be `phased_implementation_plan.md`, which turns this re
 - remediation and directional signal milestones
 - autonomous loop checkpointing and budget control
 - canonical pattern thresholds, trust tiers, and orchestrator policy surfaces
-

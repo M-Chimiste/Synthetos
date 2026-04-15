@@ -1,0 +1,14 @@
+title: "Sklearn Iris baseline (CPU workstation)"
+description: "Workstation-CPU pilot that runs a classical baseline on the
+  Iris dataset and compares alternative classifiers via the autonomous loop."
+problem_statement: |
+  Establish a strong baseline for 3-class Iris classification using only
+  classical scikit-learn models (no neural nets). The loop should try at
+  least two model families (e.g. logistic regression, decision tree) and
+  record directional signals + frontier progression across them.
+domain: "tabular-classification"
+success_criteria:
+  - "At least two distinct hypotheses are compiled and executed."
+  - "The frontier records a best macro-F1 > 0.9 on the held-out split."
+  - "Consolidation produces at least one successful_line pattern."
+expected_runtime_bucket: "workstation_cpu"

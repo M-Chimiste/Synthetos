@@ -1,6 +1,6 @@
 # Tech Context
 
-**Product:** ML Laboratory Co-Scientist\
+**Product:** Synthetos (ML Laboratory Co-Scientist)\
 **Role:** Engineer\
 **Status:** Working Draft v5\
 **Scope:** Local small-scale ML laboratory with autonomy roadmap\
@@ -48,10 +48,11 @@ This tech context assumes the following product decisions are already in force:
 - Mechanical failures should route through **auto-remediation** before being treated as full scientific failure cases.
 - Successful runs should eventually receive **directional signal** and **frontier tracking**.
 - Checkpoint gates are **off unless configured** by policy, profile, or user preference.
-- Modular behavior must be supported through ``** packages**.
+- Modular behavior must be supported through **`skill.md` packages**.
 - Third-party skill signing is **not required** in the first local release.  Instead we use validation, capability declaration, hashes, and trust tiers.
 - External orchestrators must be supported through a **stable API plus telemetry streams**.
 - Cross-charter pattern memory should be **light-touch by default**, with no mandatory human verification before a pattern can begin influencing planning.
+- In v1, the local internal corpus is a seeded arXiv metadata mirror. It starts from a pre-populated seed and is incrementally updated through harvesting. Full text is fetched only on demand for shortlisted papers.
 
 ---
 
@@ -90,17 +91,20 @@ The canonical local stack for the first implementation is:
 - **Durable state:** PostgreSQL + `pgvector` + Apache AGE
 - **Queue:** Postgres-backed jobs table with row-claim semantics
 - **Artifact store:** local filesystem
-- **Execution backplane:** Docker Engine or Podman
+- **Execution backplane:** Docker Engine (sibling containers, not DinD)
+- **GPU:** NVIDIA Container Toolkit with GPU passthrough (2x RTX 6000 Blackwell)
 - **Workspace isolation:** git worktrees
 - **Telemetry stream:** domain events persisted in Postgres and exposed through SSE first
 - **CLI:** Typer-based Python CLI
+- **Embeddings:** gte-modernbert (768 dimensions)
+- **Full-text extraction:** Docling for shortlisted papers
 
 ### 3.4 Database stance
 
 The agreed database posture is:
 
 - **PostgreSQL** is the canonical system of record
-- `` provides semantic retrieval in the same Postgres instance
+- **`pgvector`** provides semantic retrieval in the same Postgres instance
 - **Apache AGE** provides graph storage and graph traversal in the same Postgres instance
 - we do **not** introduce a separate external graph database in v1
 
@@ -137,33 +141,31 @@ The MVP should not require these services to be usable:
 
 ### 4.1 Development mode
 
-During normal development, the system should run primarily in Docker Compose or an equivalent local container-compose workflow:
+During normal development:
 
-- infrastructure in containers
-- application services in containers
-- source code bind-mounted into those containers for hot reload where available
+- infrastructure (Postgres) runs in Docker Compose containers
+- application services (API, worker, web) run on the host with hot reload
+- experiment containers are spawned as sibling Docker containers with GPU passthrough
 
 That means:
 
-- Postgres runs in local containers
-- optional local model servers can run in containers or on host
-- API runs in a backend service container
-- worker runs in the same backend image, with container-runtime access so it can launch isolated experiment containers
-- web frontend runs in a Vite dev container
+- Postgres runs in a local container via docker-compose
+- optional local model servers (LMStudio, Ollama, VLLM) run on the host
+- API runs on host via `uv run uvicorn`
+- worker runs on host via `uv run python -m apps.worker`, with Docker SDK access to launch experiment containers
+- web frontend runs on host via `npm run dev` (Vite)
 
-A host-run fallback remains useful for debugging, but it is not the primary developer path.
+The worker uses the Docker SDK to create experiment containers directly on the host Docker daemon, enabling GPU passthrough without Docker-in-Docker complexity.
 
 ### 4.2 Reproducible demo mode
 
 A second startup path should exist for demos and onboarding:
 
-- bring up Postgres
-- bring up API
-- bring up worker
-- bring up frontend
-- optionally bring up a local model server
-
-Docker Compose profiles are sufficient for this once the first vertical slice is stable.
+- `docker compose up postgres` for infrastructure
+- `uv run uvicorn apps.api:app` for API
+- `uv run python -m apps.worker` for worker
+- `npm run dev` for frontend
+- optionally start a local model server (LMStudio, Ollama, or VLLM)
 
 ### 4.3 Dynamic experiment execution
 
@@ -281,7 +283,7 @@ Responsibilities:
 
 Responsibilities:
 
-- render cycle dashboard
+- render charter and cycle dashboards
 - render discovery views and reports
 - render paper analysis packets and review artifacts
 - show run telemetry, frontier state, and approvals
@@ -293,7 +295,7 @@ Responsibilities:
 
 - local developer control
 - debugging and fixture workflows
-- direct cycle creation and replay helpers
+- direct charter and cycle creation plus replay helpers
 - skill validation commands
 - pattern inspection and export helpers
 
@@ -339,7 +341,7 @@ In v1 this can be a library/module plus scheduled worker jobs, not a separate se
 
 PostgreSQL is the system of record for:
 
-- research cycles and state transitions
+- research charters, research cycles, and state transitions
 - jobs and job claims
 - domain events and audit history
 - papers and source records
@@ -420,14 +422,18 @@ At minimum, discovery should persist:
 
 ### 8.2 arXiv strategy
 
-Use Postgres as the local warehouse for arXiv metadata.
+arXiv is the primary internal corpus. The full arXiv dataset is already downloaded and embedded using gte-modernbert (768 dimensions).
 
 Technical stance:
 
+- seed the local corpus from a pre-populated arXiv metadata dataset
 - store title, abstract, categories, authors, dates, ids, and links in Postgres
-- support incremental sync from a bulk metadata harvester
-- allow targeted API search when needed
-- treat HTML fetch and PDF fetch as separate escalation operations
+- pre-computed embeddings already exist for the full corpus
+- support incremental sync from a bulk metadata harvester for new papers
+- when a paper is shortlisted for full-text analysis, try HTML first
+- if HTML is unavailable or low quality, download the PDF and process it with Docling
+- normalize either full-text path into the same internal content representation for downstream chunking and analysis
+- treat HTML fetch and PDF fetch as separate escalation operations with explicit provenance
 
 ### 8.3 External source strategy
 
@@ -518,7 +524,8 @@ Triggered only for shortlisted papers or later explicit escalation.
 Technical stance:
 
 - HTML-first when a machine-readable source is available
-- PDF fallback when needed
+- PDF fallback when HTML is unavailable or low quality
+- HTML and PDF ingestion should converge into the same normalized internal full-text representation
 - keep provenance by chunk, page, and source location
 - normalize extracted elements into a consistent internal representation
 
@@ -655,7 +662,7 @@ capabilities:
   - source.read_metadata
   - source.request_fulltext
 risk_level: low
-trust_tier_required: untrusted
+trust_tier_required: third_party_untrusted
 ---
 
 # Title + Abstract Triage
@@ -744,7 +751,9 @@ Do not split this into a separate gateway service in v1.  Keep it in the same Fa
 
 Suggested resource families:
 
+- `/api/v1/charters`
 - `/api/v1/cycles`
+- `/api/v1/state`
 - `/api/v1/discovery`
 - `/api/v1/papers`
 - `/api/v1/analysis`
@@ -763,8 +772,9 @@ Suggested resource families:
 
 The API must support:
 
-- create and update research cycles
-- read cycle state snapshots
+- create and update research charters
+- create, resume, and update research cycles
+- read charter-scoped state snapshots
 - list and fetch discovery artifacts
 - list and fetch analysis packets and review artifacts
 - request allowed operator execution
@@ -780,8 +790,11 @@ Use local API tokens with explicit scopes in v1.
 
 Suggested scopes:
 
+- `charters.read`
+- `charters.write`
 - `cycles.read`
 - `cycles.write`
+- `state.read`
 - `discovery.read`
 - `analysis.read`
 - `runs.read`
@@ -859,12 +872,14 @@ Suggested logical roles:
 
 ### 12.2 Hosted and local model support
 
-The gateway should support both:
+The gateway must support all of the following from day one:
 
-- hosted provider adapters
-- local inference adapters
+- **Local (OpenAI-compatible API):** LMStudio, Ollama, VLLM-compatible endpoints
+- **Hosted frontier:** OpenAI, Anthropic (native SDK), Google (native SDK)
 
 A cycle, operator, or skill may prefer one model route, but the control plane should own the final routing decision.
+
+**Structured output** is critical: most generated data should be validated via structured output (JSON mode / tool-use based). The gateway must support structured output across all providers.
 
 ### 12.3 Recording requirements
 
@@ -1265,7 +1280,7 @@ The first implementation sequence should be:
 3. worker runtime + job queue + event stream
 4. minimal web UI
 5. skill loader + validation + catalog endpoints
-6. research cycle creation and discovery pipeline
+6. research charter creation, cycle creation, and discovery pipeline
 7. arXiv metadata warehouse and external source adapters
 8. stable and discovery retrieval views
 9. automatic reranking with graceful fallback
@@ -1308,4 +1323,3 @@ Turn this into an initial repository bootstrap with:
 - orchestrator token and event-stream scaffolding
 - reranking policy and fallback scaffolding
 - remediation action and directional signal schema stubs
-

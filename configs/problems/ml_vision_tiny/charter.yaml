@@ -1,0 +1,16 @@
+title: "Tiny vision model (GPU workstation)"
+description: "GPU-required pilot that trains a small CNN on a subset of a
+  public image benchmark and lets the autonomous loop explore architectural
+  variants under a tight compute budget."
+problem_statement: |
+  Train a small convnet (< 1M parameters) on a 5-class subset of a public
+  image benchmark (e.g. CIFAR-10 pruned to 5 classes). The loop should
+  explore at least two architectural variants (e.g. depth, width, or
+  activation family) and produce a frontier showing top-1 accuracy
+  progression over runs.
+domain: "computer-vision"
+success_criteria:
+  - "At least one successful run hits top-1 accuracy > 0.75 on the held-out split."
+  - "Frontier tracks at least two hypotheses' primary metric over time."
+  - "Consolidation emits both signal_trajectory and successful_line patterns."
+expected_runtime_bucket: "workstation_gpu"
