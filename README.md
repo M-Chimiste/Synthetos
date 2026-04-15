@@ -1,103 +1,212 @@
 # Synthetos
 
-A single-user ML research system for running end-to-end research loops.
-Researchers define problems, triage literature (arXiv), generate hypotheses,
-execute experiments in GPU-capable containers, verify results, and learn
-across cycles via a canonical pattern memory.
+Synthetos is a single-user ML research system that runs end-to-end research
+loops. You define a problem; Synthetos triages the literature (arXiv +
+internal corpus), generates and ranks hypotheses, compiles executable
+protocols, runs experiments in isolated GPU-capable containers, verifies the
+results, and learns across cycles via a canonical pattern memory.
 
-**Status:** Phases 0–6 are code-level complete. See
-[`project_docs/project_status.md`](project_docs/project_status.md) for the full
-per-phase changelog and [`project_docs/co_scientist_phased_implementation_plan.md`](project_docs/co_scientist_phased_implementation_plan.md)
-for the roadmap.
+It is built as a **queue-driven operator system**, not an agent framework.
+Typed operators read and write a shared `ResearchState`, a worker claims
+jobs with `SELECT FOR UPDATE SKIP LOCKED`, and every state change emits a
+`DomainEvent` so the React dashboard, SSE stream, and CLI see the same
+truth.
 
-## What's in the box
+## Features
 
-| Phase | Capability |
-|---|---|
-| 0 | Postgres schema, FastAPI control plane under `/api/v1`, worker, React dashboard, skills |
-| 1 | Discovery pipeline (internal corpus + arXiv live, Stable/Discovery views, rerank with graceful fallback) |
-| 2 | Full paper analysis (HTML/PDF ingest, typed paper graph, graph-aware QA, coverage checks, evidence extraction) |
-| 3 | Hypothesis portfolio, protocol compiler, isolated run execution, baseline verification, postmortems |
-| 4 | Auto-remediation, directional signal, frontier tracking, next-step recommendations |
-| 5 | Autonomous loop with budgets, configurable gates, hypothesis lifecycle, completion reports |
-| 6 | Cross-charter pattern memory, runtime skill trust enforcement, stale-job reclaim, pilot harness |
+- **Literature triage** — internal arXiv corpus (pre-embedded with
+  `gte-modernbert`, 768-dim) plus live arXiv, with Stable/Discovery views,
+  rerank, and metadata-first screening.
+- **Paper analysis** — HTML-first ingest with Docling PDF fallback, a typed
+  paper graph (Apache AGE, relational fallback), graph-aware QA, coverage
+  checks, and evidence extraction.
+- **Hypothesis portfolio** — generation, critique, ranking, and a
+  lifecycle (`active | promising | stalled | deprioritized | validated`)
+  managed by the loop.
+- **Protocol compiler** — turns a hypothesis card into a concrete
+  `ExperimentSpec` (code plan, controls, metrics, baseline).
+- **Isolated execution** — workspace setup, containerized run, capture,
+  telemetry; experiment containers are spawned as GPU-capable siblings.
+- **Verification & postmortems** — baseline checks, auto-remediation,
+  directional signals, frontier tracking, next-step recommendations.
+- **Autonomous loop** — opt-in per cycle, with run / wall-clock /
+  per-hypothesis budgets, configurable checkpoint gates, spec-repetition
+  detection, and completion reports.
+- **Cross-charter pattern memory** — postmortems, remediations, directional
+  signals, frontiers, and loop decisions consolidate into typed
+  `canonical_patterns`; high-confidence `auto` patterns inject into
+  ideation, remediation, and loop decisions; `curated` patterns require
+  explicit approval; decay demotes stale patterns
+  (`auto → curated → deprecated`).
+- **Skill system** — file-based skill discovery with SHA-256 content
+  hashes and first-party vs user-local trust tiers, enforced at runtime.
+- **Pilot harness** — contract-validated fixtures (CPU smoke, classical ML,
+  small vision) that drive the full chain and grade the result against
+  expectations.
+- **Control surfaces** — FastAPI control plane under `/api/v1` with SSE
+  telemetry, a React 19 + TanStack dashboard, and a `synthetos` Typer CLI
+  that mirrors the API.
 
-## Prerequisites
+## Architecture
+
+### System components
+
+```mermaid
+flowchart LR
+    User([Researcher])
+    CLI[synthetos CLI]
+    Web[React Dashboard<br/>TanStack Router/Query]
+    API[FastAPI<br/>/api/v1 + SSE]
+    Worker[Worker<br/>claim · heartbeat · dispatch]
+    DB[(Postgres<br/>pgvector + AGE)]
+    LLM[LLM Router<br/>Anthropic · OpenAI · Local]
+    Exp[Experiment Containers<br/>GPU passthrough]
+    FS[(Data root<br/>artifacts · reports · workspaces)]
+
+    User --> CLI
+    User --> Web
+    Web <--> API
+    CLI --> API
+    API <--> DB
+    API -- enqueue job --> DB
+    Worker -- SELECT FOR UPDATE SKIP LOCKED --> DB
+    Worker --> LLM
+    Worker --> Exp
+    Worker --> FS
+    API -. SSE events .-> Web
+```
+
+### Research loop (per cycle)
+
+```mermaid
+stateDiagram-v2
+    [*] --> created
+    created --> discovery_ready
+    discovery_ready --> discovery_screened
+    discovery_screened --> analysis_ready
+    analysis_ready --> evidence_ready
+    evidence_ready --> portfolio_ready : hypotheses + critique + rank
+    portfolio_ready --> protocol_ready : compile ExperimentSpec
+    protocol_ready --> running : execute in container
+    running --> verifying
+    verifying --> loop_deciding : autonomous mode
+    verifying --> reporting : supervised mode
+    loop_deciding --> running : continue · vary · pivot
+    loop_deciding --> reporting : halt · budget · gate
+    reporting --> closed
+    closed --> [*]
+```
+
+### Queue-driven operator pattern
+
+```mermaid
+sequenceDiagram
+    participant C as CLI / API
+    participant S as Service<br/>(libs/core/services)
+    participant DB as Postgres
+    participant W as Worker
+    participant O as Operator<br/>(discovery · analysis · ideation · …)
+    participant L as LLM / Container
+
+    C->>S: request
+    S->>DB: emit events + enqueue Job<br/>(caller commits)
+    W->>DB: SELECT FOR UPDATE SKIP LOCKED
+    W->>W: build OperatorInput · start heartbeat
+    W->>O: run(OperatorInput)
+    O->>L: LLM call / container exec
+    L-->>O: result
+    O-->>W: OperatorResult<br/>(events + state_patch + artifacts)
+    W->>DB: persist events · apply patch · update Job (atomic)
+    DB-->>C: SSE stream
+```
+
+## Quickstart
+
+### Prerequisites
 
 - Python 3.12+
 - Node.js 20+
-- Docker Desktop (Postgres + pgvector + AGE; experiment containers for Phase 3)
-- (Optional) A local OpenAI-compatible LLM endpoint (LMStudio / Ollama /
-  vLLM) on port 11434, plus an Anthropic API key for hosted roles. See
-  [`configs/models.yaml`](configs/models.yaml).
-- (Optional for Phase 6 GPU pilot) An Nvidia or Apple Silicon GPU with ≥ 8 GB VRAM.
+- Docker Desktop (Postgres with pgvector + AGE; also used for experiment containers)
+- Optional: Anthropic API key for hosted model roles
+- Optional: a local OpenAI-compatible endpoint (LMStudio / Ollama / vLLM) on port 11434 for local roles — see [`configs/models.yaml`](configs/models.yaml)
+- Optional (GPU pilot): an Nvidia or Apple Silicon GPU with ≥ 8 GB VRAM
 
-## Local startup
-
-1. Install Python dependencies:
+### 1. Install and start Postgres
 
 ```bash
 uv sync --extra dev
-```
-
-2. Start Postgres:
-
-```bash
 docker compose up -d postgres
-```
-
-3. Apply migrations (runs all phases 0–6):
-
-```bash
 uv run synthetos db init
 ```
 
-If your local Postgres uses a different host, port, user, or database name,
-set `LAB_DB_URL` first so Alembic and the app target the same instance.
+If Postgres is not on the default local creds, set `LAB_DB_URL` first so
+Alembic and the app target the same instance.
 
-4. Start the API:
+### 2. Start the three processes
+
+In three terminals:
 
 ```bash
+# API (port 8000, OpenAPI at /docs)
 uv run uvicorn apps.api.main:app --reload
-```
 
-5. Start the worker in a second terminal:
-
-```bash
+# Worker — handles all operators + periodic loop (stale-job reclaim, pattern decay)
 uv run python -m apps.worker
+
+# Web dashboard (port 5173)
+cd apps/web && npm install && npm run dev
 ```
 
-The worker handles all phases' operators plus the Phase 6 periodic loop
-(stale-job reclaim + gated pattern decay).
+### 3. Drive a research cycle
 
-6. Start the web app in a third terminal:
+Via the dashboard at `http://localhost:5173`, or the CLI:
 
 ```bash
-cd apps/web
-npm install
-npm run dev
+uv run synthetos charter create "My research question"
+uv run synthetos cycle create --charter-id <uuid>
+uv run synthetos discovery start --charter-id <uuid> --query "..."
+uv run synthetos analysis start --session-id <uuid>
+uv run synthetos experiment start --run-id <uuid>
+
+# Opt into the autonomous loop for this cycle
+uv run synthetos autonomy policy set --cycle-id <uuid> --mode autonomous
 ```
 
-The dashboard is at `http://localhost:5173` and the API at
-`http://localhost:8000`. OpenAPI docs live at `http://localhost:8000/docs`.
+### 4. Or run a bundled pilot
+
+```bash
+uv run synthetos pilot list
+uv run synthetos pilot run ml_baseline_small              # CPU, < 5 min, CI-safe
+uv run synthetos pilot evaluate ml_baseline_small <cycle_uuid>
+```
+
+Bundled fixtures in [`configs/problems/`](configs/problems/):
+
+| Fixture | Profile | CI-safe |
+|---|---|---|
+| `ml_baseline_small` | CPU, supervised, < 5 min | ✅ |
+| `ml_sklearn_iris` | CPU, autonomous, 10-run / 30-min budget | ✅ |
+| `ml_vision_tiny` | GPU, autonomous, 6-run / 2-hour budget | ❌ |
+
+`synthetos pilot run` creates (or reuses) a `pilot:<problem_id>` charter so
+repeat runs share one pattern-learning history. `synthetos pilot evaluate`
+grades the cycle against the fixture's `expected.yaml` and writes
+`artifacts/pilot/<problem_id>/<timestamp>/evaluation.{json,md}`.
 
 ## Dashboard surface
 
-Routes exposed by the React app:
-
 - **Dashboard** (`/`) — charter list, active jobs
-- **Charters** (`/charters`) — create + drive a research charter; per-charter discovery, analysis, experiment, and autonomy panels
+- **Charters** (`/charters`) — create and drive a charter; per-charter discovery, analysis, experiment, and autonomy panels
 - **Events** (`/events`) — live SSE event stream across charters
-- **Patterns** (`/patterns`) — Phase 6 canonical pattern list with filters, bulk `Consolidate now` / `Run decay` actions, plus a detail view (`/patterns/$patternId`) with approve / reject / trust-tier curation
-- **Cycle timeline** (`/cycles/$cycleId/timeline`) — phase-grouped live event stream for one cycle
-- **Skills** (`/skills`) — skill registry + discovery
+- **Cycle timeline** (`/cycles/$cycleId/timeline`) — phase-grouped live events for one cycle
+- **Patterns** (`/patterns`, `/patterns/$patternId`) — canonical pattern list with filters, bulk `Consolidate now` / `Run decay`, and per-pattern approve / reject / trust-tier curation
+- **Skills** (`/skills`) — skill registry and discovery
 
-Reports (discovery, analysis, autonomy completion) render rich markdown via
-`react-markdown`.
+Reports (discovery, analysis, autonomy completion) render rich markdown.
 
-## CLI
+## CLI reference
 
-The `synthetos` CLI mirrors the API surface. Key subcommands:
+The `synthetos` CLI mirrors the API surface:
 
 ```bash
 uv run synthetos charter create "My research question"
@@ -115,33 +224,6 @@ uv run synthetos pilot evaluate ml_baseline_small <cycle_uuid>
 uv run synthetos pilot compare <left> <right>
 ```
 
-## Phase 6 pilot fixtures
-
-Bundled fixtures under `configs/problems/` exercise the full chain:
-
-- **`ml_baseline_small`** — `ci_safe`, CPU-only, < 5 min, supervised. Smoke fixture for CI.
-- **`ml_sklearn_iris`** — `workstation_cpu`, autonomous, 10-run / 30-min budget. Classical tabular classification.
-- **`ml_vision_tiny`** — `workstation_gpu`, autonomous, 6-run / 2-hour budget. Small convnet on a public image benchmark. **Not CI-safe.**
-
-Each fixture is contract-validated
-([`libs/pilot/fixture.py`](libs/pilot/fixture.py)) before a run starts.
-`synthetos pilot run` creates (or reuses) a `pilot:<problem_id>` charter so
-repeat runs share one pattern-learning history; the worker then drives the
-full chain asynchronously. `synthetos pilot evaluate` grades the cycle
-against the fixture's `expected.yaml` and writes
-`artifacts/pilot/<problem_id>/<timestamp>/evaluation.{json,md}`.
-
-## Cross-charter pattern memory (Phase 6)
-
-Canonical patterns are consolidated from postmortems, remediation actions,
-directional signals, frontiers, and loop decisions into typed rows under
-`canonical_patterns`. Consolidation runs as the last side effect of cycle
-close (async, failure-isolated) and on demand via the CLI / API. High-
-confidence `auto`-tier patterns inject automatically into hypothesis
-generation, auto-remediation, and loop decisions; `curated` patterns
-require an explicit `PatternApproval`; decay demotes stale patterns
-(`auto → curated → deprecated`).
-
 ## Quality gates
 
 Run before shipping:
@@ -153,12 +235,9 @@ uv run pytest
 cd apps/web && npm run build
 ```
 
-Current green state: **ruff clean, pyright 0 errors, 289 pytest passed**
-(unit + contract), web build OK.
-
 ## Key configuration
 
-All `LAB_*` env vars (prefix stripped in
+All settings use the `LAB_` env prefix (stripped in
 [`libs/core/config.py`](libs/core/config.py)):
 
 | Var | Default | Purpose |
@@ -191,5 +270,5 @@ skills:
 
 - Apache AGE is optional — Synthetos falls back to relational tables when AGE is unavailable.
 - Browser auth is bypassed in `LAB_ENV=dev`; production requires bearer tokens with scoped access (`patterns.read`, `patterns.write`, `cycles.write`, etc.).
-- The arXiv metadata corpus is already downloaded and embedded (`gte-modernbert`, 768-dim). Full text is fetched only for shortlisted papers.
-- Only one active charter at a time is assumed due to single-GPU constraints.
+- The arXiv metadata corpus is already downloaded and embedded. Full text is fetched only for shortlisted papers.
+- One active charter at a time is assumed due to single-GPU constraints.
