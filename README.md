@@ -163,14 +163,19 @@ Via the dashboard at `http://localhost:5173`, or the CLI:
 
 ```bash
 uv run synthetos charter create "My research question"
-uv run synthetos cycle create --charter-id <uuid>
-uv run synthetos discovery start --charter-id <uuid> --query "..."
-uv run synthetos analysis start --session-id <uuid>
-uv run synthetos experiment start --run-id <uuid>
+uv run synthetos cycle create <charter_uuid>
+uv run synthetos discovery run --charter-id <charter_uuid> --query "..."
+uv run synthetos analysis run --paper-id <paper_uuid> --charter-id <charter_uuid> --cycle-id <cycle_uuid>
+uv run synthetos experiment hypothesize --cycle-id <cycle_uuid> --charter-id <charter_uuid>
 
-# Opt into the autonomous loop for this cycle
-uv run synthetos autonomy policy set --cycle-id <uuid> --mode autonomous
+# Inspect autonomy state for this cycle
+uv run synthetos autonomy policy --cycle-id <cycle_uuid>
 ```
+
+Protocol compilation, run creation, and autonomy policy updates are currently
+available through the dashboard and API (`POST /api/v1/protocols/compile`,
+`POST /api/v1/runs`, `PUT /api/v1/cycles/{cycle_id}/autonomy/policy`). The CLI
+covers discovery, analysis, hypothesis kickoff, inspection, and run controls.
 
 ### 4. Or run a bundled pilot
 
@@ -206,16 +211,17 @@ Reports (discovery, analysis, autonomy completion) render rich markdown.
 
 ## CLI reference
 
-The `synthetos` CLI mirrors the API surface:
+The `synthetos` CLI covers the main local workflows and inspection paths:
 
 ```bash
 uv run synthetos charter create "My research question"
-uv run synthetos cycle create --charter-id <uuid>
-uv run synthetos discovery start --charter-id <uuid> --query "..."
-uv run synthetos analysis start --session-id <uuid>
-uv run synthetos experiment start --run-id <uuid>
-uv run synthetos autonomy policy set --cycle-id <uuid> --mode autonomous
-uv run synthetos patterns list
+uv run synthetos cycle create <charter_uuid>
+uv run synthetos discovery run --charter-id <charter_uuid> --query "..."
+uv run synthetos analysis run --paper-id <paper_uuid> --charter-id <charter_uuid> --cycle-id <cycle_uuid>
+uv run synthetos experiment hypothesize --cycle-id <cycle_uuid> --charter-id <charter_uuid>
+uv run synthetos experiment runs --cycle-id <cycle_uuid>
+uv run synthetos experiment status --run-id <run_uuid>
+uv run synthetos autonomy policy --cycle-id <cycle_uuid>
 uv run synthetos patterns consolidate
 uv run synthetos patterns decay --force
 uv run synthetos pilot list
@@ -223,6 +229,9 @@ uv run synthetos pilot run ml_baseline_small
 uv run synthetos pilot evaluate ml_baseline_small <cycle_uuid>
 uv run synthetos pilot compare <left> <right>
 ```
+
+Some write paths are API/dashboard-only today, notably protocol compilation,
+run creation, pattern browsing/curation, and autonomy policy updates.
 
 ## Quality gates
 
@@ -272,3 +281,4 @@ skills:
 - Browser auth is bypassed in `LAB_ENV=dev`; production requires bearer tokens with scoped access (`patterns.read`, `patterns.write`, `cycles.write`, etc.).
 - The arXiv metadata corpus is already downloaded and embedded. Full text is fetched only for shortlisted papers.
 - One active charter at a time is assumed due to single-GPU constraints.
+- The repo includes autonomy, canonical-pattern, and pilot surfaces, but real-environment validation is still focused on discovery → analysis → experiment integration and live Docker/GPU execution.
