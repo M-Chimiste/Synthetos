@@ -6,11 +6,14 @@ internal corpus), generates and ranks hypotheses, compiles executable
 protocols, runs experiments in isolated GPU-capable containers, verifies the
 results, and learns across cycles via a canonical pattern memory.
 
-It is built as a **queue-driven operator system**, not an agent framework.
-Typed operators read and write a shared `ResearchState`, a worker claims
-jobs with `SELECT FOR UPDATE SKIP LOCKED`, and every state change emits a
-`DomainEvent` so the React dashboard, SSE stream, and CLI see the same
-truth.
+Synthetos is an agentic research system, but the agency lives in code, not
+in an LLM control loop. Typed operators read and write a shared
+`ResearchState`; a worker claims jobs with `SELECT FOR UPDATE SKIP LOCKED`;
+the state machine, budgets, gates, and repetition detection are
+deterministic Python. LLMs are called inside operators for the probabilistic
+parts — synthesis, ideation, critique — but they don't decide what runs
+next. Every state change emits a `DomainEvent` so the React dashboard, SSE
+stream, and CLI see the same truth.
 
 ## Features
 
@@ -46,6 +49,48 @@ truth.
 - **Control surfaces** — FastAPI control plane under `/api/v1` with SSE
   telemetry, a React 19 + TanStack dashboard, and a `synthetos` Typer CLI
   that mirrors the API.
+
+## Strategy
+
+Synthetos makes a few opinionated bets that shape every design decision:
+
+- **Deterministic core, probabilistic edge.** State, transitions, budgets,
+  gates, and lineage are plain Python and Postgres rows. LLMs are confined
+  to operator bodies — synthesis, ideation, critique, report writing — so
+  the parts that have to be correct are not prompt-dependent.
+- **Operators over shared state, not agents over messages.** There is no
+  planner LLM, no message bus, no hidden prompt history. Each operator is
+  a typed function `OperatorInput → OperatorResult` reading and patching
+  `ResearchState`. What ran, why, and in what order is reconstructable
+  from the event log without replaying an LLM.
+- **Hexagonal adapters at every external boundary.** LLM providers,
+  embeddings, paper sources, rerankers, ingestion, and graph storage all
+  sit behind interfaces in `libs/adapters/`. Core domain code does not
+  import vendor SDKs, so providers are swappable (Anthropic ↔ OpenAI ↔
+  local Ollama/vLLM) and degradations are graceful (AGE → relational,
+  rerank → fallback).
+- **Metadata-first triage.** Title + abstract screening runs before any
+  full-text fetch; full text is HTML-first with Docling PDF as fallback.
+  This keeps the literature loop cheap enough to run often and reserves
+  expensive parsing for papers that earned it.
+- **Event-sourced truth.** Every state change is a `DomainEvent` row. The
+  dashboard's SSE stream, the CLI, and postmortems all read the same
+  log — no separate "audit" vs "runtime" views to drift apart.
+- **Learn across cycles, not just within one.** Postmortems, remediations,
+  directional signals, frontiers, and loop decisions consolidate into
+  canonical patterns that inject back into ideation, remediation, and loop
+  decisions on future cycles. The system gets less naïve the more it
+  runs.
+- **Single-user, single-GPU pragmatism.** One active charter at a time,
+  local Postgres, host-side API/worker/CLI with sibling containers for
+  experiments. No Kubernetes, no multi-tenant auth, no distributed queue.
+  Complexity is spent on the research loop, not on infrastructure the
+  single-researcher use case doesn't need.
+- **Autonomy is opt-in and bounded.** Autonomous mode is a per-cycle flag
+  with explicit run, wall-clock, and per-hypothesis budgets; configurable
+  checkpoint gates that pause for approval; and spec-repetition detection
+  that escalates from *continue* to *vary* to *pivot* automatically. The
+  default posture is supervised.
 
 ## Architecture
 
