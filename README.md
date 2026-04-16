@@ -15,6 +15,35 @@ parts — synthesis, ideation, critique — but they don't decide what runs
 next. Every state change emits a `DomainEvent` so the React dashboard, SSE
 stream, and CLI see the same truth.
 
+## Disclaimer
+
+Synthetos is an active, single-researcher project and should be treated as
+a **work in progress, not a stable product**. Expect the repo to change
+substantially from week to week:
+
+- **No stability guarantees.** Database schemas, API routes, CLI
+  subcommands, operator contracts, event payloads, config keys, and
+  on-disk artifact layouts can all change without a deprecation window.
+  Migrations may be squashed or rewritten; pinning to a commit SHA is the
+  only safe way to depend on a specific behavior.
+- **Coverage is uneven.** Some surfaces (discovery, analysis, experiment
+  kickoff, pattern memory) are exercised end-to-end; others (protocol
+  compilation, run creation, pattern curation, autonomy policy updates)
+  are API/dashboard-only today and may move around as the CLI catches up.
+  Real-environment validation is still focused on the discovery → analysis
+  → experiment chain with live Docker/GPU execution.
+- **Built for one researcher on one machine.** Auth, multi-tenant
+  isolation, horizontal scaling, and operational hardening are explicitly
+  out of scope. `LAB_ENV=dev` bypasses browser auth; `prod` exists but has
+  not been battle-tested.
+- **Expect rough edges.** Error messages, empty states, and recovery paths
+  improve opportunistically rather than on a schedule. If something looks
+  half-finished, it probably is.
+
+If you're evaluating Synthetos, clone a specific commit, run the
+`ml_baseline_small` pilot, and treat anything beyond that as exploratory.
+Issues and design discussion are welcome; production use is not the goal (yet).
+
 ## Features
 
 - **Literature triage** — internal arXiv corpus (pre-embedded with
