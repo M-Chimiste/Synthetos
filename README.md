@@ -1,5 +1,7 @@
 # Synthetos
 
+![Synthetos](synthetos.png)
+
 Synthetos is a single-user ML research system that runs end-to-end research
 loops. You define a problem; Synthetos triages the literature (arXiv +
 internal corpus), generates and ranks hypotheses, compiles executable
