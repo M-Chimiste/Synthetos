@@ -9,71 +9,198 @@ export const Route = createFileRoute("/skills")({
 function SkillsPage() {
   const { data, isLoading, error } = useSkills();
   const discover = useDiscoverSkills();
+  const skills = data?.items ?? [];
 
   return (
-    <div>
-      <div className="mb-6 flex items-center justify-between">
-        <h1 className="text-2xl font-semibold">Skills</h1>
+    <div style={{ padding: "32px 40px", maxWidth: 1240 }}>
+      <div
+        style={{
+          display: "flex",
+          alignItems: "flex-end",
+          justifyContent: "space-between",
+          marginBottom: 24,
+        }}
+      >
+        <div>
+          <h1
+            style={{
+              fontSize: 22,
+              fontWeight: 600,
+              letterSpacing: "-0.015em",
+              margin: 0,
+            }}
+          >
+            Skills
+          </h1>
+          <div
+            style={{ color: "var(--c-ink-3)", fontSize: 13.5, marginTop: 4 }}
+          >
+            Agent tools registered with the runtime.
+          </div>
+        </div>
         <button
+          type="button"
+          className="btn"
           onClick={() => discover.mutate()}
           disabled={discover.isPending}
-          className="rounded-md bg-gray-900 px-4 py-2 text-sm font-medium text-white hover:bg-gray-700 disabled:opacity-50"
         >
-          {discover.isPending ? "Discovering..." : "Discover Skills"}
+          {discover.isPending ? "Discovering…" : "Discover skills"}
         </button>
       </div>
 
       {discover.isSuccess && (
-        <div className="mb-4 rounded-lg border border-green-200 bg-green-50 p-3 text-sm text-green-700">
-          Discovered or refreshed {discover.data.discovered} skill package(s).
+        <div
+          className="card"
+          style={{
+            padding: 12,
+            marginBottom: 16,
+            borderColor: "var(--c-ok-soft)",
+            background: "var(--c-ok-soft)",
+            color: "var(--c-ok)",
+            fontSize: 13,
+          }}
+        >
+          Discovered or refreshed {discover.data.discovered} skill package
+          {discover.data.discovered === 1 ? "" : "s"}.
         </div>
       )}
 
       {discover.error && (
-        <div className="mb-4 rounded-lg border border-red-200 bg-red-50 p-3 text-sm text-red-700">
+        <div
+          className="card"
+          style={{
+            padding: 12,
+            marginBottom: 16,
+            borderColor: "var(--c-err)",
+            color: "var(--c-err)",
+            fontSize: 13,
+          }}
+        >
           Discovery failed: {discover.error.message}
         </div>
       )}
 
       {error && (
-        <div className="mb-4 rounded-lg border border-red-200 bg-red-50 p-4 text-sm text-red-700">
+        <div
+          className="card"
+          style={{
+            padding: 14,
+            marginBottom: 16,
+            borderColor: "var(--c-err)",
+            color: "var(--c-err)",
+            fontSize: 13,
+          }}
+        >
           Failed to load skills: {error.message}
         </div>
       )}
 
-      {isLoading && <p className="text-sm text-gray-500">Loading skills...</p>}
+      {isLoading && (
+        <div style={{ fontSize: 13, color: "var(--c-ink-3)" }}>
+          Loading skills…
+        </div>
+      )}
 
-      {data && data.items.length === 0 && (
-        <div className="rounded-lg border border-gray-200 bg-white p-8 text-center">
-          <p className="text-gray-500">No skills registered yet.</p>
-          <p className="mt-1 text-sm text-gray-400">
-            Click "Discover Skills" to scan for available skill packages.
+      {!isLoading && skills.length === 0 && (
+        <div
+          className="card"
+          style={{
+            padding: 32,
+            textAlign: "center",
+            color: "var(--c-ink-3)",
+            fontSize: 13.5,
+          }}
+        >
+          <p style={{ margin: 0 }}>No skills registered yet.</p>
+          <p
+            style={{
+              marginTop: 8,
+              marginBottom: 0,
+              fontSize: 12.5,
+              color: "var(--c-ink-4)",
+            }}
+          >
+            Click "Discover skills" to scan for available skill packages.
           </p>
         </div>
       )}
 
-      {data && data.items.length > 0 && (
-        <div className="grid grid-cols-1 gap-4 sm:grid-cols-2 lg:grid-cols-3">
-          {data.items.map((skill) => (
-            <div
-              key={skill.id}
-              className="rounded-lg border border-gray-200 bg-white p-4"
-            >
-              <div className="mb-2 flex items-start justify-between">
-                <h3 className="font-medium">{skill.skill_id}</h3>
-                <StatusBadge status={skill.enabled ? "active" : "disabled"} />
+      {skills.length > 0 && (
+        <div
+          style={{
+            display: "grid",
+            gridTemplateColumns: "repeat(auto-fill, minmax(280px, 1fr))",
+            gap: 12,
+          }}
+        >
+          {skills.map((s) => (
+            <div key={s.id} className="card" style={{ padding: 16 }}>
+              <div
+                style={{
+                  display: "flex",
+                  alignItems: "flex-start",
+                  justifyContent: "space-between",
+                  marginBottom: 8,
+                }}
+              >
+                <div
+                  className="mono"
+                  style={{ fontSize: 13, fontWeight: 500 }}
+                >
+                  {s.skill_id}
+                </div>
+                <span
+                  className="dot"
+                  style={{
+                    background: s.enabled
+                      ? "var(--c-ok)"
+                      : "var(--c-ink-4)",
+                  }}
+                />
               </div>
-              <p className="mb-2 text-sm text-gray-500">
-                Trust tier: {skill.trust_tier}
-              </p>
-              <p className="text-xs text-gray-400">
-                Version {skill.version}
-                {skill.phase ? ` • Phase ${skill.phase}` : ""}
-              </p>
-              {skill.source_path && (
-                <p className="mt-2 truncate text-xs text-gray-400">
-                  {skill.source_path}
-                </p>
+              <div
+                style={{
+                  display: "flex",
+                  gap: 6,
+                  marginBottom: 10,
+                  flexWrap: "wrap",
+                }}
+              >
+                <StatusBadge status={s.trust_tier} />
+                {s.phase && (
+                  <span className="chip slate" style={{ fontSize: 10.5 }}>
+                    {s.phase}
+                  </span>
+                )}
+              </div>
+              <div
+                style={{
+                  display: "flex",
+                  justifyContent: "space-between",
+                  fontSize: 11.5,
+                  color: "var(--c-ink-3)",
+                }}
+              >
+                <span>v{s.version}</span>
+                <span className="mono tabular">
+                  {new Date(s.discovered_at).toLocaleDateString()}
+                </span>
+              </div>
+              {s.source_path && (
+                <div
+                  className="mono"
+                  style={{
+                    marginTop: 8,
+                    fontSize: 10.5,
+                    color: "var(--c-ink-4)",
+                    whiteSpace: "nowrap",
+                    overflow: "hidden",
+                    textOverflow: "ellipsis",
+                  }}
+                  title={s.source_path}
+                >
+                  {s.source_path}
+                </div>
               )}
             </div>
           ))}

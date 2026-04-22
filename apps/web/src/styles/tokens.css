@@ -1,0 +1,306 @@
+/* Synthetos Calm Console — design tokens */
+
+:root {
+  /* Warm neutral light palette */
+  --c-bg: oklch(0.992 0.003 90);
+  --c-bg-elev: oklch(1 0 0);
+  --c-panel: oklch(0.975 0.004 90);
+  --c-panel-2: oklch(0.955 0.005 90);
+  --c-line: oklch(0.91 0.005 90);
+  --c-line-soft: oklch(0.945 0.004 90);
+  --c-ink: oklch(0.19 0.01 270);
+  --c-ink-2: oklch(0.36 0.01 270);
+  --c-ink-3: oklch(0.54 0.008 270);
+  --c-ink-4: oklch(0.68 0.006 270);
+
+  /* Accent — indigo, single hue */
+  --c-accent: oklch(0.56 0.14 265);
+  --c-accent-soft: oklch(0.94 0.035 265);
+  --c-accent-ink: oklch(0.38 0.12 265);
+
+  /* Status — restrained set */
+  --c-ok: oklch(0.62 0.11 150);
+  --c-ok-soft: oklch(0.94 0.04 150);
+  --c-warn: oklch(0.72 0.12 75);
+  --c-warn-soft: oklch(0.95 0.05 75);
+  --c-err: oklch(0.6 0.16 25);
+  --c-err-soft: oklch(0.94 0.04 25);
+  --c-violet: oklch(0.58 0.14 300);
+  --c-violet-soft: oklch(0.94 0.035 300);
+  --c-slate: oklch(0.55 0.01 270);
+  --c-slate-soft: oklch(0.94 0.005 270);
+
+  /* Typography */
+  --f-sans: "Inter", -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+  --f-mono: "JetBrains Mono", ui-monospace, SFMono-Regular, monospace;
+  --f-serif: "Instrument Serif", "Iowan Old Style", Georgia, serif;
+
+  /* Radii */
+  --r-sm: 4px;
+  --r-md: 6px;
+  --r-lg: 10px;
+  --r-xl: 14px;
+
+  /* Density */
+  --row-h: 36px;
+  --pad: 16px;
+  --pad-sm: 10px;
+
+  --shadow-focus:
+    0 0 0 1px var(--c-line),
+    0 1px 2px rgba(0, 0, 0, 0.04),
+    0 8px 24px rgba(0, 0, 0, 0.06);
+}
+
+[data-theme="dark"] {
+  --c-bg: oklch(0.165 0.008 270);
+  --c-bg-elev: oklch(0.19 0.009 270);
+  --c-panel: oklch(0.205 0.009 270);
+  --c-panel-2: oklch(0.23 0.009 270);
+  --c-line: oklch(0.28 0.01 270);
+  --c-line-soft: oklch(0.24 0.009 270);
+  --c-ink: oklch(0.96 0.004 90);
+  --c-ink-2: oklch(0.82 0.005 90);
+  --c-ink-3: oklch(0.64 0.006 270);
+  --c-ink-4: oklch(0.48 0.007 270);
+
+  --c-accent: oklch(0.72 0.15 265);
+  --c-accent-soft: oklch(0.3 0.08 265);
+  --c-accent-ink: oklch(0.85 0.12 265);
+
+  --c-ok: oklch(0.74 0.13 150);
+  --c-ok-soft: oklch(0.3 0.06 150);
+  --c-warn: oklch(0.82 0.13 75);
+  --c-warn-soft: oklch(0.3 0.06 75);
+  --c-err: oklch(0.72 0.17 25);
+  --c-err-soft: oklch(0.3 0.07 25);
+  --c-violet: oklch(0.72 0.15 300);
+  --c-violet-soft: oklch(0.3 0.08 300);
+  --c-slate: oklch(0.7 0.01 270);
+  --c-slate-soft: oklch(0.27 0.009 270);
+
+  --shadow-focus:
+    0 0 0 1px var(--c-line),
+    0 1px 2px rgba(0, 0, 0, 0.5),
+    0 8px 24px rgba(0, 0, 0, 0.5);
+}
+
+[data-density="compact"] {
+  --row-h: 30px;
+  --pad: 12px;
+  --pad-sm: 8px;
+}
+
+html,
+body {
+  background: var(--c-bg);
+  color: var(--c-ink);
+  font-family: var(--f-sans);
+  font-size: 14px;
+  line-height: 1.5;
+  -webkit-font-smoothing: antialiased;
+  font-feature-settings: "cv11", "ss01";
+  margin: 0;
+}
+
+*,
+*::before,
+*::after {
+  box-sizing: border-box;
+}
+
+button {
+  font-family: inherit;
+}
+
+code,
+pre,
+.mono {
+  font-family: var(--f-mono);
+  font-feature-settings: "zero", "ss02";
+}
+
+.hairline {
+  border: 1px solid var(--c-line);
+}
+.hairline-t {
+  border-top: 1px solid var(--c-line);
+}
+.hairline-b {
+  border-bottom: 1px solid var(--c-line);
+}
+.hairline-r {
+  border-right: 1px solid var(--c-line);
+}
+
+.chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 2px 8px;
+  border-radius: 999px;
+  font-size: 11.5px;
+  font-weight: 500;
+  letter-spacing: 0.01em;
+  background: var(--c-panel);
+  color: var(--c-ink-2);
+  border: 1px solid var(--c-line);
+  white-space: nowrap;
+}
+.chip.ok {
+  background: var(--c-ok-soft);
+  color: var(--c-ok);
+  border-color: transparent;
+}
+.chip.warn {
+  background: var(--c-warn-soft);
+  color: color-mix(in oklch, var(--c-warn) 70%, var(--c-ink));
+  border-color: transparent;
+}
+.chip.err {
+  background: var(--c-err-soft);
+  color: var(--c-err);
+  border-color: transparent;
+}
+.chip.violet {
+  background: var(--c-violet-soft);
+  color: var(--c-violet);
+  border-color: transparent;
+}
+.chip.accent {
+  background: var(--c-accent-soft);
+  color: var(--c-accent-ink);
+  border-color: transparent;
+}
+.chip.slate {
+  background: var(--c-slate-soft);
+  color: var(--c-ink-2);
+  border-color: transparent;
+}
+
+.dot {
+  width: 6px;
+  height: 6px;
+  border-radius: 999px;
+  background: var(--c-ink-4);
+  display: inline-block;
+  flex-shrink: 0;
+}
+.dot.ok {
+  background: var(--c-ok);
+}
+.dot.warn {
+  background: var(--c-warn);
+}
+.dot.err {
+  background: var(--c-err);
+}
+.dot.violet {
+  background: var(--c-violet);
+}
+.dot.accent {
+  background: var(--c-accent);
+}
+.dot.pulse {
+  animation: calm-pulse 1.8s ease-in-out infinite;
+}
+
+@keyframes calm-pulse {
+  0%,
+  100% {
+    opacity: 0.4;
+    transform: scale(0.85);
+  }
+  50% {
+    opacity: 1;
+    transform: scale(1.1);
+  }
+}
+
+.btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 6px 12px;
+  border-radius: var(--r-md);
+  border: 1px solid var(--c-line);
+  background: var(--c-bg-elev);
+  color: var(--c-ink);
+  font-size: 13px;
+  font-weight: 500;
+  cursor: pointer;
+  transition:
+    background 80ms ease,
+    border-color 80ms ease;
+  text-decoration: none;
+}
+.btn:hover {
+  background: var(--c-panel);
+}
+.btn.primary {
+  background: var(--c-ink);
+  color: var(--c-bg);
+  border-color: var(--c-ink);
+}
+.btn.primary:hover {
+  background: color-mix(in oklch, var(--c-ink) 85%, var(--c-ink-3));
+}
+.btn.ghost {
+  border-color: transparent;
+  background: transparent;
+  color: var(--c-ink-2);
+}
+.btn.ghost:hover {
+  background: var(--c-panel);
+  color: var(--c-ink);
+}
+.btn.sm {
+  padding: 3px 8px;
+  font-size: 12px;
+}
+.btn:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
+.kbd {
+  font-family: var(--f-mono);
+  font-size: 11px;
+  padding: 1px 5px;
+  border-radius: 3px;
+  border: 1px solid var(--c-line);
+  background: var(--c-panel);
+  color: var(--c-ink-3);
+  line-height: 1.4;
+}
+
+.card {
+  background: var(--c-bg-elev);
+  border: 1px solid var(--c-line);
+  border-radius: var(--r-lg);
+}
+
+.section-label {
+  font-size: 11px;
+  font-weight: 500;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  color: var(--c-ink-3);
+}
+
+.tabular {
+  font-variant-numeric: tabular-nums;
+}
+
+.calm-link {
+  color: inherit;
+  text-decoration: none;
+}
+.calm-link:hover {
+  color: var(--c-ink);
+}
+
+::selection {
+  background: var(--c-accent-soft);
+  color: var(--c-accent-ink);
+}
