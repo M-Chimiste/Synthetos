@@ -200,38 +200,80 @@ sequenceDiagram
 
 ### Prerequisites
 
-- Python 3.12+
-- Node.js 20+
-- Docker Desktop (Postgres with pgvector + AGE; also used for experiment containers)
-- Optional: Anthropic API key for hosted model roles
-- Optional: a local OpenAI-compatible endpoint (LMStudio / Ollama / vLLM) on port 11434 for local roles — see [`configs/models.yaml`](configs/models.yaml)
-- Optional (GPU pilot): an Nvidia or Apple Silicon GPU with ≥ 8 GB VRAM
+- Docker Engine 24+ with Compose v2 (`docker compose version`)
+- Optional (GPU experiments): an NVIDIA GPU and the
+  [NVIDIA Container Toolkit](https://docs.nvidia.com/datacenter/cloud-native/container-toolkit/install-guide.html)
+  configured (`docker info` should list `cdi: nvidia.com/gpu=…`)
+- Optional: an Anthropic / OpenAI / Google API key for hosted LLM roles, or
+  a local OpenAI-compatible endpoint (LMStudio / Ollama / vLLM) — see
+  [`configs/models.yaml`](configs/models.yaml)
 
-### 1. Install and start Postgres
+### 1. Bring the stack up
+
+```bash
+cp .env.example .env             # edit and add your LLM keys
+docker compose up -d             # postgres → migrate → api + worker + web
+```
+
+`docker compose up` is the one command. It builds the orchestration images
+on first run, then in dependency order:
+
+1. `postgres` (pgvector + AGE) becomes healthy
+2. `migrate` applies Alembic migrations and exits 0
+3. `api` (FastAPI on `:8000`) and `worker` start
+4. `web` (nginx serving the prebuilt SPA on `:5173`) becomes healthy
+
+The dashboard is at <http://localhost:5173>; the API at <http://localhost:8000/docs>.
+
+`docker compose logs -f worker` tails operator activity.
+`docker compose down -v` wipes everything including the database.
+
+### 1a. Optional: build the GPU experiment-runner base image
+
+The worker spawns sibling containers per experiment run. Specs that ship
+their own `dockerfile_content` build their own image; specs without one
+fall back to the default GPU base. Build it once:
+
+```bash
+docker compose --profile gpu build experiment-runner
+```
+
+The image is heavy (~5 GB; CUDA + PyTorch). The compose `gpu` profile
+keeps it out of the default `up` flow.
+
+### 1b. Dev mode (hot reload)
+
+The repo includes a `docker-compose.override.yml` that's auto-loaded:
+
+```bash
+docker compose up               # picks up the override → dev mode
+# vs.
+docker compose -f docker-compose.yml up   # prod-style without override
+```
+
+In dev mode, `apps/` and `libs/` are bind-mounted into the API and worker
+containers, the API runs `uvicorn --reload`, the worker is wrapped with
+`watchfiles`, and the web service is replaced with the Vite dev server
+(HMR on `:5173`).
+
+### 2. Host-mode (without Docker)
+
+If you'd rather run API/worker/web on the host (no container boundary),
+keep Postgres in Docker and start the three processes directly:
 
 ```bash
 uv sync --extra dev
 docker compose up -d postgres
 uv run synthetos db init
-```
 
-If Postgres is not on the default local creds, set `LAB_DB_URL` first so
-Alembic and the app target the same instance.
-
-### 2. Start the three processes
-
-In three terminals:
-
-```bash
-# API (port 8000, OpenAPI at /docs)
+# Three terminals:
 uv run uvicorn apps.api.main:app --reload
-
-# Worker — handles all operators + periodic loop (stale-job reclaim, pattern decay)
 uv run python -m apps.worker
-
-# Web dashboard (port 5173)
 cd apps/web && npm install && npm run dev
 ```
+
+Host mode skips containerizing the orchestration layer; `DockerRunner`
+still spawns sibling experiment containers via the host Docker socket.
 
 ### 3. Drive a research cycle
 

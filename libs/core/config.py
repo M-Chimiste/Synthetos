@@ -31,6 +31,12 @@ class Settings(BaseSettings):
     # Data root for artifacts, cache, workspaces, exports
     data_root: Path = Field(default=Path("data"))
 
+    # When the worker runs inside a container and spawns sibling experiment
+    # containers, set this to the named Docker volume mounted at data_root.
+    # DockerRunner uses it instead of host-path bind mounts so siblings see
+    # the same workspace files. Leave None when running on the host.
+    container_data_volume: str | None = None
+
     # Model gateway config path
     model_config_path: Path = Field(default=Path("configs/models.yaml"))
 

@@ -13,6 +13,7 @@ from docker.errors import NotFound
 from docker.types import DeviceRequest, Mount
 
 import docker
+from libs.core.config import get_settings
 from libs.core.logging import get_logger
 
 log = get_logger("adapters.container.docker_runner")
@@ -98,20 +99,59 @@ class DockerRunner:
         """
         spec.artifact_output_path.mkdir(parents=True, exist_ok=True)
 
-        mounts = [
-            Mount(
-                target="/workspace",
-                source=str(spec.workspace_path),
-                type="bind",
-                read_only=False,
-            ),
-            Mount(
-                target="/artifacts",
-                source=str(spec.artifact_output_path),
-                type="bind",
-                read_only=False,
-            ),
-        ]
+        # Path / mount strategy:
+        # - Host mode (default): bind-mount the worktree and artifact dirs.
+        #   `spec.workspace_path` is a host-resolvable path.
+        # - Containerized worker mode: when LAB_CONTAINER_DATA_VOLUME is set,
+        #   the worker is itself a container and bind-mount sources inside it
+        #   are not visible to the host Docker daemon. Mount the named volume
+        #   instead and address the workspace/artifact dirs by their path
+        #   within that volume (relative to LAB_DATA_ROOT).
+        settings = get_settings()
+        volume_name = settings.container_data_volume
+
+        if volume_name:
+            data_root = Path(settings.data_root).resolve()
+            try:
+                workspace_rel = spec.workspace_path.resolve().relative_to(data_root)
+                artifact_rel = spec.artifact_output_path.resolve().relative_to(data_root)
+            except ValueError as exc:
+                raise RuntimeError(
+                    "container_data_volume is set but workspace_path "
+                    f"({spec.workspace_path}) or artifact_output_path "
+                    f"({spec.artifact_output_path}) is outside data_root "
+                    f"({data_root}). All paths must live under data_root in "
+                    "containerized worker mode."
+                ) from exc
+            mounts = [
+                Mount(
+                    target=str(data_root),
+                    source=volume_name,
+                    type="volume",
+                    read_only=False,
+                ),
+            ]
+            workspace_in_container = str(data_root / workspace_rel)
+            artifact_in_container = str(data_root / artifact_rel)
+            spec.env.setdefault("WORKSPACE_PATH", workspace_in_container)
+            spec.env.setdefault("ARTIFACTS_PATH", artifact_in_container)
+            container_working_dir = workspace_in_container
+        else:
+            mounts = [
+                Mount(
+                    target="/workspace",
+                    source=str(spec.workspace_path),
+                    type="bind",
+                    read_only=False,
+                ),
+                Mount(
+                    target="/artifacts",
+                    source=str(spec.artifact_output_path),
+                    type="bind",
+                    read_only=False,
+                ),
+            ]
+            container_working_dir = "/workspace"
 
         device_requests = []
         if spec.gpu_enabled:
@@ -148,7 +188,7 @@ class DockerRunner:
                 device_requests=device_requests or None,
                 mem_limit=spec.memory_limit,
                 network_mode=spec.network_mode,
-                working_dir="/workspace",
+                working_dir=container_working_dir,
                 detach=True,
             )
             container_id = str(container.id)

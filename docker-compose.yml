@@ -1,3 +1,5 @@
+name: synthetos
+
 services:
   postgres:
     image: pgvector/pgvector:pg17
@@ -17,5 +19,103 @@ services:
       timeout: 5s
       retries: 5
 
+  # One-shot: applies Alembic migrations before api/worker start.
+  migrate:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    image: synthetos:latest
+    command: ["alembic", "upgrade", "head"]
+    environment:
+      LAB_DB_URL: postgresql+psycopg://synthetos:synthetos@postgres:5432/synthetos
+    depends_on:
+      postgres:
+        condition: service_healthy
+    restart: "no"
+
+  api:
+    image: synthetos:latest
+    command:
+      - uvicorn
+      - apps.api.main:app
+      - --host
+      - "0.0.0.0"
+      - --port
+      - "8000"
+    environment:
+      LAB_DB_URL: postgresql+psycopg://synthetos:synthetos@postgres:5432/synthetos
+      LAB_ENV: prod
+      LAB_DATA_ROOT: /data
+    env_file:
+      - path: .env
+        required: false
+    volumes:
+      - lab_data:/data
+    depends_on:
+      migrate:
+        condition: service_completed_successfully
+    healthcheck:
+      test: ["CMD-SHELL", "python -c 'import urllib.request,sys; sys.exit(0 if urllib.request.urlopen(\"http://localhost:8000/health\").status == 200 else 1)'"]
+      interval: 10s
+      timeout: 3s
+      retries: 5
+      start_period: 30s
+    ports:
+      - "8000:8000"
+
+  worker:
+    image: synthetos:latest
+    command: ["python", "-m", "apps.worker"]
+    environment:
+      LAB_DB_URL: postgresql+psycopg://synthetos:synthetos@postgres:5432/synthetos
+      LAB_ENV: prod
+      LAB_DATA_ROOT: /data
+      # Tells DockerRunner to mount the named volume into sibling
+      # experiment containers instead of bind-mounting paths that only
+      # exist inside this worker container.
+      LAB_CONTAINER_DATA_VOLUME: synthetos_lab_data
+    env_file:
+      - path: .env
+        required: false
+    volumes:
+      # The host Docker socket lets the worker spawn sibling containers
+      # for experiment runs (Docker-outside-of-Docker).
+      - /var/run/docker.sock:/var/run/docker.sock
+      - lab_data:/data
+    depends_on:
+      migrate:
+        condition: service_completed_successfully
+    # Run as root so the worker can talk to the Docker socket without
+    # extra group plumbing. Sibling experiment containers will run as
+    # whatever user their image specifies.
+    user: root
+
+  web:
+    build:
+      context: ./apps/web
+      dockerfile: Dockerfile
+    image: synthetos-web:latest
+    depends_on:
+      api:
+        condition: service_healthy
+    ports:
+      # Keep 5173 as the user-facing port (matches the dev-server mental
+      # model). nginx inside the container listens on 80.
+      - "5173:80"
+
+  # Default GPU base image for experiment runs that don't ship their own
+  # build_recipe. Heavy (~5 GB CUDA + PyTorch) — gated behind the `gpu`
+  # profile so a plain `docker compose up` skips it. Build it once with:
+  #   docker compose --profile gpu build experiment-runner
+  experiment-runner:
+    profiles: ["gpu"]
+    build:
+      context: ./docker/experiment-runner
+      dockerfile: Dockerfile
+    image: synthetos-experiment-runner:latest
+    # This service is a build target only; never run directly.
+    command: ["true"]
+
 volumes:
   pgdata:
+  lab_data:
