@@ -303,7 +303,7 @@ def upgrade() -> None:
         sa.Column("recommendation_id", sa.Uuid(), nullable=True),
     )
     op.create_foreign_key(
-        "fk_verification_reports_directional_signal_id_directional_signals",
+        "fk_verification_reports_directional_signal_directional_signals",
         "verification_reports",
         "directional_signals",
         ["directional_signal_id"],
