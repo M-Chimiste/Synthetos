@@ -136,6 +136,21 @@ export function createCharter(data: {
   });
 }
 
+export function updateCharter(
+  id: string,
+  data: {
+    title?: string;
+    description?: string;
+    problem_statement?: string;
+    status?: string;
+  },
+) {
+  return apiFetch<Charter>(`/charters/${id}`, {
+    method: "PATCH",
+    body: JSON.stringify(data),
+  });
+}
+
 // ---- Cycle ----
 
 export function fetchCycles(charterId: string) {

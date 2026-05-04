@@ -1,7 +1,8 @@
-import type { ReactNode } from "react";
+import { useEffect, useState, type ReactNode } from "react";
 import { Link, useRouterState } from "@tanstack/react-router";
 import Icon, { type IconName } from "./Icon";
 import StatusDot from "./StatusDot";
+import CommandPalette from "./CommandPalette";
 import { useCharters, useJobs } from "../api/hooks";
 
 interface NavItem {
@@ -23,6 +24,18 @@ const NAV_ITEMS: NavItem[] = [
     label: "Charters",
     icon: "charter",
     match: (p) => p.startsWith("/charters"),
+  },
+  {
+    to: "/analysis",
+    label: "Analysis",
+    icon: "book",
+    match: (p) => p.startsWith("/analysis"),
+  },
+  {
+    to: "/experiment",
+    label: "Experiments",
+    icon: "flask",
+    match: (p) => p.startsWith("/experiment"),
   },
   {
     to: "/patterns",
@@ -64,6 +77,19 @@ export default function Layout({ children }: { children: ReactNode }) {
   const currentPath = location.pathname;
   const charters = useCharters();
   const jobs = useJobs();
+  const [paletteOpen, setPaletteOpen] = useState(false);
+
+  // Bind ⌘K / Ctrl+K globally to open the command palette.
+  useEffect(() => {
+    function onKey(e: KeyboardEvent) {
+      if ((e.metaKey || e.ctrlKey) && e.key.toLowerCase() === "k") {
+        e.preventDefault();
+        setPaletteOpen((open) => !open);
+      }
+    }
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, []);
 
   const charterCount = charters.data?.total ?? charters.data?.items.length;
   const activeCharters = (charters.data?.items ?? [])
@@ -147,6 +173,7 @@ export default function Layout({ children }: { children: ReactNode }) {
           <button
             type="button"
             className="btn"
+            onClick={() => setPaletteOpen(true)}
             style={{
               width: "100%",
               justifyContent: "flex-start",
@@ -286,6 +313,10 @@ export default function Layout({ children }: { children: ReactNode }) {
       </aside>
 
       <main style={{ overflow: "auto" }}>{children}</main>
+      <CommandPalette
+        open={paletteOpen}
+        onClose={() => setPaletteOpen(false)}
+      />
     </div>
   );
 }

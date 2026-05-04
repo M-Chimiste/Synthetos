@@ -18,27 +18,31 @@ interface TimelineEvent {
   group: string;
 }
 
-const PHASE_GROUPS: Array<{ prefix: string; label: string; tone: string }> = [
-  { prefix: "discovery.", label: "Discovery", tone: "bg-blue-100 text-blue-800" },
-  { prefix: "analysis.", label: "Analysis", tone: "bg-purple-100 text-purple-800" },
-  { prefix: "ideation.", label: "Ideation", tone: "bg-pink-100 text-pink-800" },
-  { prefix: "protocol.", label: "Protocol", tone: "bg-indigo-100 text-indigo-800" },
-  { prefix: "execution.", label: "Execution", tone: "bg-amber-100 text-amber-800" },
-  { prefix: "verification.", label: "Verification", tone: "bg-emerald-100 text-emerald-800" },
-  { prefix: "remediation.", label: "Remediation", tone: "bg-orange-100 text-orange-800" },
-  { prefix: "signal.", label: "Signal/Frontier", tone: "bg-teal-100 text-teal-800" },
-  { prefix: "autonomy.", label: "Autonomy loop", tone: "bg-sky-100 text-sky-800" },
-  { prefix: "pattern.", label: "Patterns", tone: "bg-yellow-100 text-yellow-800" },
-  { prefix: "skill.", label: "Skills", tone: "bg-gray-200 text-gray-700" },
-  { prefix: "job.", label: "Job lifecycle", tone: "bg-rose-100 text-rose-800" },
-  { prefix: "pilot.", label: "Pilot", tone: "bg-lime-100 text-lime-800" },
+const PHASE_GROUPS: Array<{
+  prefix: string;
+  label: string;
+  tone: "ok" | "warn" | "err" | "violet" | "accent" | "slate";
+}> = [
+  { prefix: "discovery.", label: "Discovery", tone: "violet" },
+  { prefix: "analysis.", label: "Analysis", tone: "violet" },
+  { prefix: "ideation.", label: "Ideation", tone: "violet" },
+  { prefix: "protocol.", label: "Protocol", tone: "accent" },
+  { prefix: "execution.", label: "Execution", tone: "accent" },
+  { prefix: "verification.", label: "Verification", tone: "ok" },
+  { prefix: "remediation.", label: "Remediation", tone: "warn" },
+  { prefix: "signal.", label: "Signal", tone: "ok" },
+  { prefix: "autonomy.", label: "Autonomy", tone: "violet" },
+  { prefix: "pattern.", label: "Patterns", tone: "warn" },
+  { prefix: "skill.", label: "Skills", tone: "slate" },
+  { prefix: "job.", label: "Jobs", tone: "slate" },
+  { prefix: "pilot.", label: "Pilot", tone: "ok" },
 ];
 
 function groupFor(eventType: string): { label: string; tone: string } {
   for (const g of PHASE_GROUPS) {
     if (eventType.startsWith(g.prefix)) return g;
   }
-  return { label: "Other", tone: "bg-gray-100 text-gray-700" };
+  return { label: "Other", tone: "slate" };
 }
 
 function TimelinePage() {
@@ -49,8 +53,8 @@ function TimelinePage() {
   const lastEventIdRef = useRef<string | undefined>(undefined);
 
   useEffect(() => {
-    const url = `${BASE_URL}/events/stream`;
-    // The stream filters by charter_id only; the client filters cycle_id below.
+    const params = new URLSearchParams({ cycle_id: cycleId });
+    const url = `${BASE_URL}/events/stream?${params.toString()}`;
     const source = new EventSource(url);
     source.onopen = () => setConnected(true);
     source.onmessage = (e) => {
@@ -60,7 +64,6 @@ function TimelinePage() {
       } catch {
         return;
       }
-      if (raw.cycle_id !== cycleId) return;
       const id = raw.id || e.lastEventId || crypto.randomUUID();
       const grouping = groupFor(raw.event_type);
       lastEventIdRef.current = id;
@@ -82,73 +85,150 @@ function TimelinePage() {
     };
   }, [cycleId]);
 
-  const visible = filter
-    ? events.filter((e) => e.group === filter)
-    : events;
+  const visible = filter ? events.filter((e) => e.group === filter) : events;
 
   return (
-    <div>
-      <h1 className="text-2xl font-semibold">Cycle timeline</h1>
-      <p className="mt-1 font-mono text-xs text-gray-500">{cycleId}</p>
+    <div style={{ padding: "32px 40px", maxWidth: 1240 }}>
+      <h1
+        style={{
+          fontSize: 22,
+          fontWeight: 600,
+          letterSpacing: "-0.015em",
+          margin: 0,
+          marginBottom: 4,
+        }}
+      >
+        Cycle timeline
+      </h1>
+      <div
+        className="mono"
+        style={{ fontSize: 11.5, color: "var(--c-ink-3)" }}
+      >
+        {cycleId}
+      </div>
 
-      <div className="mt-3 flex flex-wrap items-center gap-2">
-        <span
-          className={`inline-block h-2 w-2 rounded-full ${
-            connected ? "bg-green-500" : "bg-red-400"
-          }`}
-        />
-        <span className="text-sm text-gray-500">
+      <div
+        style={{
+          marginTop: 16,
+          display: "flex",
+          alignItems: "center",
+          flexWrap: "wrap",
+          gap: 8,
+        }}
+      >
+        <span className={`dot ${connected ? "ok pulse" : "err"}`} />
+        <span style={{ fontSize: 12, color: "var(--c-ink-2)" }}>
           {connected ? "Streaming" : "Disconnected"}
         </span>
-        <span className="text-xs text-gray-400">
-          {events.length} event{events.length !== 1 ? "s" : ""}
+        <span style={{ fontSize: 11.5, color: "var(--c-ink-4)" }}>
+          · {events.length} event{events.length === 1 ? "" : "s"}
         </span>
         <button
+          type="button"
           onClick={() => setFilter("")}
-          className={`ml-2 rounded-full px-2 py-0.5 text-xs ${
-            filter === "" ? "bg-gray-900 text-white" : "bg-gray-100 text-gray-600"
-          }`}
+          className="btn sm"
+          style={{
+            background: filter === "" ? "var(--c-ink)" : "var(--c-bg-elev)",
+            color: filter === "" ? "var(--c-bg)" : "var(--c-ink-2)",
+            borderColor: filter === "" ? "var(--c-ink)" : "var(--c-line)",
+            marginLeft: 8,
+          }}
         >
-          all
+          All
         </button>
         {PHASE_GROUPS.map((g) => (
           <button
             key={g.label}
+            type="button"
             onClick={() => setFilter(g.label)}
-            className={`rounded-full px-2 py-0.5 text-xs font-medium ${
-              filter === g.label ? "ring-2 ring-gray-900" : ""
-            } ${g.tone}`}
+            className={`chip ${g.tone}`}
+            style={{
+              cursor: "pointer",
+              borderWidth: filter === g.label ? 2 : 1,
+              borderStyle: "solid",
+              borderColor:
+                filter === g.label ? "var(--c-ink)" : "transparent",
+            }}
           >
             {g.label}
           </button>
         ))}
       </div>
 
-      <div className="mt-4 rounded-lg border border-gray-200 bg-white">
+      <div className="card" style={{ marginTop: 16, overflow: "hidden" }}>
         {visible.length === 0 ? (
-          <p className="p-4 text-sm text-gray-500">
+          <div
+            style={{
+              padding: 16,
+              fontSize: 13,
+              color: "var(--c-ink-3)",
+            }}
+          >
             Waiting for events for this cycle…
-          </p>
+          </div>
         ) : (
-          <ol className="divide-y divide-gray-100">
-            {visible.map((evt) => {
+          <ol style={{ listStyle: "none", margin: 0, padding: 0 }}>
+            {visible.map((evt, i) => {
               const grouping = groupFor(evt.eventType);
               return (
-                <li key={evt.id} className="flex items-start gap-3 px-3 py-2">
-                  <span className="w-28 shrink-0 font-mono text-xs text-gray-500">
+                <li
+                  key={evt.id}
+                  style={{
+                    display: "grid",
+                    gridTemplateColumns: "100px max-content 1fr",
+                    gap: 12,
+                    padding: "10px 14px",
+                    borderBottom:
+                      i < visible.length - 1
+                        ? "1px solid var(--c-line-soft)"
+                        : "none",
+                    alignItems: "start",
+                  }}
+                >
+                  <span
+                    className="mono"
+                    style={{
+                      fontSize: 11,
+                      color: "var(--c-ink-4)",
+                    }}
+                  >
                     {new Date(evt.createdAt).toLocaleTimeString()}
                   </span>
                   <span
-                    className={`shrink-0 rounded-full px-2 py-0.5 text-xs font-medium ${grouping.tone}`}
+                    className={`chip ${grouping.tone}`}
+                    style={{ fontSize: 10.5 }}
                   >
                     {grouping.label}
                   </span>
-                  <div className="min-w-0 flex-1">
-                    <p className="truncate text-sm font-medium text-gray-900">
+                  <div style={{ minWidth: 0 }}>
+                    <div
+                      className="mono"
+                      style={{
+                        fontSize: 12.5,
+                        color: "var(--c-ink)",
+                        overflow: "hidden",
+                        textOverflow: "ellipsis",
+                        whiteSpace: "nowrap",
+                      }}
+                    >
                       {evt.eventType}
-                    </p>
+                    </div>
                     {evt.payload && Object.keys(evt.payload).length > 0 && (
-                      <pre className="mt-1 overflow-x-auto rounded bg-gray-50 p-2 text-xs text-gray-700">
+                      <pre
+                        style={{
+                          marginTop: 4,
+                          marginBottom: 0,
+                          padding: 8,
+                          background: "var(--c-panel)",
+                          borderRadius: "var(--r-sm)",
+                          fontSize: 11.5,
+                          color: "var(--c-ink-2)",
+                          fontFamily: "var(--f-mono)",
+                          whiteSpace: "pre-wrap",
+                          maxHeight: 240,
+                          overflow: "auto",
+                        }}
+                      >
                         {JSON.stringify(evt.payload, null, 2)}
                       </pre>
                     )}

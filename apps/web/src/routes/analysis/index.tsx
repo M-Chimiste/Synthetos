@@ -1,7 +1,8 @@
-import { createFileRoute } from "@tanstack/react-router";
+import { createFileRoute, Link } from "@tanstack/react-router";
 import { useQuery } from "@tanstack/react-query";
 import { fetchAnalysisSessions } from "../../api/analysis";
 import StatusBadge from "../../components/StatusBadge";
+import StatusDot from "../../components/StatusDot";
 
 export const Route = createFileRoute("/analysis/")({
   component: AnalysisIndex,
@@ -13,37 +14,121 @@ function AnalysisIndex() {
     queryFn: () => fetchAnalysisSessions({ limit: 50 }),
   });
 
-  if (isLoading) return <div className="p-4">Loading analysis sessions...</div>;
-  if (error) return <div className="p-4 text-red-500">Error loading sessions</div>;
-
   const sessions = data?.items ?? [];
 
   return (
-    <div className="p-4 space-y-4">
-      <h1 className="text-2xl font-bold">Paper Analysis</h1>
-      <p className="text-sm text-gray-500">
-        {data?.total ?? 0} analysis session(s)
-      </p>
-
-      <div className="space-y-2">
-        {sessions.map((s) => (
-          <div
-            key={s.id}
-            className="border rounded p-3 flex items-center justify-between"
-          >
-            <div>
-              <div className="font-mono text-sm">{s.id.slice(0, 8)}</div>
-              <div className="text-xs text-gray-500">
-                Paper: {s.paper_card_id.slice(0, 8)}
-              </div>
-            </div>
-            <StatusBadge status={s.status} />
-          </div>
-        ))}
-        {sessions.length === 0 && (
-          <p className="text-gray-400 text-sm">No analysis sessions yet.</p>
-        )}
+    <div style={{ padding: "32px 40px", maxWidth: 1240 }}>
+      <div style={{ marginBottom: 24 }}>
+        <h1
+          style={{
+            fontSize: 22,
+            fontWeight: 600,
+            letterSpacing: "-0.015em",
+            margin: 0,
+          }}
+        >
+          Analysis
+        </h1>
+        <div
+          style={{ color: "var(--c-ink-3)", fontSize: 13.5, marginTop: 4 }}
+        >
+          {data?.total ?? 0} session{(data?.total ?? 0) === 1 ? "" : "s"} —
+          full-text ingestion, structural extraction, and evidence cards.
+        </div>
       </div>
+
+      {error && (
+        <div
+          className="card"
+          style={{
+            padding: 14,
+            marginBottom: 16,
+            borderColor: "var(--c-err)",
+            color: "var(--c-err)",
+            fontSize: 13,
+          }}
+        >
+          Failed to load sessions: {error.message}
+        </div>
+      )}
+
+      {isLoading && (
+        <div style={{ fontSize: 13, color: "var(--c-ink-3)" }}>
+          Loading analysis sessions…
+        </div>
+      )}
+
+      {!isLoading && sessions.length === 0 && (
+        <div
+          className="card"
+          style={{
+            padding: 32,
+            textAlign: "center",
+            color: "var(--c-ink-3)",
+            fontSize: 13.5,
+          }}
+        >
+          No analysis sessions yet. Trigger one from a discovery session paper.
+        </div>
+      )}
+
+      {sessions.length > 0 && (
+        <div className="card" style={{ overflow: "hidden" }}>
+          <div
+            style={{
+              display: "grid",
+              gridTemplateColumns: "28px 1fr 220px 140px 160px",
+              padding: "10px 16px",
+              borderBottom: "1px solid var(--c-line)",
+              fontSize: 11,
+              color: "var(--c-ink-3)",
+              textTransform: "uppercase",
+              letterSpacing: "0.05em",
+              fontWeight: 500,
+            }}
+          >
+            <span />
+            <span>Session</span>
+            <span>Paper</span>
+            <span>Status</span>
+            <span>Started</span>
+          </div>
+          {sessions.map((s, i) => (
+            <Link
+              key={s.id}
+              to="/analysis/$sessionId"
+              params={{ sessionId: s.id }}
+              style={{
+                display: "grid",
+                gridTemplateColumns: "28px 1fr 220px 140px 160px",
+                padding: "12px 16px",
+                borderBottom:
+                  i < sessions.length - 1
+                    ? "1px solid var(--c-line-soft)"
+                    : "none",
+                alignItems: "center",
+                fontSize: 13,
+                textDecoration: "none",
+                color: "inherit",
+              }}
+            >
+              <StatusDot status={s.status} pulse={s.status === "running"} />
+              <span className="mono" style={{ color: "var(--c-ink-2)" }}>
+                {s.id.slice(0, 12)}
+              </span>
+              <span className="mono" style={{ color: "var(--c-ink-3)" }}>
+                {s.paper_card_id.slice(0, 12)}
+              </span>
+              <StatusBadge status={s.status} />
+              <span style={{ color: "var(--c-ink-3)", fontSize: 12 }}>
+                {s.started_at
+                  ? new Date(s.started_at).toLocaleString()
+                  : new Date(s.created_at).toLocaleString()}
+              </span>
+            </Link>
+          ))}
+        </div>
+      )}
     </div>
   );
 }

@@ -58,6 +58,11 @@ function DashboardPage() {
   const succeededToday = todaysJobs.filter((j) => j.status === "succeeded");
   const failedToday = todaysJobs.filter((j) => j.status === "failed");
 
+  // Sparkline: jobs created per hour over the last 12 hours.
+  // "Running now" is a point-in-time count; no timeseries available without
+  // backend history, so only "Jobs today" gets a sparkline.
+  const jobsByHour = bucketByHour(todaysJobs, now, 12);
+
   return (
     <div style={{ padding: "32px 40px", maxWidth: 1240 }}>
       <div style={{ marginBottom: 32 }}>
@@ -118,6 +123,7 @@ function DashboardPage() {
           label="Jobs today"
           value={jobs.isLoading ? "—" : String(todaysJobs.length)}
           delta={`${succeededToday.length} succeeded · ${failedToday.length} failed`}
+          spark={jobsByHour}
         />
         <StatCard
           label="Running now"
@@ -442,7 +448,8 @@ function StatCard({
   color?: string;
   spark?: number[];
 }) {
-  const sparkValues = spark ?? [1, 2, 2, 3, 3, 3, 4];
+  const showSpark =
+    spark && spark.length >= 2 && spark.some((v) => v > 0);
   return (
     <div className="card" style={{ padding: "14px 16px" }}>
       <div
@@ -456,6 +463,7 @@ function StatCard({
           alignItems: "flex-end",
           justifyContent: "space-between",
           marginTop: 6,
+          minHeight: 26,
         }}
       >
         <div
@@ -468,7 +476,9 @@ function StatCard({
         >
           {value}
         </div>
-        <Sparkline values={sparkValues} color={color} width={62} height={18} />
+        {showSpark && (
+          <Sparkline values={spark} color={color} width={62} height={18} />
+        )}
       </div>
       {delta && (
         <div
@@ -479,6 +489,28 @@ function StatCard({
       )}
     </div>
   );
+}
+
+/**
+ * Bucket items with a `created_at` timestamp into `bucketCount` consecutive
+ * hourly slots ending at `endTime`'s hour. Used for the dashboard sparklines.
+ */
+function bucketByHour(
+  items: { created_at: string }[],
+  endTime: Date,
+  bucketCount: number,
+): number[] {
+  const buckets = Array(bucketCount).fill(0) as number[];
+  const endHour = new Date(endTime);
+  endHour.setMinutes(0, 0, 0);
+  const cutoff = endHour.getTime() - (bucketCount - 1) * 3_600_000;
+  for (const it of items) {
+    const t = new Date(it.created_at).getTime();
+    if (t < cutoff) continue;
+    const idx = Math.floor((t - cutoff) / 3_600_000);
+    if (idx >= 0 && idx < bucketCount) buckets[idx]++;
+  }
+  return buckets;
 }
 
 function LoadingRow({ label }: { label: string }) {

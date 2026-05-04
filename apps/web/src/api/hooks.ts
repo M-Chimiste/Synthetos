@@ -32,6 +32,24 @@ export function useCreateCharter() {
   });
 }
 
+export function useUpdateCharter() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: ({
+      id,
+      data,
+    }: {
+      id: string;
+      data: Parameters<typeof api.updateCharter>[1];
+    }) => api.updateCharter(id, data),
+    onSuccess: (_d, vars) => {
+      void qc.invalidateQueries({ queryKey: ["charters"] });
+      void qc.invalidateQueries({ queryKey: ["charters", vars.id] });
+      void qc.invalidateQueries({ queryKey: ["state", vars.id] });
+    },
+  });
+}
+
 // ---- Cycle hooks ----
 
 export function useCycles(charterId: string) {

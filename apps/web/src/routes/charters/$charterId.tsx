@@ -1,12 +1,15 @@
-import { createFileRoute, Link } from "@tanstack/react-router";
+import { createFileRoute, Link, useNavigate } from "@tanstack/react-router";
 import { useState, type ReactNode } from "react";
+import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import {
   useCharter,
   useCreateCycle,
   useCycles,
   useJobs,
   useResearchState,
+  useUpdateCharter,
 } from "../../api/hooks";
+import { fetchAutonomyPolicy, stopAutonomyLoop } from "../../api/autonomy";
 import StatusBadge from "../../components/StatusBadge";
 import StatusDot from "../../components/StatusDot";
 import Icon from "../../components/Icon";
@@ -24,13 +27,56 @@ type Tab = "overview" | "cycles" | "jobs" | "events" | "autonomy";
 
 function CharterDetailPage() {
   const { charterId } = Route.useParams();
+  const navigate = useNavigate();
+  const queryClient = useQueryClient();
   const charter = useCharter(charterId);
   const cycles = useCycles(charterId);
   const state = useResearchState(charterId);
   const createCycle = useCreateCycle();
+  const updateCharter = useUpdateCharter();
   const activeCycleId = state.data?.active_cycle?.id;
   const jobs = useJobs(activeCycleId, Boolean(activeCycleId));
   const [tab, setTab] = useState<Tab>("overview");
+  const [shareCopied, setShareCopied] = useState(false);
+
+  // Lifted from AutonomyPanel so the cycle-header "Pause loop" button can
+  // know whether to enable. AutonomyPanel keeps its own copy too — both
+  // queries share the same key and React Query dedupes.
+  const policyQ = useQuery({
+    queryKey: ["autonomy", "policy", activeCycleId],
+    queryFn: () => fetchAutonomyPolicy(activeCycleId!),
+    enabled: !!activeCycleId,
+  });
+  const stopLoopMut = useMutation({
+    mutationFn: () => stopAutonomyLoop(activeCycleId!),
+    onSuccess: () => {
+      void queryClient.invalidateQueries({ queryKey: ["autonomy"] });
+      void queryClient.invalidateQueries({ queryKey: ["state", charterId] });
+    },
+  });
+
+  function handleShare() {
+    void navigator.clipboard.writeText(window.location.href);
+    setShareCopied(true);
+    setTimeout(() => setShareCopied(false), 2000);
+  }
+
+  function handleArchive() {
+    if (!confirm("Archive this charter? You can still view it from the list.")) {
+      return;
+    }
+    updateCharter.mutate(
+      { id: charterId, data: { status: "archived" } },
+      {
+        onSuccess: () => {
+          void navigate({ to: "/charters" });
+        },
+      },
+    );
+  }
+
+  const isAutonomous = policyQ.data?.mode === "autonomous";
+  const canPauseLoop = Boolean(activeCycleId) && isAutonomous;
 
   if (charter.isLoading) {
     return (
@@ -90,12 +136,27 @@ function CharterDetailPage() {
         </Link>
         <Icon name="chevron" size={12} style={{ color: "var(--c-ink-4)" }} />
         <span style={{ color: "var(--c-ink)" }}>{c.title}</span>
-        <div style={{ marginLeft: "auto", display: "flex", gap: 6 }}>
-          <button type="button" className="btn sm">
+        <div style={{ marginLeft: "auto", display: "flex", alignItems: "center", gap: 6 }}>
+          {shareCopied && (
+            <span style={{ color: "var(--c-ok)", fontSize: 11.5 }}>
+              Link copied
+            </span>
+          )}
+          <button type="button" className="btn sm" onClick={handleShare}>
             Share
           </button>
-          <button type="button" className="btn sm">
-            Archive
+          <button
+            type="button"
+            className="btn sm"
+            onClick={handleArchive}
+            disabled={updateCharter.isPending || c.status === "archived"}
+            title={
+              c.status === "archived"
+                ? "Already archived"
+                : "Archive this charter"
+            }
+          >
+            {updateCharter.isPending ? "Archiving…" : "Archive"}
           </button>
         </div>
       </div>
@@ -224,16 +285,34 @@ function CharterDetailPage() {
               <div
                 style={{ marginLeft: "auto", display: "flex", gap: 6 }}
               >
-                <button type="button" className="btn sm">
-                  <Icon name="pause" size={12} /> Pause loop
-                </button>
                 <button
                   type="button"
                   className="btn sm"
-                  onClick={() => setTab("events")}
+                  onClick={() => {
+                    if (
+                      canPauseLoop &&
+                      confirm("Stop the autonomous loop on this cycle?")
+                    ) {
+                      stopLoopMut.mutate();
+                    }
+                  }}
+                  disabled={!canPauseLoop || stopLoopMut.isPending}
+                  title={
+                    canPauseLoop
+                      ? "Stop the autonomous loop"
+                      : "Loop is only available when the active cycle is in autonomous mode"
+                  }
+                >
+                  <Icon name="pause" size={12} />{" "}
+                  {stopLoopMut.isPending ? "Stopping…" : "Pause loop"}
+                </button>
+                <Link
+                  to="/cycles/$cycleId/timeline"
+                  params={{ cycleId: activeCycle.id }}
+                  className="btn sm"
                 >
                   View timeline
-                </button>
+                </Link>
               </div>
             </div>
             <PipelineRail progress={progressFromCycleStatus(activeCycle.status)} />
