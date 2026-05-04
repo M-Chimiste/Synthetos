@@ -6,6 +6,7 @@ import {
   useRejectPattern,
   useUpdateTrustTier,
 } from "../../api/hooks";
+import Icon from "../../components/Icon";
 
 export const Route = createFileRoute("/patterns/$patternId")({
   component: PatternDetailPage,
@@ -21,143 +22,359 @@ function PatternDetailPage() {
 
   return (
     <div>
-      <Link to="/patterns" className="text-sm text-gray-500 hover:text-gray-700">
-        &larr; Back to patterns
-      </Link>
+      <div
+        style={{
+          padding: "12px 40px",
+          borderBottom: "1px solid var(--c-line)",
+          display: "flex",
+          alignItems: "center",
+          gap: 10,
+          fontSize: 12.5,
+          color: "var(--c-ink-3)",
+          background: "var(--c-bg)",
+          position: "sticky",
+          top: 0,
+          zIndex: 5,
+        }}
+      >
+        <Link
+          to="/patterns"
+          style={{ cursor: "pointer", color: "inherit", textDecoration: "none" }}
+        >
+          Patterns
+        </Link>
+        <Icon name="chevron" size={12} style={{ color: "var(--c-ink-4)" }} />
+        <span style={{ color: "var(--c-ink)" }}>
+          {data?.title ?? "Pattern"}
+        </span>
+      </div>
 
-      {isLoading && <p className="mt-4 text-sm text-gray-500">Loading…</p>}
-      {error && (
-        <div className="mt-4 rounded-lg border border-red-200 bg-red-50 p-3 text-sm text-red-700">
-          {error.message}
-        </div>
-      )}
-
-      {data && (
-        <>
-          <h1 className="mt-2 text-2xl font-semibold">{data.title}</h1>
-          <p className="mt-1 font-mono text-xs text-gray-500">{data.id}</p>
-
-          <div className="mt-4 grid grid-cols-2 gap-4 sm:grid-cols-4">
-            <Stat label="Type" value={data.pattern_type} />
-            <Stat label="Trust" value={data.trust_tier} />
-            <Stat label="Confidence" value={data.confidence.toFixed(3)} />
-            <Stat label="Evidence" value={String(data.evidence_count)} />
-            <Stat
-              label="Charters"
-              value={String(data.source_charter_ids.length)}
-            />
-            <Stat label="Staleness" value={data.staleness_score.toFixed(2)} />
-            <Stat
-              label="Last reinforced"
-              value={new Date(data.last_reinforced_at).toLocaleString()}
-            />
-            <Stat
-              label="Consolidation v"
-              value={String(data.consolidation_version)}
-            />
+      <div style={{ padding: "28px 40px", maxWidth: 1240 }}>
+        {isLoading && (
+          <div style={{ fontSize: 13, color: "var(--c-ink-3)" }}>
+            Loading…
           </div>
+        )}
+        {error && (
+          <div
+            className="card"
+            style={{
+              padding: 14,
+              borderColor: "var(--c-err)",
+              color: "var(--c-err)",
+              fontSize: 13,
+            }}
+          >
+            {error.message}
+          </div>
+        )}
 
-          <section className="mt-6">
-            <h2 className="text-lg font-semibold">Summary</h2>
-            <p className="mt-2 whitespace-pre-wrap rounded-lg border border-gray-200 bg-white p-4 text-sm text-gray-800">
-              {data.summary || "(none)"}
-            </p>
-          </section>
-
-          <section className="mt-6">
-            <h2 className="text-lg font-semibold">Structured body</h2>
-            <pre className="mt-2 overflow-x-auto rounded-lg border border-gray-200 bg-gray-900 p-4 text-xs text-gray-100">
-              {JSON.stringify(data.structured_body, null, 2)}
-            </pre>
-          </section>
-
-          <section className="mt-6">
-            <h2 className="text-lg font-semibold">Curation</h2>
-            <textarea
-              className="mt-2 w-full rounded-md border border-gray-300 p-2 text-sm"
-              rows={3}
-              placeholder="Rationale (required for any action)…"
-              value={rationale}
-              onChange={(e) => setRationale(e.target.value)}
-            />
-            <div className="mt-2 flex flex-wrap gap-2">
-              <button
-                disabled={!rationale.trim() || approve.isPending}
-                onClick={() =>
-                  approve.mutate({ id: patternId, rationale: rationale.trim() })
-                }
-                className="rounded-md bg-green-600 px-3 py-2 text-sm font-medium text-white hover:bg-green-500 disabled:opacity-50"
+        {data && (
+          <>
+            <div style={{ marginBottom: 4 }}>
+              <span
+                className="mono"
+                style={{ fontSize: 11.5, color: "var(--c-ink-3)" }}
               >
-                Approve
-              </button>
-              <button
-                disabled={!rationale.trim() || reject.isPending}
-                onClick={() =>
-                  reject.mutate({ id: patternId, rationale: rationale.trim() })
-                }
-                className="rounded-md bg-red-600 px-3 py-2 text-sm font-medium text-white hover:bg-red-500 disabled:opacity-50"
-              >
-                Reject
-              </button>
-              <button
-                disabled={!rationale.trim() || updateTier.isPending}
-                onClick={() =>
-                  updateTier.mutate({
-                    id: patternId,
-                    trust_tier: "curated",
-                    rationale: rationale.trim(),
-                  })
-                }
-                className="rounded-md border border-gray-300 px-3 py-2 text-sm font-medium text-gray-700 hover:bg-gray-100 disabled:opacity-50"
-              >
-                Mark curated
-              </button>
-              <button
-                disabled={!rationale.trim() || updateTier.isPending}
-                onClick={() =>
-                  updateTier.mutate({
-                    id: patternId,
-                    trust_tier: "deprecated",
-                    rationale: rationale.trim(),
-                  })
-                }
-                className="rounded-md border border-gray-300 px-3 py-2 text-sm font-medium text-gray-700 hover:bg-gray-100 disabled:opacity-50"
-              >
-                Deprecate
-              </button>
+                {data.id}
+              </span>
             </div>
-          </section>
+            <h1
+              style={{
+                fontSize: 22,
+                fontWeight: 600,
+                letterSpacing: "-0.015em",
+                margin: 0,
+              }}
+            >
+              {data.title}
+            </h1>
 
-          <section className="mt-6">
-            <h2 className="text-lg font-semibold">Recent observations</h2>
-            {data.recent_observations.length === 0 ? (
-              <p className="mt-2 text-sm text-gray-500">No observations yet.</p>
-            ) : (
-              <ul className="mt-2 divide-y divide-gray-100 rounded-lg border border-gray-200 bg-white">
-                {data.recent_observations.map((o) => (
-                  <li key={o.id} className="px-3 py-2 text-sm">
-                    <span className="font-mono text-xs text-gray-500">
-                      {new Date(o.observed_at).toLocaleString()}
-                    </span>{" "}
-                    <span className="text-gray-700">
-                      [{o.source_artifact_type}] cycle {o.cycle_id.slice(0, 8)}…
-                    </span>
-                  </li>
-                ))}
-              </ul>
-            )}
-          </section>
-        </>
-      )}
+            <div
+              style={{
+                marginTop: 20,
+                display: "grid",
+                gridTemplateColumns: "repeat(4, 1fr)",
+                gap: 12,
+              }}
+            >
+              <Stat label="Type" value={data.pattern_type.replace(/_/g, " ")} />
+              <Stat label="Trust" value={data.trust_tier} />
+              <Stat label="Confidence" value={data.confidence.toFixed(3)} />
+              <Stat label="Evidence" value={String(data.evidence_count)} />
+              <Stat
+                label="Charters"
+                value={String(data.source_charter_ids.length)}
+              />
+              <Stat label="Staleness" value={data.staleness_score.toFixed(2)} />
+              <Stat
+                label="Last reinforced"
+                value={new Date(data.last_reinforced_at).toLocaleString()}
+              />
+              <Stat
+                label="Consolidation v"
+                value={String(data.consolidation_version)}
+              />
+            </div>
+
+            <section style={{ marginTop: 28 }}>
+              <h2
+                style={{
+                  fontSize: 14,
+                  fontWeight: 600,
+                  margin: 0,
+                  marginBottom: 10,
+                  letterSpacing: "-0.005em",
+                }}
+              >
+                Summary
+              </h2>
+              <div
+                className="card"
+                style={{
+                  padding: 18,
+                  fontSize: 13.5,
+                  color: "var(--c-ink-2)",
+                  whiteSpace: "pre-wrap",
+                  lineHeight: 1.55,
+                }}
+              >
+                {data.summary || "(none)"}
+              </div>
+            </section>
+
+            <section style={{ marginTop: 28 }}>
+              <h2
+                style={{
+                  fontSize: 14,
+                  fontWeight: 600,
+                  margin: 0,
+                  marginBottom: 10,
+                  letterSpacing: "-0.005em",
+                }}
+              >
+                Structured body
+              </h2>
+              <div className="card" style={{ padding: 0, overflow: "hidden" }}>
+                <pre
+                  style={{
+                    margin: 0,
+                    padding: 14,
+                    background: "var(--c-panel)",
+                    fontSize: 11.5,
+                    color: "var(--c-ink-2)",
+                    fontFamily: "var(--f-mono)",
+                    whiteSpace: "pre-wrap",
+                    overflow: "auto",
+                    maxHeight: 360,
+                  }}
+                >
+                  {JSON.stringify(data.structured_body, null, 2)}
+                </pre>
+              </div>
+            </section>
+
+            <section style={{ marginTop: 28 }}>
+              <h2
+                style={{
+                  fontSize: 14,
+                  fontWeight: 600,
+                  margin: 0,
+                  marginBottom: 10,
+                  letterSpacing: "-0.005em",
+                }}
+              >
+                Curation
+              </h2>
+              <div className="card" style={{ padding: 14 }}>
+                <textarea
+                  rows={3}
+                  placeholder="Rationale (required for any action)…"
+                  value={rationale}
+                  onChange={(e) => setRationale(e.target.value)}
+                  style={{
+                    width: "100%",
+                    border: "1px solid var(--c-line)",
+                    background: "var(--c-bg-elev)",
+                    color: "var(--c-ink)",
+                    borderRadius: "var(--r-md)",
+                    padding: "10px 12px",
+                    fontSize: 13,
+                    fontFamily: "var(--f-sans)",
+                    outline: "none",
+                    resize: "vertical",
+                  }}
+                />
+                <div
+                  style={{
+                    marginTop: 10,
+                    display: "flex",
+                    flexWrap: "wrap",
+                    gap: 6,
+                  }}
+                >
+                  <button
+                    type="button"
+                    disabled={!rationale.trim() || approve.isPending}
+                    onClick={() =>
+                      approve.mutate({
+                        id: patternId,
+                        rationale: rationale.trim(),
+                      })
+                    }
+                    className="btn"
+                    style={{
+                      background: "var(--c-ok-soft)",
+                      borderColor: "transparent",
+                      color: "var(--c-ok)",
+                    }}
+                  >
+                    Approve
+                  </button>
+                  <button
+                    type="button"
+                    disabled={!rationale.trim() || reject.isPending}
+                    onClick={() =>
+                      reject.mutate({
+                        id: patternId,
+                        rationale: rationale.trim(),
+                      })
+                    }
+                    className="btn"
+                    style={{
+                      background: "var(--c-err-soft)",
+                      borderColor: "transparent",
+                      color: "var(--c-err)",
+                    }}
+                  >
+                    Reject
+                  </button>
+                  <button
+                    type="button"
+                    disabled={!rationale.trim() || updateTier.isPending}
+                    onClick={() =>
+                      updateTier.mutate({
+                        id: patternId,
+                        trust_tier: "curated",
+                        rationale: rationale.trim(),
+                      })
+                    }
+                    className="btn"
+                  >
+                    Mark curated
+                  </button>
+                  <button
+                    type="button"
+                    disabled={!rationale.trim() || updateTier.isPending}
+                    onClick={() =>
+                      updateTier.mutate({
+                        id: patternId,
+                        trust_tier: "deprecated",
+                        rationale: rationale.trim(),
+                      })
+                    }
+                    className="btn"
+                  >
+                    Deprecate
+                  </button>
+                </div>
+              </div>
+            </section>
+
+            <section style={{ marginTop: 28 }}>
+              <h2
+                style={{
+                  fontSize: 14,
+                  fontWeight: 600,
+                  margin: 0,
+                  marginBottom: 10,
+                  letterSpacing: "-0.005em",
+                }}
+              >
+                Recent observations
+              </h2>
+              {data.recent_observations.length === 0 ? (
+                <div
+                  className="card"
+                  style={{
+                    padding: 24,
+                    textAlign: "center",
+                    color: "var(--c-ink-3)",
+                    fontSize: 13.5,
+                  }}
+                >
+                  No observations yet.
+                </div>
+              ) : (
+                <div className="card" style={{ overflow: "hidden" }}>
+                  <ul style={{ listStyle: "none", margin: 0, padding: 0 }}>
+                    {data.recent_observations.map((o, i) => (
+                      <li
+                        key={o.id}
+                        style={{
+                          padding: "10px 14px",
+                          borderBottom:
+                            i < data.recent_observations.length - 1
+                              ? "1px solid var(--c-line-soft)"
+                              : "none",
+                          display: "flex",
+                          gap: 10,
+                          alignItems: "center",
+                          fontSize: 12.5,
+                        }}
+                      >
+                        <span
+                          className="mono"
+                          style={{ fontSize: 11, color: "var(--c-ink-4)" }}
+                        >
+                          {new Date(o.observed_at).toLocaleString()}
+                        </span>
+                        <span className="chip slate" style={{ fontSize: 10.5 }}>
+                          {o.source_artifact_type}
+                        </span>
+                        <span
+                          className="mono"
+                          style={{ color: "var(--c-ink-3)" }}
+                        >
+                          cycle {o.cycle_id.slice(0, 8)}…
+                        </span>
+                      </li>
+                    ))}
+                  </ul>
+                </div>
+              )}
+            </section>
+          </>
+        )}
+      </div>
     </div>
   );
 }
 
 function Stat({ label, value }: { label: string; value: string }) {
   return (
-    <div className="rounded-lg border border-gray-200 bg-white px-3 py-2">
-      <p className="text-xs uppercase tracking-wide text-gray-500">{label}</p>
-      <p className="text-sm font-medium text-gray-900">{value}</p>
+    <div className="card" style={{ padding: "12px 14px" }}>
+      <div
+        style={{
+          fontSize: 11,
+          color: "var(--c-ink-3)",
+          textTransform: "uppercase",
+          letterSpacing: "0.05em",
+          fontWeight: 500,
+        }}
+      >
+        {label}
+      </div>
+      <div
+        style={{
+          fontSize: 14,
+          color: "var(--c-ink)",
+          marginTop: 4,
+          fontVariantNumeric: "tabular-nums",
+        }}
+      >
+        {value}
+      </div>
     </div>
   );
 }

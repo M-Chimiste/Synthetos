@@ -11,6 +11,7 @@ import {
   type AutonomyPolicy,
   type LoopDecision,
 } from "../api/autonomy";
+import Markdown from "./Markdown";
 import StatusBadge from "./StatusBadge";
 
 interface Props {
@@ -46,26 +47,30 @@ export default function AutonomyPanel({ cycleId }: Props) {
   const resumeMut = useMutation({
     mutationFn: () => resumeAutonomyGate(cycleId),
     onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey: ["autonomy"] });
+      void queryClient.invalidateQueries({ queryKey: ["autonomy"] });
     },
   });
 
   const stopMut = useMutation({
     mutationFn: () => stopAutonomyLoop(cycleId),
     onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey: ["autonomy"] });
+      void queryClient.invalidateQueries({ queryKey: ["autonomy"] });
     },
   });
 
   if (policyQ.isLoading) {
-    return <p className="text-sm text-gray-500">Loading autonomy state...</p>;
+    return (
+      <div style={{ fontSize: 13, color: "var(--c-ink-3)" }}>
+        Loading autonomy state…
+      </div>
+    );
   }
 
   if (policyQ.error || !policyQ.data) {
     return (
-      <p className="text-sm text-gray-500">
+      <div style={{ fontSize: 13, color: "var(--c-ink-3)" }}>
         Autonomy state unavailable for this cycle.
-      </p>
+      </div>
     );
   }
 
@@ -77,47 +82,76 @@ export default function AutonomyPanel({ cycleId }: Props) {
   const isPausedAtGate = lastDecision?.decision === "stop_gate";
 
   return (
-    <div className="space-y-4">
-      <div className="flex items-center justify-between">
-        <div className="flex items-center gap-2">
-          <h2 className="text-lg font-semibold">Autonomy</h2>
-          <StatusBadge status={policy.mode} />
-          {isPausedAtGate && <StatusBadge status="paused" />}
-        </div>
-        <div className="flex gap-2">
+    <div style={{ display: "flex", flexDirection: "column", gap: 16 }}>
+      <div
+        style={{
+          display: "flex",
+          alignItems: "center",
+          gap: 10,
+        }}
+      >
+        <h2
+          style={{
+            fontSize: 14,
+            fontWeight: 600,
+            margin: 0,
+            letterSpacing: "-0.005em",
+          }}
+        >
+          Autonomy
+        </h2>
+        <StatusBadge status={policy.mode} />
+        {isPausedAtGate && <StatusBadge status="paused" />}
+        <div style={{ marginLeft: "auto", display: "flex", gap: 6 }}>
           {isPausedAtGate && (
             <button
               type="button"
+              className="btn sm"
               onClick={() => resumeMut.mutate()}
               disabled={resumeMut.isPending}
-              className="rounded border border-green-300 bg-green-50 px-3 py-1 text-sm text-green-800 hover:bg-green-100 disabled:opacity-50"
+              style={{
+                background: "var(--c-ok-soft)",
+                borderColor: "transparent",
+                color: "var(--c-ok)",
+              }}
             >
-              {resumeMut.isPending ? "Resuming..." : "Resume gate"}
+              {resumeMut.isPending ? "Resuming…" : "Resume gate"}
             </button>
           )}
           {policy.mode === "autonomous" && (
             <button
               type="button"
+              className="btn sm"
               onClick={() => {
                 if (confirm("Stop the autonomous loop?")) {
                   stopMut.mutate();
                 }
               }}
               disabled={stopMut.isPending}
-              className="rounded border border-red-300 bg-red-50 px-3 py-1 text-sm text-red-800 hover:bg-red-100 disabled:opacity-50"
+              style={{
+                background: "var(--c-err-soft)",
+                borderColor: "transparent",
+                color: "var(--c-err)",
+              }}
             >
-              {stopMut.isPending ? "Stopping..." : "Stop loop"}
+              {stopMut.isPending ? "Stopping…" : "Stop loop"}
             </button>
           )}
         </div>
       </div>
 
       {policy.mode === "supervised" && (
-        <p className="text-sm text-gray-500">
+        <div style={{ fontSize: 13, color: "var(--c-ink-3)" }}>
           Cycle is in supervised mode. Enable autonomous mode by setting{" "}
-          <code className="rounded bg-gray-100 px-1">config.autonomy.mode</code>{" "}
-          to <code className="rounded bg-gray-100 px-1">autonomous</code>.
-        </p>
+          <span className="mono" style={{ color: "var(--c-ink-2)" }}>
+            config.autonomy.mode
+          </span>{" "}
+          to{" "}
+          <span className="mono" style={{ color: "var(--c-ink-2)" }}>
+            autonomous
+          </span>
+          .
+        </div>
       )}
 
       {policy.mode === "autonomous" && (
@@ -125,7 +159,10 @@ export default function AutonomyPanel({ cycleId }: Props) {
           <PolicySummary policy={policy} />
           <BudgetBars policy={policy} budget={budget} />
           <DecisionsTimeline decisions={decisions} />
-          <ReportViewer report={reportQ.data ?? null} isLoading={reportQ.isLoading} />
+          <ReportViewer
+            report={reportQ.data ?? null}
+            isLoading={reportQ.isLoading}
+          />
         </>
       )}
     </div>
@@ -138,28 +175,65 @@ function PolicySummary({ policy }: { policy: AutonomyPolicy }) {
   if (gates.after_every_run) activeGates.push("after_every_run");
   if (gates.after_every_n_runs)
     activeGates.push(`after_every_${gates.after_every_n_runs}_runs`);
-  if (gates.before_hardware_escalation) activeGates.push("before_hardware_escalation");
-  if (gates.before_result_promotion) activeGates.push("before_result_promotion");
-  if (gates.before_network_execution) activeGates.push("before_network_execution");
+  if (gates.before_hardware_escalation)
+    activeGates.push("before_hardware_escalation");
+  if (gates.before_result_promotion)
+    activeGates.push("before_result_promotion");
+  if (gates.before_network_execution)
+    activeGates.push("before_network_execution");
 
   return (
-    <div className="rounded border border-gray-200 p-3 text-sm">
-      <div className="mb-1 font-medium">Policy</div>
-      <dl className="grid grid-cols-2 gap-x-4 gap-y-1 text-xs">
-        <dt className="text-gray-500">Max total runs</dt>
-        <dd>{policy.max_total_runs ?? "unlimited"}</dd>
-        <dt className="text-gray-500">Max wall-clock hours</dt>
-        <dd>{policy.max_wall_clock_hours ?? "unlimited"}</dd>
-        <dt className="text-gray-500">Max runs per hypothesis</dt>
-        <dd>{policy.max_runs_per_hypothesis ?? "unlimited"}</dd>
-        <dt className="text-gray-500">Summary interval</dt>
-        <dd>{policy.summary_interval} runs</dd>
-        <dt className="text-gray-500">Active gates</dt>
-        <dd>{activeGates.length === 0 ? "none" : activeGates.join(", ")}</dd>
-        <dt className="text-gray-500">Cost budgets</dt>
-        <dd>{policy.cost_budget_note}</dd>
+    <div className="card" style={{ padding: 14 }}>
+      <div className="section-label" style={{ marginBottom: 10 }}>
+        Policy
+      </div>
+      <dl
+        style={{
+          display: "grid",
+          gridTemplateColumns: "max-content 1fr",
+          columnGap: 16,
+          rowGap: 4,
+          margin: 0,
+          fontSize: 12.5,
+        }}
+      >
+        <Row label="Max total runs" value={policy.max_total_runs ?? "unlimited"} />
+        <Row
+          label="Max wall-clock hours"
+          value={policy.max_wall_clock_hours ?? "unlimited"}
+        />
+        <Row
+          label="Max runs per hypothesis"
+          value={policy.max_runs_per_hypothesis ?? "unlimited"}
+        />
+        <Row
+          label="Summary interval"
+          value={`${policy.summary_interval} runs`}
+        />
+        <Row
+          label="Active gates"
+          value={activeGates.length === 0 ? "none" : activeGates.join(", ")}
+        />
+        <Row label="Cost budgets" value={policy.cost_budget_note} />
       </dl>
     </div>
+  );
+}
+
+function Row({ label, value }: { label: string; value: string | number }) {
+  return (
+    <>
+      <dt style={{ color: "var(--c-ink-3)" }}>{label}</dt>
+      <dd
+        style={{
+          margin: 0,
+          color: "var(--c-ink)",
+          fontVariantNumeric: "tabular-nums",
+        }}
+      >
+        {value}
+      </dd>
+    </>
   );
 }
 
@@ -172,7 +246,10 @@ function BudgetBars({
 }) {
   if (!budget) {
     return (
-      <div className="rounded border border-gray-200 p-3 text-sm text-gray-500">
+      <div
+        className="card"
+        style={{ padding: 14, fontSize: 13, color: "var(--c-ink-3)" }}
+      >
         No budget tracking yet. The loop has not started consuming the budget.
       </div>
     );
@@ -187,49 +264,64 @@ function BudgetBars({
     : 0;
 
   return (
-    <div className="rounded border border-gray-200 p-3 text-sm">
-      <div className="mb-2 font-medium">Budget consumption</div>
-      <div className="space-y-3">
-        <div>
-          <div className="mb-1 flex justify-between text-xs">
-            <span className="text-gray-500">Runs</span>
-            <span>
-              {budget.total_runs}
-              {policy.max_total_runs && ` / ${policy.max_total_runs}`}
-            </span>
-          </div>
-          <div className="h-2 overflow-hidden rounded-full bg-gray-200">
-            <div
-              className="h-full bg-purple-500"
-              style={{ width: `${runPct}%` }}
-            />
-          </div>
-        </div>
-        <div>
-          <div className="mb-1 flex justify-between text-xs">
-            <span className="text-gray-500">Wall-clock hours</span>
-            <span>
-              {hours.toFixed(2)}
-              {policy.max_wall_clock_hours && ` / ${policy.max_wall_clock_hours}`}
-            </span>
-          </div>
-          <div className="h-2 overflow-hidden rounded-full bg-gray-200">
-            <div
-              className="h-full bg-fuchsia-500"
-              style={{ width: `${hoursPct}%` }}
-            />
-          </div>
-        </div>
+    <div className="card" style={{ padding: 14 }}>
+      <div className="section-label" style={{ marginBottom: 12 }}>
+        Budget consumption
+      </div>
+      <div style={{ display: "flex", flexDirection: "column", gap: 14 }}>
+        <Bar
+          label="Runs"
+          value={
+            policy.max_total_runs
+              ? `${budget.total_runs} / ${policy.max_total_runs}`
+              : String(budget.total_runs)
+          }
+          pct={runPct}
+          color="var(--c-accent)"
+        />
+        <Bar
+          label="Wall-clock hours"
+          value={
+            policy.max_wall_clock_hours
+              ? `${hours.toFixed(2)} / ${policy.max_wall_clock_hours}`
+              : hours.toFixed(2)
+          }
+          pct={hoursPct}
+          color="var(--c-violet)"
+        />
         {Object.keys(budget.runs_per_hypothesis).length > 0 && (
           <div>
-            <div className="mb-1 text-xs text-gray-500">Runs per hypothesis</div>
-            <ul className="space-y-0.5 text-xs">
-              {Object.entries(budget.runs_per_hypothesis).map(([cardId, count]) => (
-                <li key={cardId} className="flex justify-between">
-                  <span className="truncate text-gray-600">{cardId.slice(0, 8)}…</span>
-                  <span>{count}</span>
-                </li>
-              ))}
+            <div
+              style={{
+                fontSize: 11.5,
+                color: "var(--c-ink-3)",
+                marginBottom: 4,
+              }}
+            >
+              Runs per hypothesis
+            </div>
+            <ul style={{ listStyle: "none", margin: 0, padding: 0 }}>
+              {Object.entries(budget.runs_per_hypothesis).map(
+                ([cardId, count]) => (
+                  <li
+                    key={cardId}
+                    style={{
+                      display: "flex",
+                      justifyContent: "space-between",
+                      fontSize: 12,
+                      color: "var(--c-ink-2)",
+                      padding: "2px 0",
+                    }}
+                  >
+                    <span className="mono">{cardId.slice(0, 8)}…</span>
+                    <span
+                      style={{ fontVariantNumeric: "tabular-nums" }}
+                    >
+                      {count}
+                    </span>
+                  </li>
+                ),
+              )}
             </ul>
           </div>
         )}
@@ -238,31 +330,113 @@ function BudgetBars({
   );
 }
 
+function Bar({
+  label,
+  value,
+  pct,
+  color,
+}: {
+  label: string;
+  value: string;
+  pct: number;
+  color: string;
+}) {
+  return (
+    <div>
+      <div
+        style={{
+          display: "flex",
+          justifyContent: "space-between",
+          fontSize: 12,
+          marginBottom: 4,
+        }}
+      >
+        <span style={{ color: "var(--c-ink-3)" }}>{label}</span>
+        <span
+          style={{
+            color: "var(--c-ink-2)",
+            fontVariantNumeric: "tabular-nums",
+          }}
+        >
+          {value}
+        </span>
+      </div>
+      <div
+        style={{
+          height: 6,
+          background: "var(--c-line-soft)",
+          borderRadius: 999,
+          overflow: "hidden",
+        }}
+      >
+        <div
+          style={{
+            height: "100%",
+            width: `${pct}%`,
+            background: color,
+            transition: "width 200ms ease",
+          }}
+        />
+      </div>
+    </div>
+  );
+}
+
 function DecisionsTimeline({ decisions }: { decisions: LoopDecision[] }) {
   if (decisions.length === 0) {
     return (
-      <div className="rounded border border-gray-200 p-3 text-sm text-gray-500">
+      <div
+        className="card"
+        style={{ padding: 14, fontSize: 13, color: "var(--c-ink-3)" }}
+      >
         No loop decisions yet.
       </div>
     );
   }
 
   return (
-    <div className="rounded border border-gray-200 p-3 text-sm">
-      <div className="mb-2 font-medium">
+    <div className="card" style={{ padding: 14 }}>
+      <div className="section-label" style={{ marginBottom: 10 }}>
         Loop decisions ({decisions.length})
       </div>
-      <ol className="space-y-2">
+      <ol
+        style={{
+          listStyle: "none",
+          margin: 0,
+          padding: 0,
+          display: "flex",
+          flexDirection: "column",
+          gap: 8,
+        }}
+      >
         {decisions.map((d) => (
-          <li key={d.id} className="flex items-start gap-3 text-xs">
-            <span className="mt-0.5 inline-block w-8 shrink-0 text-right text-gray-400">
+          <li
+            key={d.id}
+            style={{
+              display: "flex",
+              alignItems: "flex-start",
+              gap: 10,
+              fontSize: 12,
+            }}
+          >
+            <span
+              className="mono"
+              style={{
+                width: 28,
+                color: "var(--c-ink-4)",
+                flexShrink: 0,
+                textAlign: "right",
+              }}
+            >
               #{d.iteration_number}
             </span>
             <StatusBadge status={d.decision} />
-            <span className="flex-1 text-gray-700">
+            <span style={{ flex: 1, color: "var(--c-ink-2)" }}>
               {d.reasoning}
               {d.gate_triggered && (
-                <span className="ml-1 text-fuchsia-700">
+                <span
+                  style={{ marginLeft: 6, color: "var(--c-violet)" }}
+                >
                   (gate: {d.gate_triggered})
                 </span>
               )}
@@ -283,26 +457,33 @@ function ReportViewer({
 }) {
   if (isLoading) {
     return (
-      <div className="rounded border border-gray-200 p-3 text-sm text-gray-500">
-        Loading completion report...
+      <div
+        className="card"
+        style={{ padding: 14, fontSize: 13, color: "var(--c-ink-3)" }}
+      >
+        Loading completion report…
       </div>
     );
   }
 
   if (!report?.markdown) {
     return (
-      <div className="rounded border border-gray-200 p-3 text-sm text-gray-500">
-        No completion report yet. The report appears when the autonomous loop stops.
+      <div
+        className="card"
+        style={{ padding: 14, fontSize: 13, color: "var(--c-ink-3)" }}
+      >
+        No completion report yet. The report appears when the autonomous loop
+        stops.
       </div>
     );
   }
 
   return (
-    <div className="rounded border border-gray-200 p-3 text-sm">
-      <div className="mb-2 font-medium">Completion report</div>
-      <pre className="max-h-96 overflow-auto whitespace-pre-wrap rounded bg-gray-50 p-3 text-xs text-gray-700">
-        {report.markdown}
-      </pre>
+    <div className="card" style={{ padding: 18 }}>
+      <div className="section-label" style={{ marginBottom: 10 }}>
+        Completion report
+      </div>
+      <Markdown>{report.markdown}</Markdown>
     </div>
   );
 }
