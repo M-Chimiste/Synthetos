@@ -48,6 +48,7 @@ from libs.storage.models.remediation import (
     RunRecommendation,
 )
 from libs.storage.models.research import ResearchCharter, ResearchCycle
+from libs.storage.models.settings import ModelCatalogEntry, ModelRoleBinding
 from libs.storage.models.skills import SkillBinding, SkillDefinition
 
 __all__ = [
@@ -74,6 +75,8 @@ __all__ = [
     "LoopDecision",
     "MetricFrontier",
     "ModelCallRecord",
+    "ModelCatalogEntry",
+    "ModelRoleBinding",
     "OrchestratorClient",
     "PaperAnalysisPacket",
     "PaperCard",

@@ -12,6 +12,7 @@ from libs.adapters.llm.google_adapter import GoogleAdapter
 from libs.adapters.llm.openai_adapter import OpenAIAdapter
 from libs.adapters.llm.openai_compat import OpenAICompatAdapter
 from libs.core.logging import get_logger
+from libs.core.services.model_settings_service import load_db_role_config
 
 if TYPE_CHECKING:
     from libs.adapters.llm.base import LLMAdapter
@@ -52,6 +53,14 @@ class ModelRouter:
 
     def _get_role_config(self, role: ModelRole) -> dict[str, Any]:
         """Get the configuration for a specific role."""
+        db_role_cfg = load_db_role_config(role)
+        if db_role_cfg is not None:
+            role_cfg = dict(db_role_cfg)
+            defaults = self._config.get("defaults", {})
+            for key, value in defaults.items():
+                role_cfg.setdefault(key, value)
+            return role_cfg
+
         roles = self._config.get("roles", {})
         if role.value not in roles:
             raise ValueError(
@@ -81,7 +90,7 @@ class ModelRouter:
         provider = role_cfg["provider"]
         model = role_cfg["model"]
         provider_cfg = self._get_provider_config(provider)
-        provider_type = provider_cfg.get("type", provider)
+        provider_type = role_cfg.get("provider_type") or provider_cfg.get("type", provider)
 
         temperature = role_cfg.get("temperature", 0.7)
         max_tokens = role_cfg.get("max_tokens", 4096)
@@ -124,9 +133,10 @@ class ModelRouter:
     def _adapter_cache_key(self, role_cfg: dict[str, Any]) -> str:
         """Generate a cache key for an adapter based on its configuration."""
         provider = role_cfg["provider"]
+        provider_type = role_cfg.get("provider_type", "")
         model = role_cfg["model"]
         base_url = role_cfg.get("base_url", "")
-        return f"{provider}:{model}:{base_url}"
+        return f"{provider}:{provider_type}:{model}:{base_url}"
 
     def route(self, role: ModelRole) -> LLMAdapter:
         """Get the adapter for a given model role, creating it if needed."""

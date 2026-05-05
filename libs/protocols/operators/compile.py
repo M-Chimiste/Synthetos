@@ -52,6 +52,7 @@ class _CompiledSpec(BaseModel):
     stop_conditions: list[dict[str, Any]] = Field(default_factory=list)
     code_plan: dict[str, Any]
     base_image: str | None = None
+    build_recipe: dict[str, Any] | None = None
 
 
 class _SpecSet(BaseModel):
@@ -76,8 +77,15 @@ async def _compile_specs(
             "- A baseline description with expected metrics\n"
             "- Metrics to track with direction (maximize/minimize) and optional thresholds\n"
             "- A code_plan with entry_point, dependencies, and complete file contents\n"
+            "- A build_recipe with dockerfile_content whenever the code needs runtime "
+            "dependencies beyond the base image\n"
             "- Stop conditions\n"
             "- Expected artifacts to produce\n"
+            "When build_recipe.dockerfile_content is needed, return a complete Dockerfile "
+            "that starts from the selected base_image or python:3.12-slim, copies or "
+            "uses the workspace as the build context, and installs every runtime "
+            "dependency required by code_plan.files. Do not rely on code_plan.dependencies "
+            "as the install mechanism; it is descriptive metadata only. "
             "The code should write metrics to /artifacts/metrics.json as a flat "
             "{metric_name: numeric_value} JSON object."
         )
@@ -300,7 +308,7 @@ def protocol_compile_operator(op_input: OperatorInput) -> OperatorResult:
                 code_plan=compiled.code_plan,
                 hardware_profile=hardware_profile,
                 base_image=compiled.base_image or base_image,
-                build_recipe=None,
+                build_recipe=compiled.build_recipe,
                 created_at=utcnow(),
                 updated_at=utcnow(),
             )

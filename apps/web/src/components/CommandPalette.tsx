@@ -23,6 +23,7 @@ const STATIC_PAGES: Array<Omit<PaletteItem, "navigate"> & { route: string }> = [
   { kind: "Page", id: "page-skills", label: "Skills", route: "/skills" },
   { kind: "Page", id: "page-experiment", label: "Experiments", route: "/experiment" },
   { kind: "Page", id: "page-analysis", label: "Analysis", route: "/analysis" },
+  { kind: "Page", id: "page-settings", label: "Settings", route: "/settings" },
 ];
 
 export default function CommandPalette({ open, onClose }: CommandPaletteProps) {

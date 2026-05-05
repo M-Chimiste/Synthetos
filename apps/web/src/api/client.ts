@@ -85,6 +85,82 @@ export interface DiscoverSkillsResponse {
   items: SkillDefinition[];
 }
 
+export type ProviderType =
+  | "anthropic"
+  | "openai"
+  | "google"
+  | "openai_compatible";
+
+export interface ModelCatalogEntry {
+  id: string;
+  key: string;
+  display_name: string;
+  provider_type: ProviderType;
+  provider_name: string;
+  model: string;
+  base_url: string | null;
+  default_temperature: number | null;
+  default_max_tokens: number | null;
+  enabled: boolean;
+  notes: string | null;
+  last_tested_at: string | null;
+  last_test_ok: boolean | null;
+  last_test_error: string | null;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface ModelRoleBinding {
+  role: string;
+  catalog_entry_id: string;
+  temperature: number | null;
+  max_tokens: number | null;
+  updated_at: string;
+}
+
+export interface ModelRoleDefault {
+  provider: string;
+  provider_type: ProviderType;
+  model: string;
+  base_url: string | null;
+  temperature: number | null;
+  max_tokens: number | null;
+}
+
+export interface ModelSettingsResponse {
+  catalog_entries: ModelCatalogEntry[];
+  roles: string[];
+  role_bindings: ModelRoleBinding[];
+  yaml_defaults: Record<string, ModelRoleDefault>;
+}
+
+export interface ModelCatalogEntryPayload {
+  key?: string;
+  display_name?: string;
+  provider_type?: ProviderType;
+  provider_name?: string;
+  model?: string;
+  base_url?: string | null;
+  default_temperature?: number | null;
+  default_max_tokens?: number | null;
+  enabled?: boolean;
+  notes?: string | null;
+}
+
+export interface ModelRoleBindingPayload {
+  catalog_entry_id: string;
+  temperature?: number | null;
+  max_tokens?: number | null;
+}
+
+export interface ModelCatalogTestResponse {
+  success: boolean;
+  latency_ms: number;
+  provider: string;
+  model: string;
+  error: string | null;
+}
+
 export interface PaginatedResponse<T> {
   items: T[];
   total: number;
@@ -109,6 +185,9 @@ async function apiFetch<T>(
   if (!res.ok) {
     const body = await res.text().catch(() => "");
     throw new Error(`API ${res.status}: ${body || res.statusText}`);
+  }
+  if (res.status === 204) {
+    return undefined as T;
   }
   return res.json() as Promise<T>;
 }
@@ -202,6 +281,51 @@ export function discoverSkills() {
   return apiFetch<DiscoverSkillsResponse>("/skills/discover", {
     method: "POST",
   });
+}
+
+// ---- Settings ----
+
+export function fetchModelSettings() {
+  return apiFetch<ModelSettingsResponse>("/settings/models");
+}
+
+export function createModelCatalogEntry(data: ModelCatalogEntryPayload) {
+  return apiFetch<ModelCatalogEntry>("/settings/models/catalog", {
+    method: "POST",
+    body: JSON.stringify(data),
+  });
+}
+
+export function updateModelCatalogEntry(
+  id: string,
+  data: ModelCatalogEntryPayload,
+) {
+  return apiFetch<ModelCatalogEntry>(`/settings/models/catalog/${id}`, {
+    method: "PATCH",
+    body: JSON.stringify(data),
+  });
+}
+
+export function deleteModelCatalogEntry(id: string) {
+  return apiFetch<void>(`/settings/models/catalog/${id}`, {
+    method: "DELETE",
+  });
+}
+
+export function assignModelRole(role: string, data: ModelRoleBindingPayload) {
+  return apiFetch<ModelRoleBinding>(`/settings/models/roles/${role}`, {
+    method: "PUT",
+    body: JSON.stringify(data),
+  });
+}
+
+export function testModelCatalogEntry(id: string) {
+  return apiFetch<ModelCatalogTestResponse>(
+    `/settings/models/catalog/${id}/test`,
+    {
+      method: "POST",
+    },
+  );
 }
 
 // ---- Discovery ----

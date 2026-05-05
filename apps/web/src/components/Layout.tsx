@@ -55,6 +55,12 @@ const NAV_ITEMS: NavItem[] = [
     icon: "skills",
     match: (p) => p.startsWith("/skills"),
   },
+  {
+    to: "/settings",
+    label: "Settings",
+    icon: "settings",
+    match: (p) => p.startsWith("/settings"),
+  },
 ];
 
 const ACTIVE_CHARTER_STATUSES = new Set([

@@ -256,6 +256,27 @@ containers, the API runs `uvicorn --reload`, the worker is wrapped with
 `watchfiles`, and the web service is replaced with the Vite dev server
 (HMR on `:5173`).
 
+For host-mode frontend testing with a persistent local Postgres container:
+
+```bash
+scripts/dev-up.sh
+scripts/dev-down.sh
+scripts/dev-rebuild.sh              # rebuild Compose images
+scripts/dev-rebuild.sh --restart    # rebuild and restart Compose services
+```
+
+`dev-up.sh` starts Postgres, runs migrations, launches the API on `:8002`
+to avoid local model-service collisions, starts the worker, and runs Vite on
+`:5173`. It detects a LAN address and configures the browser-side API base
+URL to that address so the UI works from other devices on your local network.
+Set `SYNTHETOS_DEV_HOST=<ip-or-hostname>` before running it to override the
+detected address. Runtime logs and pid files live under `.dev/`. `dev-down.sh`
+stops those host processes and stops Postgres without removing the database
+volume. `dev-rebuild.sh` rebuilds the Docker Compose images without touching
+the database volume; pass service names such as `api worker web` to rebuild a
+subset, `--no-cache` for a clean rebuild, `--pull` for newer base images,
+`--gpu` to include `experiment-runner`, or `--prod` to ignore the dev override.
+
 ### 2. Host-mode (without Docker)
 
 If you'd rather run API/worker/web on the host (no container boundary),

@@ -189,6 +189,101 @@ def test_build_failure_routes_to_verification_check(
     assert fake_session.committed is True
 
 
+def test_build_recipe_builds_fresh_per_run_image(
+    monkeypatch, tmp_path: Path
+) -> None:
+    run = SimpleNamespace(
+        id=uuid7(),
+        experiment_spec_id=uuid7(),
+        run_number=1,
+        charter_id=uuid7(),
+        cycle_id=uuid7(),
+        status="pending",
+        started_at=None,
+        workspace_path=None,
+        env_vars=None,
+        failure_class=None,
+        error=None,
+        completed_at=None,
+        image_ref=None,
+        command=None,
+        resource_limits=None,
+    )
+    dockerfile_content = "FROM python:3.12-slim\nRUN pip install numpy\n"
+    spec = SimpleNamespace(
+        id=run.experiment_spec_id,
+        title="agent-authored build spec",
+        code_plan={
+            "files": {"run_experiment.py": "print('ok')"},
+            "entry_point": "run_experiment.py",
+        },
+        base_image="python:3.12-slim",
+        build_recipe={"dockerfile_content": dockerfile_content},
+        hardware_profile={},
+    )
+    fake_session = _FakeSetupSession(run, spec)
+
+    monkeypatch.setattr(
+        setup_operator,
+        "get_sync_session_factory",
+        lambda: _FakeFactory(fake_session),
+    )
+    monkeypatch.setattr(setup_operator, "load_run_record", lambda _db, _run_id: run)
+    monkeypatch.setattr(
+        setup_operator, "create_worktree", lambda **_kwargs: tmp_path
+    )
+    monkeypatch.setattr(
+        setup_operator, "commit_worktree", lambda *_args, **_kwargs: "abc123"
+    )
+    monkeypatch.setattr(
+        setup_operator,
+        "get_settings",
+        lambda: SimpleNamespace(data_root=tmp_path, repo_root=tmp_path),
+    )
+
+    build_calls: list[dict[str, object]] = []
+
+    class _FakeRunner:
+        def build_image(self, **kwargs):
+            build_calls.append(kwargs)
+            return "synthetos-exp-built"
+
+    monkeypatch.setattr(setup_operator, "DockerRunner", _FakeRunner)
+
+    enqueue_calls: list[dict[str, object]] = []
+
+    def fake_enqueue_next(_db, *, cycle_id, next_job_type, run_record_id, **kwargs):
+        enqueue_calls.append(
+            {
+                "cycle_id": cycle_id,
+                "next_job_type": next_job_type,
+                "run_record_id": run_record_id,
+                **kwargs,
+            }
+        )
+
+    monkeypatch.setattr(setup_operator, "enqueue_next", fake_enqueue_next)
+    monkeypatch.setattr(setup_operator, "emit_event_sync", lambda *a, **kw: None)
+
+    result = setup_operator.execution_setup_operator(
+        OperatorInput(
+            cycle_id=UUID(str(run.cycle_id)),
+            charter_id=UUID(str(run.charter_id)),
+            job_id=uuid7(),
+            job_type="execution_setup",
+            payload={"run_record_id": str(run.id)},
+        )
+    )
+
+    assert result.success is True
+    assert len(build_calls) == 1
+    assert build_calls[0]["dockerfile_content"] == dockerfile_content
+    assert build_calls[0]["context_path"] == tmp_path
+    assert str(build_calls[0]["tag"]).startswith("synthetos-exp-")
+    assert run.image_ref == "synthetos-exp-built"
+    assert enqueue_calls[0]["next_job_type"] == "execution_run"
+
+
 def test_remediation_override_swaps_base_image(
     monkeypatch, tmp_path: Path
 ) -> None:

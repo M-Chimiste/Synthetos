@@ -128,6 +128,77 @@ export function useDiscoverSkills() {
   });
 }
 
+// ---- Settings hooks ----
+
+export function useModelSettings() {
+  return useQuery({
+    queryKey: ["settings", "models"],
+    queryFn: api.fetchModelSettings,
+  });
+}
+
+export function useCreateModelCatalogEntry() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: api.createModelCatalogEntry,
+    onSuccess: () => {
+      void qc.invalidateQueries({ queryKey: ["settings", "models"] });
+    },
+  });
+}
+
+export function useUpdateModelCatalogEntry() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: ({
+      id,
+      data,
+    }: {
+      id: string;
+      data: Parameters<typeof api.updateModelCatalogEntry>[1];
+    }) => api.updateModelCatalogEntry(id, data),
+    onSuccess: () => {
+      void qc.invalidateQueries({ queryKey: ["settings", "models"] });
+    },
+  });
+}
+
+export function useDeleteModelCatalogEntry() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: api.deleteModelCatalogEntry,
+    onSuccess: () => {
+      void qc.invalidateQueries({ queryKey: ["settings", "models"] });
+    },
+  });
+}
+
+export function useAssignModelRole() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: ({
+      role,
+      data,
+    }: {
+      role: string;
+      data: api.ModelRoleBindingPayload;
+    }) => api.assignModelRole(role, data),
+    onSuccess: () => {
+      void qc.invalidateQueries({ queryKey: ["settings", "models"] });
+    },
+  });
+}
+
+export function useTestModelCatalogEntry() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: api.testModelCatalogEntry,
+    onSuccess: () => {
+      void qc.invalidateQueries({ queryKey: ["settings", "models"] });
+    },
+  });
+}
+
 // ---- Discovery hooks ----
 
 export function useDiscoverySessions(charterId?: string) {

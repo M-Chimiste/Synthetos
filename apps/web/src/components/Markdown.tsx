@@ -12,10 +12,10 @@ interface MarkdownProps {
  */
 export default function Markdown({ children }: MarkdownProps) {
   if (!children) {
-    return <p className="text-sm text-gray-400">No content.</p>;
+    return <p className="text-sm text-[var(--c-ink-4)]">No content.</p>;
   }
   return (
-    <article className="prose prose-sm max-w-none prose-headings:font-semibold prose-h1:text-2xl prose-h2:text-xl prose-h3:text-lg prose-pre:rounded-md prose-pre:bg-gray-900 prose-pre:text-gray-100 prose-code:before:content-none prose-code:after:content-none prose-code:rounded prose-code:bg-gray-100 prose-code:px-1 prose-code:py-0.5 prose-code:text-xs prose-table:text-sm">
+    <article className="prose prose-sm max-w-none prose-headings:font-semibold prose-h1:text-2xl prose-h2:text-xl prose-h3:text-lg prose-pre:rounded-md prose-pre:bg-[var(--c-panel-2)] prose-pre:text-[var(--c-ink)] prose-code:before:content-none prose-code:after:content-none prose-code:rounded prose-code:bg-[var(--c-panel)] prose-code:px-1 prose-code:py-0.5 prose-code:text-xs prose-table:text-sm">
       <ReactMarkdown remarkPlugins={[remarkGfm]}>{children}</ReactMarkdown>
     </article>
   );

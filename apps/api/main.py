@@ -25,6 +25,7 @@ from apps.api.routers import (
     skills,
     state,
 )
+from apps.api.routers import settings as settings_router
 from libs.core.config import get_settings
 from libs.core.logging import get_logger, setup_logging
 from libs.core.state_machine import InvalidTransitionError
@@ -122,6 +123,7 @@ def create_app() -> FastAPI:
     app.include_router(remediation.router, prefix=api_prefix)
     app.include_router(autonomy.router, prefix=api_prefix)
     app.include_router(patterns.router, prefix=api_prefix)
+    app.include_router(settings_router.router, prefix=api_prefix)
 
     return app
 

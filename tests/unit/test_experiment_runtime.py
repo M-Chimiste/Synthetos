@@ -33,6 +33,7 @@ class _FakeCompileSession:
         self.hypothesis_session = hypothesis_session
         self.charter = charter
         self.cards = cards
+        self.added: list[object] = []
 
     def get(self, model, key):
         if str(key) == str(self.hypothesis_session.id):
@@ -45,7 +46,7 @@ class _FakeCompileSession:
         return _FakeScalarResult(self.cards)
 
     def add(self, _obj):
-        return None
+        self.added.append(_obj)
 
     def commit(self):
         return None
@@ -113,6 +114,88 @@ def test_protocol_compile_rejects_out_of_scope_card_ids(monkeypatch) -> None:
 
     assert result.success is False
     assert "out of scope" in (result.error or "")
+
+
+def test_protocol_compile_persists_agent_authored_build_recipe(monkeypatch) -> None:
+    hypothesis_session = SimpleNamespace(
+        id=uuid7(),
+        cycle_id=uuid7(),
+        charter_id=uuid7(),
+    )
+    charter = SimpleNamespace(problem_statement="test problem")
+    card = SimpleNamespace(
+        id=uuid7(),
+        title="Try a dependency",
+        statement="Use numpy",
+        rationale="Needs a package",
+        novelty_score=0.7,
+        feasibility_score=0.8,
+        impact_score=0.6,
+        status="candidate",
+        updated_at=None,
+    )
+    fake_session = _FakeCompileSession(hypothesis_session, charter, cards=[card])
+
+    monkeypatch.setattr(
+        compile_operator,
+        "get_sync_session_factory",
+        lambda: _FakeFactory(fake_session),
+    )
+    monkeypatch.setattr(
+        compile_operator,
+        "load_skill_prompt",
+        lambda *_args, **_kwargs: SimpleNamespace(prompt=None),
+    )
+    monkeypatch.setattr(compile_operator, "record_skill_usage", lambda *a, **kw: None)
+    monkeypatch.setattr(compile_operator, "record_model_call", lambda *a, **kw: None)
+    monkeypatch.setattr(compile_operator, "emit_event_sync", lambda *a, **kw: None)
+
+    dockerfile_content = "FROM python:3.12-slim\nRUN pip install numpy\n"
+
+    async def fake_compile_specs(*_args, **_kwargs):
+        return (
+            compile_operator._SpecSet(
+                specs=[
+                    compile_operator._CompiledSpec(
+                        title="numpy spec",
+                        description="Runs with numpy",
+                        baseline={"description": "baseline"},
+                        metrics=[{"name": "score", "direction": "maximize"}],
+                        stop_conditions=[{"type": "timeout"}],
+                        code_plan={
+                            "entry_point": "run_experiment.py",
+                            "dependencies": ["numpy"],
+                            "files": {"run_experiment.py": "print('ok')"},
+                        },
+                        base_image="python:3.12-slim",
+                        build_recipe={"dockerfile_content": dockerfile_content},
+                    )
+                ]
+            ),
+            {"provider": "test", "model": "test"},
+        )
+
+    monkeypatch.setattr(compile_operator, "_compile_specs", fake_compile_specs)
+
+    result = compile_operator.protocol_compile_operator(
+        OperatorInput(
+            cycle_id=UUID(str(hypothesis_session.cycle_id)),
+            charter_id=UUID(str(hypothesis_session.charter_id)),
+            job_id=uuid7(),
+            job_type="protocol_compile",
+            payload={"hypothesis_session_id": str(hypothesis_session.id)},
+        )
+    )
+
+    assert result.success is True
+    specs = [
+        obj
+        for obj in fake_session.added
+        if obj.__class__.__name__ == "ExperimentSpec"
+    ]
+    assert len(specs) == 1
+    assert specs[0].status == "validated"
+    assert specs[0].build_recipe == {"dockerfile_content": dockerfile_content}
 
 
 def test_execution_setup_requires_non_empty_commit_sha(monkeypatch, tmp_path: Path) -> None:

@@ -22,6 +22,7 @@ export type IconName =
   | "bolt"
   | "check"
   | "x"
+  | "edit"
   | "filter"
   | "cmd"
   | "flask"
@@ -94,6 +95,7 @@ const PATHS: Record<IconName, React.ReactNode> = {
   bolt: <path d="M13 2 3 14h8l-1 8 10-12h-8l1-8z" />,
   check: <path d="M5 12l4 4L19 6" />,
   x: <path d="M6 6l12 12M18 6 6 18" />,
+  edit: <path d="M4 20h4L19 9l-4-4L4 16v4ZM13 7l4 4" />,
   filter: <path d="M4 5h16l-6 8v6l-4-2v-4Z" />,
   cmd: (
     <path d="M9 6a3 3 0 1 0-3 3h12a3 3 0 1 0-3-3v12a3 3 0 1 0 3-3H6a3 3 0 1 0 3 3Z" />

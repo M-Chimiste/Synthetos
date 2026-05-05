@@ -26,6 +26,8 @@ def validate_spec(spec_data: dict) -> ValidationResult:
     - at least one metric with name and direction
     - at least one stop condition
     - code_plan must have entry_point and at least one file
+    - code_plan dependencies require an explicit build_recipe.dockerfile_content
+    - dockerfile_content, when present, must contain a FROM instruction
     """
     result = ValidationResult()
 
@@ -60,5 +62,32 @@ def validate_spec(spec_data: dict) -> ValidationResult:
     else:
         result.errors.append("code_plan is required")
 
+    build_recipe = spec_data.get("build_recipe")
+    dockerfile_content = ""
+    if isinstance(build_recipe, dict):
+        raw_dockerfile = build_recipe.get("dockerfile_content")
+        if isinstance(raw_dockerfile, str):
+            dockerfile_content = raw_dockerfile
+
+    dependencies = code_plan.get("dependencies") if isinstance(code_plan, dict) else None
+    if dependencies and not dockerfile_content.strip():
+        result.errors.append(
+            "code_plan dependencies require build_recipe.dockerfile_content"
+        )
+
+    if dockerfile_content and not _has_from_instruction(dockerfile_content):
+        result.errors.append("build_recipe.dockerfile_content must contain a FROM line")
+
     result.valid = len(result.errors) == 0
     return result
+
+
+def _has_from_instruction(dockerfile_content: str) -> bool:
+    """Return True when a Dockerfile contains a real FROM instruction."""
+    for line in dockerfile_content.splitlines():
+        stripped = line.strip()
+        if not stripped or stripped.startswith("#"):
+            continue
+        if stripped.upper().startswith("FROM "):
+            return True
+    return False
