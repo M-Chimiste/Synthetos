@@ -205,3 +205,57 @@ class TestHelpers:
         assert _parse_memory("16g") == 16
         assert _parse_memory("2048m") == 2
         assert _parse_memory("32") == 32
+
+
+class TestBuildStrategy:
+    """failure_class='build' has its own escalation lane:
+    dockerfile_fix → base_image_swap → broad debug.
+    """
+
+    def test_first_attempt_picks_dockerfile_fix(self) -> None:
+        result = select_strategy(
+            failure_class="build",
+            stderr_tail="docker build error: package not found",
+            current_resource_limits={},
+            prior_strategies=[],
+            prior_failure_classes=[],
+        )
+        assert result.strategy == "dockerfile_fix"
+        assert result.strategy_tier == "focused"
+        assert result.remediable is True
+
+    def test_second_attempt_swaps_base_image(self) -> None:
+        result = select_strategy(
+            failure_class="build",
+            stderr_tail="manifest unknown",
+            current_resource_limits={},
+            prior_strategies=["dockerfile_fix"],
+            prior_failure_classes=["build"],
+        )
+        assert result.strategy == "base_image_swap"
+        assert result.strategy_tier == "focused"
+        assert result.remediable is True
+
+    def test_third_attempt_falls_back_to_broad_debug(self) -> None:
+        result = select_strategy(
+            failure_class="build",
+            stderr_tail="",
+            current_resource_limits={},
+            prior_strategies=["dockerfile_fix", "base_image_swap"],
+            prior_failure_classes=["build", "build"],
+        )
+        assert result.strategy == "debug_broad"
+        assert result.strategy_tier == "broad"
+
+    def test_unrelated_prior_strategies_dont_block_dockerfile_fix(self) -> None:
+        """A prior `install_deps` (dependency-class) should not count as a
+        prior build strategy. The first build attempt still picks
+        dockerfile_fix."""
+        result = select_strategy(
+            failure_class="build",
+            stderr_tail="bad FROM tag",
+            current_resource_limits={},
+            prior_strategies=["install_deps"],
+            prior_failure_classes=["dependency"],
+        )
+        assert result.strategy == "dockerfile_fix"

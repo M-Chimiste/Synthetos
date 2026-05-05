@@ -9,12 +9,30 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Literal
 
-from docker.errors import NotFound
+from docker.errors import BuildError, NotFound
 from docker.types import DeviceRequest, Mount
 
 import docker
 from libs.core.config import get_settings
 from libs.core.logging import get_logger
+
+
+class BuildImageError(Exception):
+    """Raised when ``DockerRunner.build_image`` fails. Carries the captured
+    build log and the underlying cause so the execution_setup operator can
+    persist them and route the failure through the auto-remediation loop.
+    """
+
+    def __init__(
+        self,
+        tag: str,
+        log_text: str,
+        cause: BaseException | str,
+    ) -> None:
+        self.tag = tag
+        self.log_text = log_text
+        self.cause = cause
+        super().__init__(f"image build failed for tag {tag}: {cause}")
 
 log = get_logger("adapters.container.docker_runner")
 
@@ -67,17 +85,57 @@ class DockerRunner:
         tag: str,
         context_path: Path,
     ) -> str:
-        """Build a Docker image on-demand. Returns the image tag."""
+        """Build a Docker image on-demand. Returns the image tag.
+
+        The build output stream is consumed line-by-line so we can surface
+        useful diagnostics on failure. On error we raise
+        :class:`BuildImageError` carrying the captured log text and the
+        underlying cause; ``execution_setup`` persists those alongside the
+        ``RunRecord`` and routes the failure through auto-remediation.
+        """
         dockerfile_path = context_path / "Dockerfile"
         dockerfile_path.write_text(dockerfile_content)
 
         log.info("docker.building_image", tag=tag, context=str(context_path))
-        self.client.images.build(
-            path=str(context_path),
-            tag=tag,
-            dockerfile="Dockerfile",
-            rm=True,
-        )
+
+        log_lines: list[str] = []
+        try:
+            _image, build_log = self.client.images.build(
+                path=str(context_path),
+                tag=tag,
+                dockerfile="Dockerfile",
+                rm=True,
+            )
+            for chunk in build_log:
+                if not isinstance(chunk, dict):
+                    continue
+                if "stream" in chunk:
+                    log_lines.append(str(chunk["stream"]).rstrip("\n"))
+                elif "error" in chunk:
+                    # Some daemons emit an `error` chunk before raising.
+                    log_lines.append(f"ERROR: {chunk['error']}")
+        except BuildError as exc:
+            # docker-py's BuildError exposes the build log on `.build_log`,
+            # an iterable of dicts. Drain it into our captured tail.
+            for chunk in getattr(exc, "build_log", []) or []:
+                if not isinstance(chunk, dict):
+                    continue
+                if "stream" in chunk:
+                    log_lines.append(str(chunk["stream"]).rstrip("\n"))
+                elif "error" in chunk:
+                    log_lines.append(f"ERROR: {chunk['error']}")
+            raise BuildImageError(
+                tag=tag,
+                log_text="\n".join(log_lines),
+                cause=exc,
+            ) from exc
+        except Exception as exc:  # pragma: no cover - defensive for daemon errors
+            raise BuildImageError(
+                tag=tag,
+                log_text="\n".join(log_lines),
+                cause=exc,
+            ) from exc
+
         return tag
 
     def run(
