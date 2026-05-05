@@ -1,54 +1,75 @@
-const STATUS_COLORS: Record<string, string> = {
-  active: "bg-green-100 text-green-800",
-  running: "bg-green-100 text-green-800",
-  completed: "bg-blue-100 text-blue-800",
-  succeeded: "bg-blue-100 text-blue-800",
-  failed: "bg-red-100 text-red-800",
-  error: "bg-red-100 text-red-800",
-  pending: "bg-yellow-100 text-yellow-800",
-  queued: "bg-yellow-100 text-yellow-800",
-  paused: "bg-gray-100 text-gray-800",
-  cancelled: "bg-gray-100 text-gray-600",
-  draft: "bg-gray-100 text-gray-600",
-  planning: "bg-purple-100 text-purple-800",
-  discovering: "bg-indigo-100 text-indigo-800",
-  analyzing: "bg-indigo-100 text-indigo-800",
-  experimenting: "bg-orange-100 text-orange-800",
-  created: "bg-slate-100 text-slate-800",
-  claimed: "bg-amber-100 text-amber-800",
-  discovery_ready: "bg-indigo-100 text-indigo-800",
-  discovery_screened: "bg-indigo-100 text-indigo-800",
-  analysis_ready: "bg-sky-100 text-sky-800",
-  evidence_ready: "bg-sky-100 text-sky-800",
-  portfolio_ready: "bg-orange-100 text-orange-800",
-  protocol_ready: "bg-orange-100 text-orange-800",
-  verifying: "bg-violet-100 text-violet-800",
-  loop_deciding: "bg-fuchsia-100 text-fuchsia-800",
-  reporting: "bg-blue-100 text-blue-800",
-  archived: "bg-gray-100 text-gray-600",
-  // Phase 5 hypothesis lifecycle
-  promising: "bg-emerald-100 text-emerald-800",
-  stalled: "bg-amber-100 text-amber-800",
-  deprioritized: "bg-gray-100 text-gray-600",
-  validated: "bg-teal-100 text-teal-800",
-  compiled: "bg-sky-100 text-sky-800",
-  candidate: "bg-slate-100 text-slate-800",
-  selected: "bg-indigo-100 text-indigo-800",
-  deferred: "bg-gray-100 text-gray-600",
-  rejected: "bg-red-100 text-red-800",
-  // Autonomy mode
-  autonomous: "bg-purple-100 text-purple-800",
-  supervised: "bg-slate-100 text-slate-800",
+// Calm Console status mapping. Restrained 5-tone palette (ok / accent / err /
+// warn / slate + violet) applied via tokens.css `.chip` classes.
+
+const STATUS_TONE: Record<string, string> = {
+  active: "ok",
+  running: "ok",
+  succeeded: "accent",
+  completed: "accent",
+  closed: "accent",
+  failed: "err",
+  error: "err",
+  cancelled: "slate",
+  pending: "warn",
+  queued: "warn",
+  paused: "warn",
+  claimed: "warn",
+  draft: "slate",
+  archived: "slate",
+  created: "slate",
+  planning: "violet",
+  discovering: "violet",
+  analyzing: "violet",
+  experimenting: "accent",
+  verifying: "violet",
+  reporting: "accent",
+  discovery_ready: "violet",
+  discovery_screened: "violet",
+  analysis_ready: "violet",
+  evidence_ready: "violet",
+  portfolio_ready: "accent",
+  protocol_ready: "accent",
+  loop_deciding: "violet",
+  compiled: "accent",
+  selected: "accent",
+  deferred: "slate",
+  rejected: "err",
+  promising: "ok",
+  stalled: "warn",
+  deprioritized: "slate",
+  validated: "ok",
+  candidate: "slate",
+  auto: "ok",
+  curated: "accent",
+  deprecated: "slate",
+  autonomous: "violet",
+  supervised: "slate",
+  advancing: "ok",
+  regressing: "err",
+  noisy: "warn",
+  breakthrough: "accent",
+  disabled: "slate",
+  continue_current: "ok",
+  parameter_variation: "accent",
+  hypothesis_pivot: "violet",
+  mechanical_recovery: "warn",
+  stop_gate: "warn",
+  halt: "slate",
 };
 
-const DEFAULT_COLOR = "bg-gray-100 text-gray-700";
+export function statusTone(status: string): string {
+  return STATUS_TONE[status.toLowerCase()] ?? "slate";
+}
 
-export default function StatusBadge({ status }: { status: string }) {
-  const color = STATUS_COLORS[status.toLowerCase()] ?? DEFAULT_COLOR;
+export default function StatusBadge({
+  status,
+  className = "",
+}: {
+  status: string;
+  className?: string;
+}) {
   return (
-    <span
-      className={`inline-block rounded-full px-2.5 py-0.5 text-xs font-medium ${color}`}
-    >
+    <span className={`chip ${statusTone(status)} ${className}`.trim()}>
       {status}
     </span>
   );

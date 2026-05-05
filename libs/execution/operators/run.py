@@ -4,6 +4,7 @@ captures telemetry, and enqueues the next step.
 
 from __future__ import annotations
 
+import json
 from pathlib import Path
 from typing import Any, Literal
 
@@ -24,6 +25,7 @@ from libs.execution.operators._common import (
     load_run_record,
     run_record_id_from_payload,
 )
+from libs.execution.sdk_template import SIGNAL_PREFIX
 from libs.storage.base import get_sync_session_factory
 from libs.storage.models.experiment import RunTelemetry
 
@@ -107,13 +109,35 @@ def execution_run_operator(op_input: OperatorInput) -> OperatorResult:
 
         def telemetry_callback(event_type: str, message: str, payload: dict[str, Any]) -> None:
             log_lines.append(message)
+            parsed_event_type = event_type
+            parsed_payload = payload
+            # Detect structured signals from the in-container SDK
+            # (libs/execution/sdk_template.py). Docker may prefix lines with
+            # timestamps, so scan for SIGNAL_PREFIX instead of requiring it at
+            # column 0. Signals that parse as JSON are persisted with
+            # event_type="signal.<event>" so the dashboard can filter them
+            # apart from raw stdout. Anything malformed falls back to "log"
+            # — we never lose the original line; it stays in payload.message.
+            signal_start = message.find(SIGNAL_PREFIX) if event_type == "log" else -1
+            if signal_start >= 0:
+                try:
+                    data = json.loads(message[signal_start + len(SIGNAL_PREFIX):])
+                    if isinstance(data, dict):
+                        event_name = str(data.get("event", "unknown"))
+                        parsed_event_type = f"signal.{event_name}"
+                        parsed_payload = {
+                            **payload,
+                            **{k: v for k, v in data.items() if k != "event"},
+                        }
+                except (json.JSONDecodeError, ValueError):
+                    pass
             with factory() as telemetry_db:
                 row = RunTelemetry(
                     id=uuid7(),
                     run_record_id=run.id,
                     timestamp=utcnow(),
-                    event_type=event_type,
-                    payload={"message": message, **payload},
+                    event_type=parsed_event_type,
+                    payload={"message": message, **parsed_payload},
                 )
                 telemetry_db.add(row)
                 telemetry_db.commit()

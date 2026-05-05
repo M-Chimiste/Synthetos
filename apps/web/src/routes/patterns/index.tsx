@@ -5,12 +5,13 @@ import {
   useDecayPatterns,
   usePatterns,
 } from "../../api/hooks";
+import StatusBadge from "../../components/StatusBadge";
 
 export const Route = createFileRoute("/patterns/")({
   component: PatternsPage,
 });
 
-const PATTERN_TYPES = [
+const PATTERN_TYPES: string[] = [
   "",
   "failure",
   "remediation",
@@ -19,7 +20,7 @@ const PATTERN_TYPES = [
   "retrieval_heuristic",
 ];
 
-const TRUST_TIERS = ["", "auto", "curated", "deprecated"];
+const TRUST_TIERS: string[] = ["", "auto", "curated", "deprecated"];
 
 function PatternsPage() {
   const [patternType, setPatternType] = useState("");
@@ -31,155 +32,288 @@ function PatternsPage() {
   const { data, isLoading, error } = usePatterns(filters);
   const consolidate = useConsolidatePatterns();
   const decay = useDecayPatterns();
+  const items = data?.items ?? [];
 
   return (
-    <div>
-      <div className="mb-6 flex items-center justify-between">
-        <h1 className="text-2xl font-semibold">Canonical patterns</h1>
-        <div className="flex gap-2">
-          <button
-            onClick={() => consolidate.mutate({})}
-            disabled={consolidate.isPending}
-            className="rounded-md bg-gray-900 px-3 py-2 text-sm font-medium text-white hover:bg-gray-700 disabled:opacity-50"
+    <div style={{ padding: "32px 40px", maxWidth: 1240 }}>
+      <div
+        style={{
+          display: "flex",
+          alignItems: "flex-end",
+          justifyContent: "space-between",
+          marginBottom: 24,
+        }}
+      >
+        <div>
+          <h1
+            style={{
+              fontSize: 22,
+              fontWeight: 600,
+              letterSpacing: "-0.015em",
+              margin: 0,
+            }}
           >
-            {consolidate.isPending ? "Enqueuing…" : "Consolidate now"}
-          </button>
+            Patterns
+          </h1>
+          <div
+            style={{ color: "var(--c-ink-3)", fontSize: 13.5, marginTop: 4 }}
+          >
+            Canonical knowledge the system has learned across charters.
+          </div>
+        </div>
+        <div style={{ display: "flex", gap: 8 }}>
           <button
+            type="button"
+            className="btn"
             onClick={() => decay.mutate({ force: true })}
             disabled={decay.isPending}
-            className="rounded-md border border-gray-300 px-3 py-2 text-sm font-medium text-gray-700 hover:bg-gray-100 disabled:opacity-50"
           >
             {decay.isPending ? "Enqueuing…" : "Run decay"}
+          </button>
+          <button
+            type="button"
+            className="btn primary"
+            onClick={() => consolidate.mutate({})}
+            disabled={consolidate.isPending}
+          >
+            {consolidate.isPending ? "Enqueuing…" : "Consolidate now"}
           </button>
         </div>
       </div>
 
-      <div className="mb-4 flex flex-wrap gap-3">
-        <FilterSelect
-          label="Type"
-          value={patternType}
+      <div
+        style={{
+          display: "flex",
+          gap: 8,
+          marginBottom: 14,
+          flexWrap: "wrap",
+        }}
+      >
+        <FilterChips
+          values={PATTERN_TYPES}
+          active={patternType}
           onChange={setPatternType}
-          options={PATTERN_TYPES}
+          labelFor={(v) =>
+            v ? v.replace(/_/g, " ") : "All"
+          }
         />
-        <FilterSelect
-          label="Trust"
-          value={trustTier}
-          onChange={setTrustTier}
-          options={TRUST_TIERS}
-        />
+        <div
+          style={{
+            marginLeft: "auto",
+            display: "flex",
+            gap: 6,
+            alignItems: "center",
+            fontSize: 12.5,
+            color: "var(--c-ink-3)",
+          }}
+        >
+          <span>Trust</span>
+          <FilterChips
+            values={TRUST_TIERS}
+            active={trustTier}
+            onChange={setTrustTier}
+            labelFor={(v) => v || "any"}
+          />
+        </div>
       </div>
 
       {(consolidate.isSuccess || decay.isSuccess) && (
-        <div className="mb-4 rounded-lg border border-green-200 bg-green-50 p-3 text-sm text-green-700">
+        <div
+          className="card"
+          style={{
+            padding: 12,
+            marginBottom: 16,
+            borderColor: "var(--c-ok-soft)",
+            color: "var(--c-ok)",
+            background: "var(--c-ok-soft)",
+            fontSize: 13,
+          }}
+        >
           Job enqueued. Patterns refresh once the worker completes the run.
         </div>
       )}
 
       {error && (
-        <div className="mb-4 rounded-lg border border-red-200 bg-red-50 p-3 text-sm text-red-700">
+        <div
+          className="card"
+          style={{
+            padding: 14,
+            marginBottom: 16,
+            borderColor: "var(--c-err)",
+            color: "var(--c-err)",
+            fontSize: 13,
+          }}
+        >
           {error.message}
         </div>
       )}
 
-      {isLoading && <p className="text-sm text-gray-500">Loading patterns…</p>}
+      {isLoading && (
+        <div style={{ fontSize: 13, color: "var(--c-ink-3)" }}>
+          Loading patterns…
+        </div>
+      )}
 
-      {data && data.items.length === 0 && (
-        <div className="rounded-lg border border-gray-200 bg-white p-8 text-center text-gray-500">
+      {!isLoading && items.length === 0 && (
+        <div
+          className="card"
+          style={{
+            padding: 32,
+            textAlign: "center",
+            color: "var(--c-ink-3)",
+            fontSize: 13.5,
+          }}
+        >
           No patterns yet. Run consolidation after at least one cycle closes.
         </div>
       )}
 
-      {data && data.items.length > 0 && (
-        <div className="overflow-x-auto rounded-lg border border-gray-200 bg-white">
-          <table className="min-w-full divide-y divide-gray-200 text-sm">
-            <thead className="bg-gray-50 text-xs uppercase tracking-wide text-gray-500">
-              <tr>
-                <th className="px-3 py-2 text-left">Title</th>
-                <th className="px-3 py-2 text-left">Type</th>
-                <th className="px-3 py-2 text-left">Trust</th>
-                <th className="px-3 py-2 text-right">Conf</th>
-                <th className="px-3 py-2 text-right">Evidence</th>
-                <th className="px-3 py-2 text-right">Charters</th>
-                <th className="px-3 py-2 text-right">Stale</th>
-              </tr>
-            </thead>
-            <tbody className="divide-y divide-gray-100">
-              {data.items.map((p) => (
-                <tr key={p.id} className="hover:bg-gray-50">
-                  <td className="px-3 py-2">
-                    <Link
-                      to="/patterns/$patternId"
-                      params={{ patternId: p.id }}
-                      className="text-gray-900 hover:underline"
-                    >
-                      {p.title}
-                    </Link>
-                  </td>
-                  <td className="px-3 py-2 text-gray-600">{p.pattern_type}</td>
-                  <td className="px-3 py-2">
-                    <TierBadge tier={p.trust_tier} />
-                  </td>
-                  <td className="px-3 py-2 text-right tabular-nums">
-                    {p.confidence.toFixed(2)}
-                  </td>
-                  <td className="px-3 py-2 text-right tabular-nums">
-                    {p.evidence_count}
-                  </td>
-                  <td className="px-3 py-2 text-right tabular-nums">
-                    {p.source_charter_ids.length}
-                  </td>
-                  <td className="px-3 py-2 text-right tabular-nums">
-                    {p.staleness_score.toFixed(2)}
-                  </td>
-                </tr>
-              ))}
-            </tbody>
-          </table>
+      {items.length > 0 && (
+        <div className="card" style={{ overflow: "hidden" }}>
+          <div
+            style={{
+              display: "grid",
+              gridTemplateColumns: "1fr 140px 90px 80px 80px 80px 80px",
+              padding: "10px 16px",
+              borderBottom: "1px solid var(--c-line)",
+              fontSize: 11,
+              color: "var(--c-ink-3)",
+              textTransform: "uppercase",
+              letterSpacing: "0.05em",
+              fontWeight: 500,
+            }}
+          >
+            <span>Title</span>
+            <span>Type</span>
+            <span>Trust</span>
+            <span style={{ textAlign: "right" }}>Conf</span>
+            <span style={{ textAlign: "right" }}>Evidence</span>
+            <span style={{ textAlign: "right" }}>Charters</span>
+            <span style={{ textAlign: "right" }}>Stale</span>
+          </div>
+          {items.map((p, i) => (
+            <Link
+              key={p.id}
+              to="/patterns/$patternId"
+              params={{ patternId: p.id }}
+              style={{
+                display: "grid",
+                gridTemplateColumns: "1fr 140px 90px 80px 80px 80px 80px",
+                padding: "12px 16px",
+                borderBottom:
+                  i < items.length - 1
+                    ? "1px solid var(--c-line-soft)"
+                    : "none",
+                alignItems: "center",
+                fontSize: 13.5,
+                textDecoration: "none",
+                color: "inherit",
+              }}
+            >
+              <div>
+                <div>{p.title}</div>
+                <div
+                  className="mono"
+                  style={{
+                    fontSize: 11,
+                    color: "var(--c-ink-4)",
+                    marginTop: 2,
+                  }}
+                >
+                  {p.id}
+                </div>
+              </div>
+              <span
+                className="chip"
+                style={{ fontSize: 10.5, textTransform: "capitalize" }}
+              >
+                {p.pattern_type.replace(/_/g, " ")}
+              </span>
+              <StatusBadge status={p.trust_tier} />
+              <span
+                style={{
+                  textAlign: "right",
+                  fontFamily: "var(--f-mono)",
+                  fontSize: 12,
+                  color:
+                    p.confidence > 0.8 ? "var(--c-ok)" : "var(--c-ink-2)",
+                }}
+              >
+                {p.confidence.toFixed(2)}
+              </span>
+              <span
+                style={{
+                  textAlign: "right",
+                  fontFamily: "var(--f-mono)",
+                  fontSize: 12,
+                  color: "var(--c-ink-2)",
+                }}
+              >
+                {p.evidence_count}
+              </span>
+              <span
+                style={{
+                  textAlign: "right",
+                  fontFamily: "var(--f-mono)",
+                  fontSize: 12,
+                  color: "var(--c-ink-2)",
+                }}
+              >
+                {p.source_charter_ids.length}
+              </span>
+              <span
+                style={{
+                  textAlign: "right",
+                  fontFamily: "var(--f-mono)",
+                  fontSize: 12,
+                  color:
+                    p.staleness_score > 0.5
+                      ? "var(--c-warn)"
+                      : "var(--c-ink-4)",
+                }}
+              >
+                {p.staleness_score.toFixed(2)}
+              </span>
+            </Link>
+          ))}
         </div>
       )}
     </div>
   );
 }
 
-function FilterSelect({
-  label,
-  value,
+function FilterChips({
+  values,
+  active,
   onChange,
-  options,
+  labelFor,
 }: {
-  label: string;
-  value: string;
+  values: string[];
+  active: string;
   onChange: (v: string) => void;
-  options: string[];
+  labelFor: (v: string) => string;
 }) {
   return (
-    <label className="flex items-center gap-2 text-sm text-gray-600">
-      {label}:
-      <select
-        value={value}
-        onChange={(e) => onChange(e.target.value)}
-        className="rounded-md border border-gray-300 px-2 py-1 text-sm"
-      >
-        {options.map((o) => (
-          <option key={o} value={o}>
-            {o || "(any)"}
-          </option>
-        ))}
-      </select>
-    </label>
-  );
-}
-
-function TierBadge({ tier }: { tier: string }) {
-  const styles =
-    tier === "auto"
-      ? "bg-green-100 text-green-700"
-      : tier === "curated"
-        ? "bg-yellow-100 text-yellow-700"
-        : "bg-gray-200 text-gray-600";
-  return (
-    <span className={`rounded-full px-2 py-0.5 text-xs font-medium ${styles}`}>
-      {tier}
-    </span>
+    <div style={{ display: "flex", gap: 6 }}>
+      {values.map((v) => {
+        const isActive = v === active;
+        return (
+          <button
+            key={v || "all"}
+            type="button"
+            onClick={() => onChange(v)}
+            className="btn sm"
+            style={{
+              background: isActive ? "var(--c-ink)" : "var(--c-bg-elev)",
+              color: isActive ? "var(--c-bg)" : "var(--c-ink-2)",
+              borderColor: isActive ? "var(--c-ink)" : "var(--c-line)",
+              textTransform: "capitalize",
+            }}
+          >
+            {labelFor(v)}
+          </button>
+        );
+      })}
+    </div>
   );
 }

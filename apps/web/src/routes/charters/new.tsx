@@ -1,10 +1,24 @@
 import { createFileRoute, Link, useNavigate } from "@tanstack/react-router";
-import { useState } from "react";
+import { useState, type FormEvent } from "react";
 import { useCreateCharter } from "../../api/hooks";
+import Icon from "../../components/Icon";
 
 export const Route = createFileRoute("/charters/new")({
   component: NewCharterPage,
 });
+
+const FIELD_STYLE = {
+  width: "100%",
+  border: "1px solid var(--c-line)",
+  background: "var(--c-bg-elev)",
+  color: "var(--c-ink)",
+  borderRadius: "var(--r-md)",
+  padding: "10px 12px",
+  fontSize: 13.5,
+  fontFamily: "var(--f-sans)",
+  outline: "none",
+  resize: "vertical" as const,
+};
 
 function NewCharterPage() {
   const navigate = useNavigate();
@@ -14,7 +28,7 @@ function NewCharterPage() {
   const [description, setDescription] = useState("");
   const [problemStatement, setProblemStatement] = useState("");
 
-  function handleSubmit(e: React.FormEvent) {
+  function handleSubmit(e: FormEvent) {
     e.preventDefault();
     createCharter.mutate(
       {
@@ -39,80 +53,158 @@ function NewCharterPage() {
     !createCharter.isPending;
 
   return (
-    <div className="mx-auto max-w-2xl">
-      <Link to="/charters" className="text-sm text-gray-500 hover:text-gray-700">
-        &larr; Charters
-      </Link>
-      <h1 className="mt-2 mb-6 text-2xl font-semibold">New Charter</h1>
+    <div>
+      <div
+        style={{
+          padding: "12px 40px",
+          borderBottom: "1px solid var(--c-line)",
+          display: "flex",
+          alignItems: "center",
+          gap: 10,
+          fontSize: 12.5,
+          color: "var(--c-ink-3)",
+          background: "var(--c-bg)",
+          position: "sticky",
+          top: 0,
+          zIndex: 5,
+        }}
+      >
+        <Link
+          to="/charters"
+          style={{
+            cursor: "pointer",
+            color: "inherit",
+            textDecoration: "none",
+          }}
+        >
+          Charters
+        </Link>
+        <Icon name="chevron" size={12} style={{ color: "var(--c-ink-4)" }} />
+        <span style={{ color: "var(--c-ink)" }}>New charter</span>
+      </div>
 
-      {createCharter.error && (
-        <div className="mb-4 rounded-lg border border-red-200 bg-red-50 p-4 text-sm text-red-700">
-          {createCharter.error.message}
+      <div style={{ padding: "40px 40px", maxWidth: 720 }}>
+        <h1
+          style={{
+            fontSize: 22,
+            fontWeight: 600,
+            letterSpacing: "-0.015em",
+            margin: 0,
+            marginBottom: 6,
+          }}
+        >
+          New charter
+        </h1>
+        <div
+          style={{ fontSize: 13.5, color: "var(--c-ink-3)", marginBottom: 28 }}
+        >
+          Define a research mandate that the system can plan and execute
+          against.
         </div>
-      )}
 
-      <form onSubmit={handleSubmit} className="space-y-5">
-        <div>
-          <label htmlFor="title" className="mb-1 block text-sm font-medium">
-            Title <span className="text-red-500">*</span>
-          </label>
-          <input
+        {createCharter.error && (
+          <div
+            className="card"
+            style={{
+              padding: 12,
+              marginBottom: 20,
+              borderColor: "var(--c-err)",
+              color: "var(--c-err)",
+              fontSize: 13,
+            }}
+          >
+            {createCharter.error.message}
+          </div>
+        )}
+
+        <form
+          onSubmit={handleSubmit}
+          style={{ display: "flex", flexDirection: "column", gap: 18 }}
+        >
+          <Field
             id="title"
-            type="text"
-            value={title}
-            onChange={(e) => setTitle(e.target.value)}
-            placeholder="e.g., Efficient Fine-tuning of LLMs"
-            className="w-full rounded-md border border-gray-300 px-3 py-2 text-sm focus:border-gray-500 focus:outline-none focus:ring-1 focus:ring-gray-500"
-          />
-        </div>
-
-        <div>
-          <label htmlFor="description" className="mb-1 block text-sm font-medium">
-            Description
-          </label>
-          <textarea
-            id="description"
-            value={description}
-            onChange={(e) => setDescription(e.target.value)}
-            rows={3}
-            placeholder="Brief description of the research charter"
-            className="w-full rounded-md border border-gray-300 px-3 py-2 text-sm focus:border-gray-500 focus:outline-none focus:ring-1 focus:ring-gray-500"
-          />
-        </div>
-
-        <div>
-          <label
-            htmlFor="problem_statement"
-            className="mb-1 block text-sm font-medium"
+            label="Title"
+            required
           >
-            Problem Statement <span className="text-red-500">*</span>
-          </label>
-          <textarea
-            id="problem_statement"
-            value={problemStatement}
-            onChange={(e) => setProblemStatement(e.target.value)}
-            rows={6}
-            placeholder="Describe the research problem in detail..."
-            className="w-full rounded-md border border-gray-300 px-3 py-2 text-sm focus:border-gray-500 focus:outline-none focus:ring-1 focus:ring-gray-500"
-          />
-        </div>
+            <input
+              id="title"
+              type="text"
+              value={title}
+              onChange={(e) => setTitle(e.target.value)}
+              placeholder="e.g., Efficient fine-tuning of LLMs"
+              style={FIELD_STYLE}
+            />
+          </Field>
 
-        <div className="flex items-center gap-3 pt-2">
-          <button
-            type="submit"
-            disabled={!canSubmit}
-            className="rounded-md bg-gray-900 px-4 py-2 text-sm font-medium text-white hover:bg-gray-700 disabled:opacity-50"
-          >
-            {createCharter.isPending ? "Creating..." : "Create Charter"}
-          </button>
-          <Link
-            to="/charters"
-            className="rounded-md px-4 py-2 text-sm text-gray-600 hover:text-gray-900"
-          >
-            Cancel
-          </Link>
-        </div>
-      </form>
+          <Field id="description" label="Description">
+            <textarea
+              id="description"
+              value={description}
+              onChange={(e) => setDescription(e.target.value)}
+              rows={3}
+              placeholder="Brief description of the research charter"
+              style={FIELD_STYLE}
+            />
+          </Field>
+
+          <Field id="problem_statement" label="Problem statement" required>
+            <textarea
+              id="problem_statement"
+              value={problemStatement}
+              onChange={(e) => setProblemStatement(e.target.value)}
+              rows={6}
+              placeholder="Describe the research problem in detail…"
+              style={FIELD_STYLE}
+            />
+          </Field>
+
+          <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
+            <button
+              type="submit"
+              disabled={!canSubmit}
+              className="btn primary"
+            >
+              {createCharter.isPending ? "Creating…" : "Create charter"}
+            </button>
+            <Link to="/charters" className="btn ghost">
+              Cancel
+            </Link>
+          </div>
+        </form>
+      </div>
+    </div>
+  );
+}
+
+function Field({
+  id,
+  label,
+  required,
+  children,
+}: {
+  id: string;
+  label: string;
+  required?: boolean;
+  children: React.ReactNode;
+}) {
+  return (
+    <div>
+      <label
+        htmlFor={id}
+        style={{
+          display: "block",
+          fontSize: 12,
+          fontWeight: 500,
+          color: "var(--c-ink-2)",
+          marginBottom: 6,
+        }}
+      >
+        {label}
+        {required && (
+          <span style={{ color: "var(--c-err)", marginLeft: 4 }}>*</span>
+        )}
+      </label>
+      {children}
     </div>
   );
 }

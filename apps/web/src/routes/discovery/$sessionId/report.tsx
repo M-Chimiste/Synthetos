@@ -1,5 +1,6 @@
 import { createFileRoute, Link } from "@tanstack/react-router";
 import { useDiscoveryReport, useDiscoverySession } from "../../../api/hooks";
+import Icon from "../../../components/Icon";
 import Markdown from "../../../components/Markdown";
 
 export const Route = createFileRoute("/discovery/$sessionId/report")({
@@ -13,43 +14,111 @@ function ReportPage() {
 
   return (
     <div>
-      <Link
-        to="/discovery/$sessionId"
-        params={{ sessionId }}
-        className="text-sm text-gray-500 hover:text-gray-700"
+      <div
+        style={{
+          padding: "12px 40px",
+          borderBottom: "1px solid var(--c-line)",
+          display: "flex",
+          alignItems: "center",
+          gap: 10,
+          fontSize: 12.5,
+          color: "var(--c-ink-3)",
+          background: "var(--c-bg)",
+          position: "sticky",
+          top: 0,
+          zIndex: 5,
+        }}
       >
-        &larr; Back to session
-      </Link>
-      <h1 className="mt-2 text-2xl font-semibold">Discovery report</h1>
-      <p className="mt-1 font-mono text-xs text-gray-500">{sessionId}</p>
+        <Link
+          to="/discovery/$sessionId"
+          params={{ sessionId }}
+          style={{ cursor: "pointer", color: "inherit", textDecoration: "none" }}
+        >
+          Discovery session
+        </Link>
+        <Icon name="chevron" size={12} style={{ color: "var(--c-ink-4)" }} />
+        <span style={{ color: "var(--c-ink)" }}>Report</span>
+      </div>
 
-      {session.data?.report_artifact_path && (
-        <p className="mt-2 text-xs text-gray-500">
-          Source: {session.data.report_artifact_path}
-        </p>
-      )}
-
-      {report.isLoading && (
-        <p className="mt-4 text-sm text-gray-500">Loading report…</p>
-      )}
-
-      {report.error && (
-        <div className="mt-4 rounded-lg border border-red-200 bg-red-50 p-4 text-sm text-red-700">
-          {report.error.message}
+      <div style={{ padding: "28px 40px", maxWidth: 1000 }}>
+        <h1
+          style={{
+            fontSize: 22,
+            fontWeight: 600,
+            letterSpacing: "-0.015em",
+            margin: 0,
+            marginBottom: 4,
+          }}
+        >
+          Discovery report
+        </h1>
+        <div
+          className="mono"
+          style={{ fontSize: 11.5, color: "var(--c-ink-3)" }}
+        >
+          {sessionId}
         </div>
-      )}
 
-      {report.data?.markdown && (
-        <div className="mt-4 rounded-lg border border-gray-200 bg-white p-5">
-          <Markdown>{report.data.markdown}</Markdown>
-        </div>
-      )}
+        {session.data?.report_artifact_path && (
+          <div
+            style={{ marginTop: 8, fontSize: 12, color: "var(--c-ink-3)" }}
+          >
+            Source:{" "}
+            <span className="mono" style={{ color: "var(--c-ink-2)" }}>
+              {session.data.report_artifact_path}
+            </span>
+          </div>
+        )}
 
-      {!report.data?.markdown && report.data?.json && (
-        <pre className="mt-4 overflow-x-auto rounded-lg border border-gray-200 bg-white p-5 text-xs">
-          {JSON.stringify(report.data.json, null, 2)}
-        </pre>
-      )}
+        {report.isLoading && (
+          <div
+            style={{
+              marginTop: 20,
+              fontSize: 13,
+              color: "var(--c-ink-3)",
+            }}
+          >
+            Loading report…
+          </div>
+        )}
+
+        {report.error && (
+          <div
+            className="card"
+            style={{
+              marginTop: 20,
+              padding: 14,
+              borderColor: "var(--c-err)",
+              color: "var(--c-err)",
+              fontSize: 13,
+            }}
+          >
+            {report.error.message}
+          </div>
+        )}
+
+        {report.data?.markdown && (
+          <div className="card" style={{ marginTop: 20, padding: 24 }}>
+            <Markdown>{report.data.markdown}</Markdown>
+          </div>
+        )}
+
+        {!report.data?.markdown && report.data?.json && (
+          <div className="card" style={{ marginTop: 20, padding: 18 }}>
+            <pre
+              style={{
+                margin: 0,
+                fontSize: 11.5,
+                color: "var(--c-ink-2)",
+                fontFamily: "var(--f-mono)",
+                whiteSpace: "pre-wrap",
+              }}
+            >
+              {JSON.stringify(report.data.json, null, 2)}
+            </pre>
+          </div>
+        )}
+      </div>
     </div>
   );
 }

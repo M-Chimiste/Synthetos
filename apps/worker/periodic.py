@@ -58,7 +58,52 @@ def run_periodic_tasks(
         log.warning("periodic.decay_enqueue_failed", error=str(exc))
         summary["decay_enqueued"] = 0
 
+    try:
+        counts = _prune_experiment_images(keep=settings.experiment_image_max_keep)
+        summary.update(counts)
+    except Exception as exc:
+        log.warning("periodic.image_prune_failed", error=str(exc))
+        summary["images_pruned"] = 0
+        summary["images_kept"] = 0
+
     return summary
+
+
+def _prune_experiment_images(*, keep: int) -> dict[str, int]:
+    """Delete oldest `synthetos-exp-*` images beyond the keep window.
+
+    Each `execution_setup` build with a custom `build_recipe.dockerfile_content`
+    produces a uniquely-tagged `synthetos-exp-<uuid7>` image and Docker never
+    prunes it on its own. We keep the `keep` newest by `Created` timestamp
+    and remove the rest. The orchestration images (`synthetos:latest`,
+    `synthetos-web:latest`, `synthetos-experiment-runner:latest`) are
+    excluded by the tag-prefix filter.
+
+    Removals use `force=False`: an image in use by a running container
+    raises `ImageInUseError` which we swallow — we never want to interrupt
+    an in-flight experiment to free disk.
+    """
+    from docker.errors import APIError
+
+    import docker
+
+    client = docker.from_env()
+    images = client.images.list(filters={"reference": "synthetos-exp-*"})
+    images.sort(key=lambda img: img.attrs.get("Created", ""), reverse=True)
+
+    to_keep = images[:keep]
+    to_remove = images[keep:]
+
+    pruned = 0
+    for img in to_remove:
+        try:
+            client.images.remove(image=img.id, force=False)
+            pruned += 1
+        except APIError as exc:
+            # In-use, deleted concurrently, etc. — leave it for the next tick.
+            log.debug("periodic.image_remove_skipped", image=img.id, error=str(exc))
+
+    return {"images_pruned": pruned, "images_kept": len(to_keep)}
 
 
 def _maybe_enqueue_decay(session, *, settings: Settings) -> bool:

@@ -1,0 +1,74 @@
+# Auto-loaded by `docker compose up`. Switches the stack to dev mode:
+# - api/worker bind-mount source for hot reload
+# - web is replaced with the Vite dev server (preserves HMR)
+#
+# To run prod-style without this override:
+#   docker compose -f docker-compose.yml up
+
+services:
+  api:
+    command:
+      - uvicorn
+      - apps.api.main:app
+      - --host
+      - "0.0.0.0"
+      - --port
+      - "8000"
+      - --reload
+      - --reload-dir
+      - /app/apps
+      - --reload-dir
+      - /app/libs
+    environment:
+      LAB_ENV: dev
+    volumes:
+      - ./apps:/app/apps
+      - ./libs:/app/libs
+      - ./configs:/app/configs
+      - ./skills:/app/skills
+      - ./prompts:/app/prompts
+
+  worker:
+    # watchfiles is part of uvicorn[standard] -> already in the venv.
+    command:
+      - watchfiles
+      - --filter
+      - python
+      - "python -m apps.worker"
+      - /app/apps
+      - /app/libs
+    environment:
+      LAB_ENV: dev
+    volumes:
+      - ./apps:/app/apps
+      - ./libs:/app/libs
+      - ./configs:/app/configs
+      - ./skills:/app/skills
+      - ./prompts:/app/prompts
+
+  web:
+    image: node:22-alpine
+    # Override the multi-stage build with the Node base; vite dev server
+    # mounts the source and rebuilds on every change.
+    build: !reset null
+    command:
+      - sh
+      - -c
+      - "npm install --no-audit --no-fund && npm run dev -- --host 0.0.0.0 --port 5173"
+    working_dir: /app
+    environment:
+      # Browser-side: the SPA fetches the API directly at the host-published
+      # port. Open CORS is enabled in dev (libs/core/config.py:env=='dev'
+      # check inside apps/api/main.py), so this works without going through
+      # vite's proxy. The host-mode default of "/api/v1" doesn't work inside
+      # the dev container because vite's proxy points at 127.0.0.1:8000
+      # (the vite container, not the api container).
+      VITE_API_BASE_URL: http://localhost:8000/api/v1
+    volumes:
+      - ./apps/web:/app
+      # Anonymous volume keeps node_modules inside the container so the
+      # host's missing/different node_modules doesn't shadow it.
+      - /app/node_modules
+    # Reset the base's port mapping (80) and replace with vite's 5173.
+    ports: !override
+      - "5173:5173"

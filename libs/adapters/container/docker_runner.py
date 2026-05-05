@@ -9,11 +9,30 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Literal
 
-from docker.errors import NotFound
+from docker.errors import BuildError, NotFound
 from docker.types import DeviceRequest, Mount
 
 import docker
+from libs.core.config import get_settings
 from libs.core.logging import get_logger
+
+
+class BuildImageError(Exception):
+    """Raised when ``DockerRunner.build_image`` fails. Carries the captured
+    build log and the underlying cause so the execution_setup operator can
+    persist them and route the failure through the auto-remediation loop.
+    """
+
+    def __init__(
+        self,
+        tag: str,
+        log_text: str,
+        cause: BaseException | str,
+    ) -> None:
+        self.tag = tag
+        self.log_text = log_text
+        self.cause = cause
+        super().__init__(f"image build failed for tag {tag}: {cause}")
 
 log = get_logger("adapters.container.docker_runner")
 
@@ -66,17 +85,57 @@ class DockerRunner:
         tag: str,
         context_path: Path,
     ) -> str:
-        """Build a Docker image on-demand. Returns the image tag."""
+        """Build a Docker image on-demand. Returns the image tag.
+
+        The build output stream is consumed line-by-line so we can surface
+        useful diagnostics on failure. On error we raise
+        :class:`BuildImageError` carrying the captured log text and the
+        underlying cause; ``execution_setup`` persists those alongside the
+        ``RunRecord`` and routes the failure through auto-remediation.
+        """
         dockerfile_path = context_path / "Dockerfile"
         dockerfile_path.write_text(dockerfile_content)
 
         log.info("docker.building_image", tag=tag, context=str(context_path))
-        self.client.images.build(
-            path=str(context_path),
-            tag=tag,
-            dockerfile="Dockerfile",
-            rm=True,
-        )
+
+        log_lines: list[str] = []
+        try:
+            _image, build_log = self.client.images.build(
+                path=str(context_path),
+                tag=tag,
+                dockerfile="Dockerfile",
+                rm=True,
+            )
+            for chunk in build_log:
+                if not isinstance(chunk, dict):
+                    continue
+                if "stream" in chunk:
+                    log_lines.append(str(chunk["stream"]).rstrip("\n"))
+                elif "error" in chunk:
+                    # Some daemons emit an `error` chunk before raising.
+                    log_lines.append(f"ERROR: {chunk['error']}")
+        except BuildError as exc:
+            # docker-py's BuildError exposes the build log on `.build_log`,
+            # an iterable of dicts. Drain it into our captured tail.
+            for chunk in getattr(exc, "build_log", []) or []:
+                if not isinstance(chunk, dict):
+                    continue
+                if "stream" in chunk:
+                    log_lines.append(str(chunk["stream"]).rstrip("\n"))
+                elif "error" in chunk:
+                    log_lines.append(f"ERROR: {chunk['error']}")
+            raise BuildImageError(
+                tag=tag,
+                log_text="\n".join(log_lines),
+                cause=exc,
+            ) from exc
+        except Exception as exc:  # pragma: no cover - defensive for daemon errors
+            raise BuildImageError(
+                tag=tag,
+                log_text="\n".join(log_lines),
+                cause=exc,
+            ) from exc
+
         return tag
 
     def run(
@@ -98,20 +157,59 @@ class DockerRunner:
         """
         spec.artifact_output_path.mkdir(parents=True, exist_ok=True)
 
-        mounts = [
-            Mount(
-                target="/workspace",
-                source=str(spec.workspace_path),
-                type="bind",
-                read_only=False,
-            ),
-            Mount(
-                target="/artifacts",
-                source=str(spec.artifact_output_path),
-                type="bind",
-                read_only=False,
-            ),
-        ]
+        # Path / mount strategy:
+        # - Host mode (default): bind-mount the worktree and artifact dirs.
+        #   `spec.workspace_path` is a host-resolvable path.
+        # - Containerized worker mode: when LAB_CONTAINER_DATA_VOLUME is set,
+        #   the worker is itself a container and bind-mount sources inside it
+        #   are not visible to the host Docker daemon. Mount the named volume
+        #   instead and address the workspace/artifact dirs by their path
+        #   within that volume (relative to LAB_DATA_ROOT).
+        settings = get_settings()
+        volume_name = settings.container_data_volume
+
+        if volume_name:
+            data_root = Path(settings.data_root).resolve()
+            try:
+                workspace_rel = spec.workspace_path.resolve().relative_to(data_root)
+                artifact_rel = spec.artifact_output_path.resolve().relative_to(data_root)
+            except ValueError as exc:
+                raise RuntimeError(
+                    "container_data_volume is set but workspace_path "
+                    f"({spec.workspace_path}) or artifact_output_path "
+                    f"({spec.artifact_output_path}) is outside data_root "
+                    f"({data_root}). All paths must live under data_root in "
+                    "containerized worker mode."
+                ) from exc
+            mounts = [
+                Mount(
+                    target=str(data_root),
+                    source=volume_name,
+                    type="volume",
+                    read_only=False,
+                ),
+            ]
+            workspace_in_container = str(data_root / workspace_rel)
+            artifact_in_container = str(data_root / artifact_rel)
+            spec.env.setdefault("WORKSPACE_PATH", workspace_in_container)
+            spec.env.setdefault("ARTIFACTS_PATH", artifact_in_container)
+            container_working_dir = workspace_in_container
+        else:
+            mounts = [
+                Mount(
+                    target="/workspace",
+                    source=str(spec.workspace_path),
+                    type="bind",
+                    read_only=False,
+                ),
+                Mount(
+                    target="/artifacts",
+                    source=str(spec.artifact_output_path),
+                    type="bind",
+                    read_only=False,
+                ),
+            ]
+            container_working_dir = "/workspace"
 
         device_requests = []
         if spec.gpu_enabled:
@@ -148,7 +246,7 @@ class DockerRunner:
                 device_requests=device_requests or None,
                 mem_limit=spec.memory_limit,
                 network_mode=spec.network_mode,
-                working_dir="/workspace",
+                working_dir=container_working_dir,
                 detach=True,
             )
             container_id = str(container.id)

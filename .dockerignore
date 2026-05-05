@@ -1,0 +1,48 @@
+# Keep build context small.
+**/__pycache__
+**/*.pyc
+**/*.pyo
+**/.pytest_cache
+**/.ruff_cache
+**/.mypy_cache
+**/.coverage
+**/coverage.xml
+**/htmlcov
+
+# Project-local virtualenvs and caches
+.venv
+.tox
+node_modules
+apps/web/node_modules
+apps/web/dist
+
+# Build artifacts
+dist
+build
+*.egg-info
+
+# VCS / IDE
+.git
+.gitignore
+.github
+.idea
+.vscode
+*.swp
+
+# Local data the orchestration image doesn't need at build time
+data
+temp_data
+database
+csv_output
+artifacts
+
+# Docs / images. README.md is referenced by pyproject.toml so the
+# project install needs it; keep it.
+*.png
+project_docs
+CLAUDE.md
+agents.md
+LICENSE.md
+
+# Test fixtures we don't ship in images
+tests

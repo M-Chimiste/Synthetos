@@ -166,6 +166,42 @@ def select_strategy(
             "Runtime exception; LLM analysis needed for code fix.",
         )
 
+    if failure_class == "build":
+        # Image build failures escalate in two steps before going broad:
+        #   attempt 1: dockerfile_fix — LLM patches dockerfile_content
+        #   attempt 2: base_image_swap — LLM picks a different base image
+        #   attempt 3+: broad_debug
+        # The actual patches are produced by the LLM-driven debug operator;
+        # `select_strategy` only names the lane and lets the debug operator
+        # specialize its prompt by `strategy`.
+        prior_build_strategies = [
+            s for s, fc in zip(prior_strategies, prior_failure_classes, strict=False)
+            if fc == "build"
+        ]
+        if not prior_build_strategies:
+            return StrategyResult(
+                strategy="dockerfile_fix",
+                strategy_tier="focused",
+                remediable=True,
+                reasoning="Image build failed; ask LLM to patch dockerfile_content.",
+            )
+        if "dockerfile_fix" in prior_build_strategies and (
+            "base_image_swap" not in prior_build_strategies
+        ):
+            return StrategyResult(
+                strategy="base_image_swap",
+                strategy_tier="focused",
+                remediable=True,
+                reasoning=(
+                    "Dockerfile patch attempt failed; ask LLM to swap to a "
+                    "different base_image."
+                ),
+            )
+        return _broad_debug_result(
+            failure_class,
+            "Focused build fixes exhausted; escalating to broad debug.",
+        )
+
     # Unknown failure class
     return StrategyResult(
         strategy="skip",

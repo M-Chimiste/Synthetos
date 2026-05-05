@@ -90,7 +90,6 @@ ipython_config.py
 config/creds.json
 
 # project directories
-models/
 temp_data/
 database/
 csv_output/
@@ -176,7 +175,6 @@ cython_debug/
 config/config.json
 
 .DS_Store
-models/
 data/
 
 # Node GitIgnore
@@ -394,6 +392,7 @@ yarn-error.log*
 
 # env files (can opt-in for committing if needed)
 .env*
+!.env.example
 
 # vercel
 .vercel
@@ -531,10 +530,7 @@ node_modules/
 # Python runtime (if bundled locally)
 python_runtime/
 
-# Personal signing configuration
-package.json
-
 # Backup files from build scripts
-package.json.bak 
+package.json.bak
 *secret.json
 artifacts/

@@ -10,11 +10,7 @@ interface SSEEvent {
 
 const BASE_URL = import.meta.env.VITE_API_BASE_URL ?? "/api/v1";
 
-export default function EventStream({
-  charterId,
-}: {
-  charterId?: string;
-}) {
+export default function EventStream({ charterId }: { charterId?: string }) {
   const [events, setEvents] = useState<SSEEvent[]>([]);
   const [connected, setConnected] = useState(false);
   const lastEventIdRef = useRef<string | undefined>(undefined);
@@ -66,30 +62,69 @@ export default function EventStream({
 
   return (
     <div>
-      <div className="mb-3 flex items-center gap-2 text-sm">
-        <span
-          className={`inline-block h-2 w-2 rounded-full ${
-            connected ? "bg-green-500" : "bg-red-400"
-          }`}
-        />
-        <span className="text-gray-500">
-          {connected ? "Connected" : "Disconnected"}
+      <div
+        style={{
+          display: "flex",
+          alignItems: "center",
+          gap: 10,
+          fontSize: 12,
+          marginBottom: 10,
+        }}
+      >
+        <span className={`dot ${connected ? "ok pulse" : "err"}`} />
+        <span style={{ color: "var(--c-ink-2)" }}>
+          {connected ? "Live" : "Disconnected"}
         </span>
-        <span className="text-gray-400">
-          ({events.length} event{events.length !== 1 ? "s" : ""})
+        <span style={{ color: "var(--c-ink-4)" }}>
+          · {events.length} event{events.length === 1 ? "" : "s"}
+          {charterId ? " · filtered by charter" : ""}
         </span>
       </div>
-      <div className="max-h-96 overflow-y-auto rounded-lg border border-gray-200 bg-gray-900 p-4 font-mono text-xs text-gray-100">
+      <div
+        style={{
+          maxHeight: 420,
+          overflowY: "auto",
+          borderRadius: "var(--r-md)",
+          border: "1px solid var(--c-line-soft)",
+          background: "var(--c-panel)",
+        }}
+      >
         {events.length === 0 && (
-          <p className="text-gray-500">Waiting for events...</p>
+          <div
+            style={{
+              padding: "14px 14px",
+              fontSize: 12.5,
+              color: "var(--c-ink-4)",
+            }}
+          >
+            Waiting for events…
+          </div>
         )}
-        {events.map((evt) => (
-          <div key={evt.id} className="mb-1">
-            <span className="text-gray-500">
+        {events.map((evt, i) => (
+          <div
+            key={evt.id}
+            style={{
+              display: "grid",
+              gridTemplateColumns: "90px 1fr",
+              gap: 10,
+              padding: "6px 14px",
+              borderBottom:
+                i < events.length - 1
+                  ? "1px solid var(--c-line-soft)"
+                  : "none",
+              fontSize: 12,
+              fontFamily: "var(--f-mono)",
+            }}
+          >
+            <span style={{ color: "var(--c-ink-4)" }}>
               {new Date(evt.timestamp).toLocaleTimeString()}
-            </span>{" "}
-            <span className="text-cyan-400">[{evt.eventType}]</span>{" "}
-            <span className="text-gray-300">{evt.payload}</span>
+            </span>
+            <div>
+              <span style={{ color: "var(--c-accent-ink)" }}>
+                [{evt.eventType}]
+              </span>{" "}
+              <span style={{ color: "var(--c-ink-2)" }}>{evt.payload}</span>
+            </div>
           </div>
         ))}
         <div ref={bottomRef} />

@@ -49,6 +49,20 @@ class _BroadDebugOutput(BaseModel):
     explanation: str = ""
 
 
+class _BuildRemediationOutput(BaseModel):
+    """Structured output from focused image-build remediation."""
+
+    dockerfile_content: str | None = Field(
+        default=None,
+        description="Full replacement Dockerfile content for dockerfile_fix.",
+    )
+    base_image: str | None = Field(
+        default=None,
+        description="Replacement base image tag for base_image_swap.",
+    )
+    explanation: str = ""
+
+
 async def _broad_debug_llm(
     error_trace: str,
     code_plan: dict[str, Any] | None,
@@ -101,6 +115,76 @@ async def _broad_debug_llm(
         await router.close()
 
 
+async def _build_remediation_llm(
+    *,
+    strategy: str,
+    error_trace: str,
+    build_log: str,
+    current_dockerfile: str | None,
+    current_base_image: str | None,
+    prior_remediation: list[dict[str, Any]],
+    pattern_hints: list[dict[str, Any]] | None = None,
+) -> _BuildRemediationOutput | None:
+    """Call LLM for focused Docker build remediation."""
+    from libs.adapters.llm.router import ModelRouter
+    from libs.schemas.model_gateway import ModelRole
+
+    router = ModelRouter()
+    try:
+        if strategy == "dockerfile_fix":
+            requested_output = (
+                "Return dockerfile_content containing the complete replacement "
+                "Dockerfile. Leave base_image null."
+            )
+        else:
+            requested_output = (
+                "Return base_image containing a replacement image tag. Leave "
+                "dockerfile_content null unless a full Dockerfile is also required."
+            )
+
+        hint_text = ""
+        if pattern_hints:
+            hint_lines = [
+                f"- [{h['pattern_type']}] {h['title']}: {h['summary']}"
+                for h in pattern_hints
+            ]
+            hint_text = (
+                "Canonical remediation patterns that previously matched this failure:\n"
+                + "\n".join(hint_lines)
+                + "\n\n"
+            )
+
+        system_msg = (
+            "You are debugging a Docker image build for an ML experiment. "
+            "Suggest the smallest focused build fix that is likely to make "
+            "the next build succeed."
+        )
+        user_msg = (
+            f"Strategy: {strategy}\n\n"
+            f"Build failure summary:\n{error_trace or '(none)'}\n\n"
+            f"Full build log:\n{build_log or '(not available)'}\n\n"
+            f"Current base image:\n{current_base_image or '(default python:3.12-slim)'}\n\n"
+            f"Current Dockerfile:\n{current_dockerfile or '(no custom Dockerfile)'}\n\n"
+            f"Prior remediation attempts:\n{prior_remediation}\n\n"
+            f"{hint_text}"
+            f"{requested_output}"
+        )
+        return await router.complete_structured(
+            role=ModelRole.evaluation,
+            messages=[
+                {"role": "system", "content": system_msg},
+                {"role": "user", "content": user_msg},
+            ],
+            response_model=_BuildRemediationOutput,
+            temperature=0.3,
+        )
+    except Exception as exc:
+        log.warning("Build remediation LLM call failed", strategy=strategy, error=str(exc))
+        return None
+    finally:
+        await router.close()
+
+
 def _format_code_plan(code_plan: dict[str, Any] | None) -> str:
     """Format code plan files for the LLM prompt."""
     if not code_plan:
@@ -110,6 +194,24 @@ def _format_code_plan(code_plan: dict[str, Any] | None) -> str:
     for name, content in files.items():
         parts.append(f"--- {name} ---\n{content}")
     return "\n\n".join(parts) if parts else "(no files in code plan)"
+
+
+def _read_build_log(run: RunRecord) -> str:
+    """Read the full build log captured in the failed run's worktree."""
+    if not run.workspace_path:
+        return ""
+    build_log_path = Path(run.workspace_path) / "build.log"
+    if not build_log_path.exists():
+        return ""
+    return build_log_path.read_text(encoding="utf-8", errors="replace")
+
+
+def _current_dockerfile(spec) -> str | None:
+    build_recipe = spec.build_recipe if isinstance(spec.build_recipe, dict) else None
+    if not build_recipe:
+        return None
+    dockerfile = build_recipe.get("dockerfile_content")
+    return dockerfile if isinstance(dockerfile, str) else None
 
 
 def auto_remediate_operator(op_input: OperatorInput) -> OperatorResult:
@@ -200,6 +302,10 @@ def auto_remediate_operator(op_input: OperatorInput) -> OperatorResult:
         prior_actions = load_lineage_actions(db, run.id)
         prior_strategies = [a.strategy for a in prior_actions]
         prior_failure_classes = [a.failure_class for a in prior_actions]
+        prior_detail = [
+            {"strategy": a.strategy, "failure_class": a.failure_class, "outcome": a.outcome}
+            for a in prior_actions
+        ]
 
         # Phase 6: retrieve remediation patterns matching this failure_class as
         # priors. We don't override strategy selection (deterministic path stays
@@ -291,8 +397,91 @@ def auto_remediate_operator(op_input: OperatorInput) -> OperatorResult:
                 summary=f"Not remediable ({strat.reasoning}); enqueued postmortem.",
             )
 
-        # Handle broad debug: call LLM for code fix
+        # Focused build remediation requires a concrete build override before retrying.
         overrides = dict(strat.overrides)
+        if strat.strategy in {"dockerfile_fix", "base_image_swap"}:
+            try:
+                build_result = asyncio.run(
+                    _build_remediation_llm(
+                        strategy=strat.strategy,
+                        error_trace=run.error or stderr_tail,
+                        build_log=_read_build_log(run),
+                        current_dockerfile=_current_dockerfile(spec),
+                        current_base_image=spec.base_image,
+                        prior_remediation=prior_detail,
+                        pattern_hints=remediation_pattern_hints,
+                    )
+                )
+            except Exception:
+                build_result = None
+
+            if strat.strategy == "dockerfile_fix":
+                dockerfile_content = (
+                    build_result.dockerfile_content.strip()
+                    if build_result and build_result.dockerfile_content
+                    else ""
+                )
+                if dockerfile_content:
+                    overrides["build_recipe"] = {
+                        "dockerfile_content": dockerfile_content,
+                    }
+            else:
+                base_image = (
+                    build_result.base_image.strip()
+                    if build_result and build_result.base_image
+                    else ""
+                )
+                if base_image:
+                    overrides["base_image"] = base_image
+
+            if not overrides:
+                action = RemediationAction(
+                    id=uuid7(),
+                    run_record_id=run.id,
+                    retry_run_id=None,
+                    charter_id=run.charter_id,
+                    cycle_id=run.cycle_id,
+                    experiment_spec_id=spec.id,
+                    failure_class=run.failure_class or "unknown",
+                    strategy=strat.strategy,
+                    strategy_tier=strat.strategy_tier,
+                    action_detail=None,
+                    outcome="skipped",
+                    attempt_number=attempt_number,
+                    max_attempts=DEFAULT_MAX_ATTEMPTS,
+                    reasoning=(
+                        f"{strat.strategy} did not produce the required build override."
+                    ),
+                    created_at=utcnow(),
+                )
+                db.add(action)
+                emit_event_sync(
+                    db,
+                    event_type=RemediationEvents.skipped.value,
+                    charter_id=run.charter_id,
+                    cycle_id=run.cycle_id,
+                    payload={
+                        "run_record_id": str(run.id),
+                        "failure_class": run.failure_class,
+                        "reason": action.reasoning,
+                    },
+                )
+                enqueue_next_phase4(
+                    db,
+                    cycle_id=run.cycle_id,
+                    next_job_type="verification_postmortem",
+                    run_record_id=run.id,
+                )
+                db.commit()
+                return OperatorResult(
+                    success=True,
+                    summary=(
+                        f"{strat.strategy} produced no build override; "
+                        "enqueued postmortem."
+                    ),
+                )
+
+        # Handle broad debug: call LLM for code fix
         if strat.strategy == "debug_broad":
             emit_event_sync(
                 db,
@@ -306,10 +495,6 @@ def auto_remediate_operator(op_input: OperatorInput) -> OperatorResult:
                 },
             )
 
-            prior_detail = [
-                {"strategy": a.strategy, "failure_class": a.failure_class, "outcome": a.outcome}
-                for a in prior_actions
-            ]
             try:
                 debug_result = asyncio.run(
                     _broad_debug_llm(
@@ -416,6 +601,8 @@ def auto_remediate_operator(op_input: OperatorInput) -> OperatorResult:
             remediation_overrides["code_plan"] = overrides["code_plan"]
         if "build_recipe" in overrides:
             remediation_overrides["build_recipe"] = overrides["build_recipe"]
+        if "base_image" in overrides:
+            remediation_overrides["base_image"] = overrides["base_image"]
 
         enqueue_next_phase4(
             db,
