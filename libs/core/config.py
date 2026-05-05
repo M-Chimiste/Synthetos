@@ -61,6 +61,10 @@ class Settings(BaseSettings):
     pattern_decay_interval_h: int = 24
     pattern_max_staleness_days: int = 90
 
+    # Experiment image GC: keep at most this many `synthetos-exp-*` images
+    # on the host. The periodic tick prunes the oldest beyond this count.
+    experiment_image_max_keep: int = 5
+
     @property
     def skill_path_list(self) -> list[Path]:
         return [Path(p.strip()) for p in self.skill_paths.split(":") if p.strip()]
