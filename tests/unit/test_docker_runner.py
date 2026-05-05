@@ -157,14 +157,10 @@ def test_docker_runner_named_volume_mode_uses_volume_mount(
     assert mount_spec["Source"] == "lab_data"
     assert mount_spec["Target"] == str(data_root.resolve())
 
-    expected_workdir = str(
-        (data_root.resolve() / "workspaces" / "cycle_xyz" / "run_1")
-    )
+    expected_workdir = str(data_root.resolve() / "workspaces" / "cycle_xyz" / "run_1")
     assert create_kwargs["working_dir"] == expected_workdir
     assert spec.env["WORKSPACE_PATH"] == expected_workdir
-    assert spec.env["ARTIFACTS_PATH"] == str(
-        (data_root.resolve() / "artifacts" / "run_1")
-    )
+    assert spec.env["ARTIFACTS_PATH"] == str(data_root.resolve() / "artifacts" / "run_1")
 
 
 def test_docker_runner_host_mode_keeps_bind_mounts(monkeypatch, tmp_path: Path) -> None:
@@ -187,4 +183,3 @@ def test_docker_runner_host_mode_keeps_bind_mounts(monkeypatch, tmp_path: Path) 
     types = {m["Type"] for m in mounts}
     assert types == {"bind"}
     assert create_kwargs["working_dir"] == "/workspace"
-

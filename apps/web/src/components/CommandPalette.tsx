@@ -216,7 +216,10 @@ export default function CommandPalette({ open, onClose }: CommandPaletteProps) {
                   key={`${it.kind}:${it.id}`}
                   active={i === activeIdx}
                   onMouseEnter={() => setActiveIdx(i)}
-                  onClick={runActive}
+                  onClick={() => {
+                    onClose();
+                    it.navigate();
+                  }}
                 >
                   <span
                     className="chip slate"

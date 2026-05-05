@@ -89,4 +89,4 @@ class PaperCard(Base):
     created_at: Mapped[datetime] = mapped_column(default=utcnow)
     updated_at: Mapped[datetime] = mapped_column(default=utcnow, onupdate=utcnow)
 
-    session: Mapped["DiscoverySession"] = relationship(back_populates="papers")
+    session: Mapped[DiscoverySession] = relationship(back_populates="papers")

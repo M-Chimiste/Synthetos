@@ -29,9 +29,10 @@ def _parse_line(message: str) -> tuple[str, dict[str, object]]:
     Kept in sync with libs/execution/operators/run.py so this test pins
     the contract end-to-end (same constant, same parser shape)."""
     payload: dict[str, object] = {}
-    if message.startswith(SIGNAL_PREFIX):
+    signal_start = message.find(SIGNAL_PREFIX)
+    if signal_start >= 0:
         try:
-            data = json.loads(message[len(SIGNAL_PREFIX):])
+            data = json.loads(message[signal_start + len(SIGNAL_PREFIX):])
             if isinstance(data, dict):
                 event_name = str(data.get("event", "unknown"))
                 return f"signal.{event_name}", {
@@ -55,6 +56,17 @@ def test_valid_signal_line_classifies_as_signal_dot_event() -> None:
     event_type, payload = _parse_line(line)
     assert event_type == "signal.checkpoint"
     assert payload == {"epoch": 5, "loss": 0.23}
+
+
+def test_timestamped_docker_log_signal_classifies_as_signal_dot_event() -> None:
+    line = (
+        "2026-05-05T01:23:45.678901234Z "
+        + SIGNAL_PREFIX
+        + json.dumps({"event": "metric", "name": "loss", "value": 0.23})
+    )
+    event_type, payload = _parse_line(line)
+    assert event_type == "signal.metric"
+    assert payload == {"name": "loss", "value": 0.23}
 
 
 def test_malformed_signal_falls_back_to_log() -> None:

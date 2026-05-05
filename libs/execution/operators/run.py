@@ -112,14 +112,16 @@ def execution_run_operator(op_input: OperatorInput) -> OperatorResult:
             parsed_event_type = event_type
             parsed_payload = payload
             # Detect structured signals from the in-container SDK
-            # (libs/execution/sdk_template.py). Lines that start with the
-            # SIGNAL_PREFIX and parse as JSON are persisted with
+            # (libs/execution/sdk_template.py). Docker may prefix lines with
+            # timestamps, so scan for SIGNAL_PREFIX instead of requiring it at
+            # column 0. Signals that parse as JSON are persisted with
             # event_type="signal.<event>" so the dashboard can filter them
             # apart from raw stdout. Anything malformed falls back to "log"
             # — we never lose the original line; it stays in payload.message.
-            if event_type == "log" and message.startswith(SIGNAL_PREFIX):
+            signal_start = message.find(SIGNAL_PREFIX) if event_type == "log" else -1
+            if signal_start >= 0:
                 try:
-                    data = json.loads(message[len(SIGNAL_PREFIX):])
+                    data = json.loads(message[signal_start + len(SIGNAL_PREFIX):])
                     if isinstance(data, dict):
                         event_name = str(data.get("event", "unknown"))
                         parsed_event_type = f"signal.{event_name}"

@@ -70,5 +70,5 @@ services:
       # host's missing/different node_modules doesn't shadow it.
       - /app/node_modules
     # Reset the base's port mapping (80) and replace with vite's 5173.
-    ports: !reset
+    ports: !override
       - "5173:5173"

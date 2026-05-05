@@ -87,7 +87,7 @@ class DiscoverySession(Base):
     started_at: Mapped[datetime | None] = mapped_column(nullable=True)
     completed_at: Mapped[datetime | None] = mapped_column(nullable=True)
 
-    papers: Mapped[list["PaperCard"]] = relationship(
+    papers: Mapped[list[PaperCard]] = relationship(
         back_populates="session",
         cascade="all, delete-orphan",
     )
