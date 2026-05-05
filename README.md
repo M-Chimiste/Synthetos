@@ -295,6 +295,25 @@ available through the dashboard and API (`POST /api/v1/protocols/compile`,
 `POST /api/v1/runs`, `PUT /api/v1/cycles/{cycle_id}/autonomy/policy`). The CLI
 covers discovery, analysis, hypothesis kickoff, inspection, and run controls.
 
+### 3a. Emit structured signals from inside an experiment
+
+Synthetos auto-injects a tiny `synthetos_signal.py` SDK into every
+experiment worktree, so user code in your `code_plan.files` can emit
+checkpoints, metrics, or phase markers back to the dashboard:
+
+```python
+from synthetos_signal import signal
+
+signal("checkpoint", epoch=5, loss=0.23)
+signal("metric", name="val_acc", value=0.91)
+signal("phase", phase="training_done")
+```
+
+Each call writes one tagged JSON line to stdout; the worker parses it
+and stores a `RunTelemetry` row with `event_type="signal.<event>"`. The
+run-detail telemetry tail in the dashboard renders these alongside
+plain log lines.
+
 ### 4. Or run a bundled pilot
 
 ```bash

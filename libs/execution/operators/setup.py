@@ -20,6 +20,7 @@ from libs.execution.operators._common import (
     load_run_record,
     run_record_id_from_payload,
 )
+from libs.execution.sdk_template import SDK_FILENAME, SDK_SOURCE
 from libs.storage.base import get_sync_session_factory
 from libs.storage.models.experiment import ExperimentSpec
 
@@ -79,6 +80,11 @@ def execution_setup_operator(op_input: OperatorInput) -> OperatorResult:
             file_path = worktree_path / filename
             file_path.parent.mkdir(parents=True, exist_ok=True)
             file_path.write_text(content, encoding="utf-8")
+
+        # Inject the Synthetos signal SDK so user code can do
+        # `from synthetos_signal import signal` to emit structured events
+        # back to the worker via stdout-tagged lines.
+        (worktree_path / SDK_FILENAME).write_text(SDK_SOURCE, encoding="utf-8")
 
         # 3. Commit generated code
         try:
