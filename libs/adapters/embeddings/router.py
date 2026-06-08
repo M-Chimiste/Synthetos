@@ -20,7 +20,10 @@ from typing import Any
 
 import yaml
 
+from libs.adapters.embeddings.base import EmbeddingAdapter
 from libs.adapters.embeddings.openai_compat import OpenAICompatEmbeddingAdapter
+from libs.adapters.embeddings.sentence_transformers import SentenceTransformersEmbeddingAdapter
+from libs.core.config import get_settings
 from libs.core.logging import get_logger
 
 log = get_logger(__name__)
@@ -35,10 +38,10 @@ class EmbeddingsRouter:
 
     def __init__(self, config_path: Path | str | None = None) -> None:
         if config_path is None:
-            config_path = Path("configs/models.yaml")
+            config_path = get_settings().model_config_path
         self._config_path = Path(config_path)
         self._config: dict[str, Any] = {}
-        self._adapters: dict[str, OpenAICompatEmbeddingAdapter] = {}
+        self._adapters: dict[str, EmbeddingAdapter] = {}
         self._load_config()
 
     def _load_config(self) -> None:
@@ -69,10 +72,23 @@ class EmbeddingsRouter:
         provider_cfg = dict(providers.get(provider, {}))
         provider_type = provider_cfg.get("type", provider)
 
+        if provider_type == "sentence_transformers":
+            model = profile.get("model")
+            if not model:
+                raise ValueError("embeddings profile is missing 'model'")
+            dimensions = int(profile.get("dimension", EXPECTED_DIMENSION))
+            return SentenceTransformersEmbeddingAdapter(
+                model=model,
+                dimensions=dimensions,
+                batch_size=int(profile.get("batch_size", 64)),
+                device=profile.get("device"),
+                trust_remote_code=bool(profile.get("trust_remote_code", True)),
+            )
+
         if provider_type not in {"openai_compatible", "openai", "local"}:
             raise ValueError(
                 f"Embeddings provider '{provider}' (type={provider_type}) "
-                "is not supported in Phase 1; expected an OpenAI-compatible endpoint."
+                "is not supported in Phase 1; expected OpenAI-compatible or sentence_transformers."
             )
 
         base_url = profile.get("base_url") or provider_cfg.get("base_url")

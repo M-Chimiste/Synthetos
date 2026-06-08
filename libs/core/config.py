@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from pydantic import Field
+from pydantic import AliasChoices, Field, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
@@ -38,7 +38,10 @@ class Settings(BaseSettings):
     container_data_volume: str | None = None
 
     # Model gateway config path
-    model_config_path: Path = Field(default=Path("configs/models.yaml"))
+    model_config_path: Path = Field(
+        default=Path("configs/models.yaml"),
+        validation_alias=AliasChoices("LAB_MODEL_CONFIG_PATH", "LAB_MODEL_CONFIG"),
+    )
 
     # Skill discovery paths (colon-separated)
     skill_paths: str = "skills"
@@ -64,6 +67,15 @@ class Settings(BaseSettings):
     # Experiment image GC: keep at most this many `synthetos-exp-*` images
     # on the host. The periodic tick prunes the oldest beyond this count.
     experiment_image_max_keep: int = 5
+
+    @model_validator(mode="after")
+    def resolve_paths(self) -> Settings:
+        """Normalize roots early so Docker bind mounts and git worktrees are absolute."""
+        if not self.data_root.is_absolute():
+            self.data_root = self.data_root.resolve()
+        if not self.repo_root.is_absolute():
+            self.repo_root = self.repo_root.resolve()
+        return self
 
     @property
     def skill_path_list(self) -> list[Path]:

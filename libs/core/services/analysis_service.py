@@ -6,7 +6,6 @@ start analysis sessions, query analysis artifacts, run QA, and list evidence.
 
 from __future__ import annotations
 
-import asyncio
 from uuid import UUID
 
 from sqlalchemy import func, select
@@ -51,6 +50,25 @@ from libs.storage.models.research import ResearchCycle
 
 class AnalysisServiceError(Exception):
     """Raised when an analysis service operation cannot proceed."""
+
+
+def _analysis_session_read(analysis: AnalysisSession) -> AnalysisSessionRead:
+    return AnalysisSessionRead(
+        id=UUID(str(analysis.id)),
+        cycle_id=UUID(str(analysis.cycle_id)),
+        charter_id=UUID(str(analysis.charter_id)),
+        paper_card_id=UUID(str(analysis.paper_card_id)),
+        status=analysis.status,
+        budget=analysis.budget,
+        stats=analysis.stats,
+        step_log=analysis.step_log,
+        report_artifact_path=analysis.report_artifact_path,
+        error=analysis.error,
+        created_at=analysis.created_at,
+        updated_at=analysis.updated_at,
+        started_at=analysis.started_at,
+        completed_at=analysis.completed_at,
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -137,7 +155,7 @@ async def start_analysis(
 
     await session.flush()
     return (
-        AnalysisSessionRead.model_validate(analysis),
+        _analysis_session_read(analysis),
         UUID(str(ingest_job_id)),
     )
 
@@ -152,7 +170,7 @@ async def get_analysis_session(
     session_id: UUID,
 ) -> AnalysisSessionRead | None:
     obj = await session.get(AnalysisSession, session_id)
-    return AnalysisSessionRead.model_validate(obj) if obj else None
+    return _analysis_session_read(obj) if obj else None
 
 
 async def list_analysis_sessions(
@@ -184,10 +202,7 @@ async def list_analysis_sessions(
         .offset(offset)
         .limit(limit)
     )
-    items = [
-        AnalysisSessionRead.model_validate(s)
-        for s in result.scalars().all()
-    ]
+    items = [_analysis_session_read(s) for s in result.scalars().all()]
     return items, total
 
 
@@ -479,23 +494,19 @@ async def run_qa(
     """Run graph-aware QA against the latest completed analysis for a paper."""
     from libs.analysis.graph_qa import answer_question
 
-    def _run() -> QAResponse:
-        sync_factory = get_sync_session_factory()
-        with sync_factory() as sync_session:
-            try:
-                return asyncio.run(
-                    answer_question(
-                        sync_session,
-                        paper_card_id=paper_card_id,
-                        question=question,
-                        max_chunks=max_chunks,
-                        expand_graph=expand_graph,
-                    )
-                )
-            except ValueError as exc:
-                raise AnalysisServiceError(str(exc)) from exc
-
-    return await session.run_sync(lambda _sync: _run())
+    _ = session
+    sync_factory = get_sync_session_factory()
+    with sync_factory() as sync_session:
+        try:
+            return await answer_question(
+                sync_session,
+                paper_card_id=paper_card_id,
+                question=question,
+                max_chunks=max_chunks,
+                expand_graph=expand_graph,
+            )
+        except ValueError as exc:
+            raise AnalysisServiceError(str(exc)) from exc
 
 
 async def run_locate(
@@ -508,17 +519,13 @@ async def run_locate(
     """Locate entity mentions in the latest completed analysis for a paper."""
     from libs.analysis.graph_qa import locate_entity
 
-    def _run() -> LocateResponse:
-        sync_factory = get_sync_session_factory()
-        with sync_factory() as sync_session:
-            matches = asyncio.run(
-                locate_entity(
-                    sync_session,
-                    paper_card_id=paper_card_id,
-                    entity_type=entity_type,
-                    query=query,
-                )
-            )
-            return LocateResponse(matches=matches)
-
-    return await session.run_sync(lambda _sync: _run())
+    _ = session
+    sync_factory = get_sync_session_factory()
+    with sync_factory() as sync_session:
+        matches = await locate_entity(
+            sync_session,
+            paper_card_id=paper_card_id,
+            entity_type=entity_type,
+            query=query,
+        )
+        return LocateResponse(matches=matches)

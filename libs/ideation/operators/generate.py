@@ -185,7 +185,7 @@ def hypothesis_generate_operator(op_input: OperatorInput) -> OperatorResult:
                     [
                         charter.title,
                         charter.problem_statement,
-                        " ".join(item["summary"] for item in evidence_summaries),
+                        " ".join(item["claim"] for item in evidence_summaries),
                     ]
                 )
             ),

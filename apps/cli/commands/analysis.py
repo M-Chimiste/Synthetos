@@ -19,16 +19,37 @@ def run_analysis(
     paper_id: str = typer.Option(..., "--paper-id", help="UUID of the paper card"),
     charter_id: str = typer.Option(..., "--charter-id", help="UUID of the charter"),
     cycle_id: str = typer.Option(..., "--cycle-id", help="UUID of the cycle"),
+    max_chunks: int = typer.Option(500, "--max-chunks", min=1, max=5000),
+    graph_concurrency: int = typer.Option(4, "--graph-concurrency", min=1, max=16),
+    evidence_concurrency: int = typer.Option(4, "--evidence-concurrency", min=1, max=16),
 ) -> None:
     """Start full-text analysis on a shortlisted paper."""
-    asyncio.run(_start_analysis(UUID(paper_id), UUID(charter_id), UUID(cycle_id)))
+    asyncio.run(
+        _start_analysis(
+            UUID(paper_id),
+            UUID(charter_id),
+            UUID(cycle_id),
+            max_chunks=max_chunks,
+            graph_concurrency=graph_concurrency,
+            evidence_concurrency=evidence_concurrency,
+        )
+    )
 
 
-async def _start_analysis(paper_id: UUID, charter_id: UUID, cycle_id: UUID) -> None:
+async def _start_analysis(
+    paper_id: UUID,
+    charter_id: UUID,
+    cycle_id: UUID,
+    *,
+    max_chunks: int,
+    graph_concurrency: int,
+    evidence_concurrency: int,
+) -> None:
     from libs.storage.base import get_async_session
 
     async with get_async_session() as db:
         from libs.core.services.analysis_service import (
+            AnalysisBudget,
             AnalysisServiceError,
             start_analysis,
         )
@@ -39,6 +60,11 @@ async def _start_analysis(paper_id: UUID, charter_id: UUID, cycle_id: UUID) -> N
                 paper_card_id=paper_id,
                 charter_id=charter_id,
                 cycle_id=cycle_id,
+                budget=AnalysisBudget(
+                    max_chunks=max_chunks,
+                    graph_extraction_concurrency=graph_concurrency,
+                    evidence_extraction_concurrency=evidence_concurrency,
+                ),
             )
             await db.commit()
             typer.echo(

@@ -130,6 +130,7 @@ def run(
             updated_at=utcnow(),
         )
         session.add(profile)
+        session.flush()
 
         discovery = DiscoverySession(
             id=uuid_utils.uuid7(),

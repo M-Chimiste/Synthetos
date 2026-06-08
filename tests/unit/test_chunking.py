@@ -173,6 +173,29 @@ def test_chunk_max_limit():
     assert len(chunks) <= 10
 
 
+def test_chunk_max_limit_with_multiline_section():
+    """Paragraph splitting must not exceed the max_chunks limit."""
+    doc = _make_doc(sections=[
+        {
+            "heading": "Method",
+            "level": 2,
+            "content": "\n".join(f"Paragraph {i}" for i in range(50)),
+        },
+    ])
+    db = MagicMock()
+    session_id = UUID(str(uuid7()))
+
+    chunks = chunk_document(
+        db,
+        doc=doc,
+        analysis_session_id=session_id,
+        paper_card_id=doc.paper_card_id,
+        max_chunks=12,
+    )
+
+    assert len(chunks) == 12
+
+
 def test_chunk_empty_sections_skipped():
     """Sections with no content are skipped."""
     doc = _make_doc(sections=[

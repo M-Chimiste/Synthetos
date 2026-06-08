@@ -6,7 +6,7 @@ import json
 from typing import Any, TypeVar
 
 import httpx
-from pydantic import BaseModel
+from pydantic import BaseModel, ValidationError
 
 from libs.core.logging import get_logger
 from libs.schemas.model_gateway import CompletionResponse
@@ -33,13 +33,20 @@ class OpenAICompatAdapter:
         api_key: str = "not-needed",
         default_temperature: float = 0.7,
         default_max_tokens: int = 4096,
+        extra_body: dict[str, Any] | None = None,
+        strip_reasoning_tags: bool = False,
         timeout: float = 120.0,
     ) -> None:
         self.base_url = base_url.rstrip("/")
+        self.chat_completions_path = (
+            "/chat/completions" if self.base_url.endswith("/v1") else "/v1/chat/completions"
+        )
         self.model = model
         self.api_key = api_key
         self.default_temperature = default_temperature
         self.default_max_tokens = default_max_tokens
+        self.extra_body = dict(extra_body or {})
+        self.strip_reasoning_tags = strip_reasoning_tags
         self._client = httpx.AsyncClient(
             base_url=self.base_url,
             headers={
@@ -63,11 +70,12 @@ class OpenAICompatAdapter:
             "temperature": temperature if temperature is not None else self.default_temperature,
             "max_tokens": max_tokens if max_tokens is not None else self.default_max_tokens,
         }
+        payload.update(self.extra_body)
 
         log.debug("openai_compat.complete", model=self.model, base_url=self.base_url)
 
         try:
-            resp = await self._client.post("/v1/chat/completions", json=payload)
+            resp = await self._client.post(self.chat_completions_path, json=payload)
             resp.raise_for_status()
         except httpx.HTTPStatusError as exc:
             log.error(
@@ -83,9 +91,10 @@ class OpenAICompatAdapter:
         data = resp.json()
         choice = data["choices"][0]
         usage = data.get("usage", {})
+        content = self._clean_content(choice["message"]["content"])
 
         return CompletionResponse(
-            content=choice["message"]["content"],
+            content=content,
             model=data.get("model", self.model),
             provider=self.provider_name,
             input_tokens=usage.get("prompt_tokens"),
@@ -120,9 +129,10 @@ class OpenAICompatAdapter:
             "max_tokens": max_tokens if max_tokens is not None else self.default_max_tokens,
             "response_format": {
                 "type": "json_schema",
-                "json_schema": {"name": response_model.__name__, "schema": schema},
+                "schema": schema,
             },
         }
+        payload.update(self.extra_body)
 
         log.debug(
             "openai_compat.complete_structured",
@@ -131,17 +141,17 @@ class OpenAICompatAdapter:
         )
 
         try:
-            resp = await self._client.post("/v1/chat/completions", json=payload)
+            resp = await self._client.post(self.chat_completions_path, json=payload)
             resp.raise_for_status()
             data = resp.json()
-            content = data["choices"][0]["message"]["content"]
-            return response_model.model_validate_json(content)
+            content = self._clean_content(data["choices"][0]["message"]["content"])
+            return self._validate_json_response(response_model, content)
         except httpx.HTTPStatusError:
             log.info(
                 "openai_compat.json_schema_unsupported, falling back to JSON parsing",
                 model=self.model,
             )
-        except (json.JSONDecodeError, Exception) as exc:
+        except (json.JSONDecodeError, ValidationError) as exc:
             log.info(
                 "openai_compat.json_schema_parse_failed, falling back",
                 error=str(exc),
@@ -150,7 +160,9 @@ class OpenAICompatAdapter:
         # Fallback: ask for JSON output in the system prompt
         augmented = list(messages)
         json_instruction = (
-            f"Respond ONLY with valid JSON matching this schema: {json.dumps(schema)}"
+            "Respond ONLY with one valid JSON object that satisfies the schema below. "
+            "Do not return the schema, prose, markdown, or explanations. "
+            f"Schema: {json.dumps(schema)}"
         )
         if augmented and augmented[0]["role"] == "system":
             augmented[0] = {
@@ -166,9 +178,10 @@ class OpenAICompatAdapter:
             "temperature": temperature if temperature is not None else self.default_temperature,
             "max_tokens": max_tokens if max_tokens is not None else self.default_max_tokens,
         }
+        fallback_payload.update(self.extra_body)
 
         try:
-            resp = await self._client.post("/v1/chat/completions", json=fallback_payload)
+            resp = await self._client.post(self.chat_completions_path, json=fallback_payload)
             resp.raise_for_status()
         except httpx.HTTPStatusError as exc:
             log.error(
@@ -182,17 +195,155 @@ class OpenAICompatAdapter:
             raise
 
         data = resp.json()
-        content = data["choices"][0]["message"]["content"]
+        content = self._clean_content(data["choices"][0]["message"]["content"])
+        return self._validate_json_response(response_model, content)
 
-        # Strip markdown code fences if present
+    def _validate_json_response(self, response_model: type[T], content: str) -> T:
+        """Parse a local model JSON response, with small repairs for truncation."""
+        cleaned = self._json_payload(content)
+        try:
+            return response_model.model_validate_json(cleaned)
+        except ValidationError as exc:
+            candidates = [
+                self._escape_invalid_json_backslashes(cleaned),
+                self._repair_truncated_json(cleaned),
+            ]
+            candidates.append(self._repair_truncated_json(candidates[0]))
+            for candidate in candidates:
+                if candidate == cleaned:
+                    continue
+                try:
+                    return response_model.model_validate_json(candidate)
+                except ValidationError:
+                    pass
+            raise exc
+
+    def _json_payload(self, content: str) -> str:
+        """Extract the most likely JSON payload from a completion."""
         cleaned = content.strip()
         if cleaned.startswith("```"):
             lines = cleaned.split("\n")
             # Remove first line (```json) and last line (```)
             lines = [ln for ln in lines[1:] if ln.strip() != "```"]
             cleaned = "\n".join(lines)
+        start_positions = [idx for idx in (cleaned.find("{"), cleaned.find("[")) if idx != -1]
+        if not start_positions:
+            return cleaned
+        start = min(start_positions)
+        extracted = self._extract_json_span(cleaned[start:])
+        return extracted if extracted else cleaned[start:]
 
-        return response_model.model_validate_json(cleaned)
+    def _extract_json_span(self, text: str) -> str | None:
+        """Return a complete or clearly truncated JSON object/array span."""
+        stack: list[str] = []
+        in_string = False
+        escape = False
+        for idx, char in enumerate(text):
+            if in_string:
+                if escape:
+                    escape = False
+                elif char == "\\":
+                    escape = True
+                elif char == '"':
+                    in_string = False
+                continue
+            if char == '"':
+                in_string = True
+            elif char in "{[":
+                stack.append(char)
+            elif char in "}]":
+                if not stack:
+                    return None
+                opening = stack.pop()
+                if (opening, char) not in {("{", "}"), ("[", "]")}:
+                    return None
+                if not stack:
+                    return text[: idx + 1]
+        if stack:
+            return text
+        return None
+
+    def _repair_truncated_json(self, cleaned: str) -> str:
+        """Close unterminated containers when generation ended mid-object."""
+        stack: list[str] = []
+        in_string = False
+        escape = False
+        for char in cleaned:
+            if in_string:
+                if escape:
+                    escape = False
+                elif char == "\\":
+                    escape = True
+                elif char == '"':
+                    in_string = False
+                continue
+            if char == '"':
+                in_string = True
+            elif char in "{[":
+                stack.append(char)
+            elif char in "}]" and stack and (stack[-1], char) in {("{", "}"), ("[", "]")}:
+                stack.pop()
+        if in_string:
+            cleaned += '"'
+        closers = {"{": "}", "[": "]"}
+        return cleaned + "".join(closers[char] for char in reversed(stack))
+
+    def _escape_invalid_json_backslashes(self, cleaned: str) -> str:
+        """Escape raw LaTeX-style backslashes that local models emit in JSON strings."""
+        valid_simple = {'"', "\\", "/", "b", "f", "n", "r", "t"}
+        out: list[str] = []
+        in_string = False
+        escape = False
+        idx = 0
+        while idx < len(cleaned):
+            char = cleaned[idx]
+            if in_string:
+                if escape:
+                    if char in valid_simple or (
+                        char == "u" and self._has_hex_escape(cleaned, idx + 1)
+                    ):
+                        out.append(char)
+                    else:
+                        out.append("\\")
+                        out.append(char)
+                    escape = False
+                elif char == "\\":
+                    out.append(char)
+                    escape = True
+                elif char == '"':
+                    out.append(char)
+                    in_string = False
+                else:
+                    out.append(char)
+                idx += 1
+                continue
+
+            out.append(char)
+            if char == '"':
+                in_string = True
+            idx += 1
+
+        if escape:
+            out.append("\\")
+        return "".join(out)
+
+    def _has_hex_escape(self, text: str, start: int) -> bool:
+        """Return whether four JSON unicode escape digits follow start."""
+        if start + 4 > len(text):
+            return False
+        return all(char in "0123456789abcdefABCDEF" for char in text[start : start + 4])
+
+    def _clean_content(self, content: str) -> str:
+        """Remove local-model reasoning wrappers that break downstream JSON parsing."""
+        if not self.strip_reasoning_tags:
+            return content
+
+        cleaned = content.strip()
+        if cleaned.startswith("<think>"):
+            end = cleaned.find("</think>")
+            if end != -1:
+                cleaned = cleaned[end + len("</think>") :].strip()
+        return cleaned
 
     async def close(self) -> None:
         """Close the underlying HTTP client."""

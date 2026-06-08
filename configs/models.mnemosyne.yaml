@@ -1,0 +1,62 @@
+# Local Mnemosyne routing for the workstation inference server.
+#
+# Use with:
+#   LAB_MODEL_CONFIG=configs/models.mnemosyne.yaml
+
+defaults:
+  temperature: 0.3
+  max_tokens: 4096
+
+roles:
+  planning: &mnemosyne_role
+    provider: mnemosyne
+    model: qwen3-6-35b-a3b-mtp-gguf
+    base_url: http://localhost:8000/v1
+    temperature: 0.3
+    max_tokens: 4096
+    strip_reasoning_tags: true
+    extra_body: &llamacpp_no_thinking
+      chat_template_kwargs:
+        enable_thinking: false
+      reasoning_format: none
+
+  retrieval_synthesis: *mnemosyne_role
+  metadata_analysis: *mnemosyne_role
+  coding:
+    <<: *mnemosyne_role
+    temperature: 0.2
+  summarization: *mnemosyne_role
+  evaluation:
+    <<: *mnemosyne_role
+    temperature: 0.2
+  report_writing:
+    <<: *mnemosyne_role
+    temperature: 0.5
+  paper_analysis: *mnemosyne_role
+  paper_review: *mnemosyne_role
+  hypothesis_generation:
+    <<: *mnemosyne_role
+    temperature: 0.7
+  protocol_drafting:
+    <<: *mnemosyne_role
+    temperature: 0.3
+  remediation:
+    <<: *mnemosyne_role
+    temperature: 0.2
+  context_compression: *mnemosyne_role
+
+embeddings:
+  default:
+    provider: local_embeddings
+    model: Alibaba-NLP/gte-modernbert-base
+    dimension: 768
+    device: cuda:1
+    batch_size: 64
+    trust_remote_code: true
+
+providers:
+  mnemosyne:
+    type: openai_compatible
+    base_url: http://localhost:8000/v1
+  local_embeddings:
+    type: sentence_transformers

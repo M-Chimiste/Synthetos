@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import os
 from pathlib import Path
 from typing import Any
 
@@ -108,6 +109,9 @@ def load_db_role_config(role: ModelRole) -> dict[str, Any] | None:
     Returns ``None`` when tables are unavailable or no binding exists, so
     callers can keep the YAML fallback path during migrations and tests.
     """
+    if os.environ.get("LAB_MODEL_CONFIG") or os.environ.get("LAB_MODEL_CONFIG_PATH"):
+        return None
+
     try:
         factory = get_sync_session_factory()
         with factory() as session:

@@ -1,6 +1,6 @@
 """Live arXiv API source adapter.
 
-Hits ``http://export.arxiv.org/api/query`` with an Atom request and parses
+Hits ``https://export.arxiv.org/api/query`` with an Atom request and parses
 the response with the stdlib XML parser.  Honors arXiv's published 3-second
 minimum interval between requests via a tiny token bucket.
 
@@ -36,7 +36,7 @@ _ATOM_NS = {
     "arxiv": "http://arxiv.org/schemas/atom",
 }
 
-_DEFAULT_BASE_URL = "http://export.arxiv.org/api/query"
+_DEFAULT_BASE_URL = "https://export.arxiv.org/api/query"
 _MIN_REQUEST_INTERVAL_S = 3.0
 
 

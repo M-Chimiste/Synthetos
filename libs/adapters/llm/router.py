@@ -11,6 +11,7 @@ from libs.adapters.llm.anthropic_adapter import AnthropicAdapter
 from libs.adapters.llm.google_adapter import GoogleAdapter
 from libs.adapters.llm.openai_adapter import OpenAIAdapter
 from libs.adapters.llm.openai_compat import OpenAICompatAdapter
+from libs.core.config import get_settings
 from libs.core.logging import get_logger
 from libs.core.services.model_settings_service import load_db_role_config
 
@@ -31,7 +32,7 @@ class ModelRouter:
 
     def __init__(self, config_path: Path | str | None = None) -> None:
         if config_path is None:
-            config_path = Path("configs/models.yaml")
+            config_path = get_settings().model_config_path
         self._config_path = Path(config_path)
         self._config: dict[str, Any] = {}
         self._adapters: dict[str, LLMAdapter] = {}
@@ -105,6 +106,8 @@ class ModelRouter:
                 api_key=role_cfg.get("api_key", "not-needed"),
                 default_temperature=temperature,
                 default_max_tokens=max_tokens,
+                extra_body=role_cfg.get("extra_body"),
+                strip_reasoning_tags=role_cfg.get("strip_reasoning_tags", False),
             )
         elif provider_type == "anthropic":
             return AnthropicAdapter(

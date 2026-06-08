@@ -10,6 +10,7 @@ from __future__ import annotations
 from pathlib import Path
 from uuid import UUID
 
+from pydantic import BaseModel
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 from uuid_utils import uuid7
@@ -48,6 +49,21 @@ from libs.storage.models.research import ResearchCycle
 
 class ExperimentServiceError(Exception):
     """Raised when an experiment service operation cannot proceed."""
+
+
+def _read_model[ReadModelT: BaseModel](schema: type[ReadModelT], obj: object) -> ReadModelT:
+    """Validate SQLAlchemy rows while normalizing uuid_utils UUID values."""
+    mapper = getattr(obj, "__mapper__", None)
+    if mapper is None:
+        return schema.model_validate(obj)
+
+    data = {}
+    for attr in mapper.column_attrs:
+        value = getattr(obj, attr.key)
+        if value is not None and value.__class__.__module__.startswith("uuid_utils"):
+            value = UUID(str(value))
+        data[attr.key] = value
+    return schema.model_validate(data)
 
 
 # ---------------------------------------------------------------------------
@@ -114,7 +130,7 @@ async def start_hypothesis_session(
 
     await session.flush()
     return (
-        HypothesisSessionRead.model_validate(hs),
+        _read_model(HypothesisSessionRead, hs),
         UUID(str(job_id)),
     )
 
@@ -124,7 +140,7 @@ async def get_hypothesis_session(
     session_id: UUID,
 ) -> HypothesisSessionRead | None:
     obj = await session.get(HypothesisSession, session_id)
-    return HypothesisSessionRead.model_validate(obj) if obj else None
+    return _read_model(HypothesisSessionRead, obj) if obj else None
 
 
 async def list_hypothesis_sessions(
@@ -149,7 +165,7 @@ async def list_hypothesis_sessions(
     result = await session.execute(
         query.order_by(HypothesisSession.created_at.desc()).offset(offset).limit(limit)
     )
-    items = [HypothesisSessionRead.model_validate(s) for s in result.scalars().all()]
+    items = [_read_model(HypothesisSessionRead, s) for s in result.scalars().all()]
     return items, total
 
 
@@ -188,7 +204,7 @@ async def list_hypothesis_cards(
         .offset(offset)
         .limit(limit)
     )
-    items = [HypothesisCardRead.model_validate(c) for c in result.scalars().all()]
+    items = [_read_model(HypothesisCardRead, c) for c in result.scalars().all()]
     return items, total
 
 
@@ -197,7 +213,7 @@ async def get_hypothesis_card(
     card_id: UUID,
 ) -> HypothesisCardRead | None:
     obj = await session.get(HypothesisCard, card_id)
-    return HypothesisCardRead.model_validate(obj) if obj else None
+    return _read_model(HypothesisCardRead, obj) if obj else None
 
 
 async def update_hypothesis_card(
@@ -220,7 +236,7 @@ async def update_hypothesis_card(
     card.updated_at = utcnow()
 
     await session.flush()
-    return HypothesisCardRead.model_validate(card)
+    return _read_model(HypothesisCardRead, card)
 
 
 # ---------------------------------------------------------------------------
@@ -250,7 +266,7 @@ async def list_experiment_specs(
     result = await session.execute(
         query.order_by(ExperimentSpec.created_at.desc()).offset(offset).limit(limit)
     )
-    items = [ExperimentSpecRead.model_validate(s) for s in result.scalars().all()]
+    items = [_read_model(ExperimentSpecRead, s) for s in result.scalars().all()]
     return items, total
 
 
@@ -259,7 +275,7 @@ async def get_experiment_spec(
     spec_id: UUID,
 ) -> ExperimentSpecRead | None:
     obj = await session.get(ExperimentSpec, spec_id)
-    return ExperimentSpecRead.model_validate(obj) if obj else None
+    return _read_model(ExperimentSpecRead, obj) if obj else None
 
 
 # ---------------------------------------------------------------------------
@@ -293,7 +309,7 @@ async def list_run_records(
     result = await session.execute(
         query.order_by(RunRecord.created_at.desc()).offset(offset).limit(limit)
     )
-    items = [RunRecordRead.model_validate(r) for r in result.scalars().all()]
+    items = [_read_model(RunRecordRead, r) for r in result.scalars().all()]
     return items, total
 
 
@@ -302,7 +318,7 @@ async def get_run_record(
     run_id: UUID,
 ) -> RunRecordRead | None:
     obj = await session.get(RunRecord, run_id)
-    return RunRecordRead.model_validate(obj) if obj else None
+    return _read_model(RunRecordRead, obj) if obj else None
 
 
 # ---------------------------------------------------------------------------
@@ -461,7 +477,7 @@ async def start_run(
 
     await session.flush()
     return (
-        RunRecordRead.model_validate(run),
+        _read_model(RunRecordRead, run),
         UUID(str(job_id)),
     )
 
@@ -627,10 +643,10 @@ async def control_run(
 
         await session.flush()
         # Return the new run, not the old one
-        return RunRecordRead.model_validate(new_run)
+        return _read_model(RunRecordRead, new_run)
 
     await session.flush()
-    return RunRecordRead.model_validate(run)
+    return _read_model(RunRecordRead, run)
 
 
 # ---------------------------------------------------------------------------
@@ -651,7 +667,7 @@ async def list_run_telemetry(
     result = await session.execute(
         query.order_by(RunTelemetry.timestamp.asc()).limit(limit)
     )
-    return [RunTelemetryRead.model_validate(t) for t in result.scalars().all()]
+    return [_read_model(RunTelemetryRead, t) for t in result.scalars().all()]
 
 
 # ---------------------------------------------------------------------------
@@ -667,7 +683,7 @@ async def get_verification_report(
         select(VerificationReport).where(VerificationReport.run_record_id == run_id)
     )
     obj = result.scalar_one_or_none()
-    return VerificationReportRead.model_validate(obj) if obj else None
+    return _read_model(VerificationReportRead, obj) if obj else None
 
 
 async def get_failure_postmortem(
@@ -678,7 +694,7 @@ async def get_failure_postmortem(
         select(FailurePostmortem).where(FailurePostmortem.run_record_id == run_id)
     )
     obj = result.scalar_one_or_none()
-    return FailurePostmortemRead.model_validate(obj) if obj else None
+    return _read_model(FailurePostmortemRead, obj) if obj else None
 
 
 async def list_verification_reports(
@@ -703,5 +719,5 @@ async def list_verification_reports(
     result = await session.execute(
         query.order_by(VerificationReport.created_at.desc()).offset(offset).limit(limit)
     )
-    items = [VerificationReportRead.model_validate(r) for r in result.scalars().all()]
+    items = [_read_model(VerificationReportRead, r) for r in result.scalars().all()]
     return items, total

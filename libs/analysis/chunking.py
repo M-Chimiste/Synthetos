@@ -64,6 +64,8 @@ def chunk_document(
             ordinal += 1
         else:
             for para in paragraphs:
+                if len(chunks) >= max_chunks:
+                    break
                 chunk = _make_chunk(
                     db,
                     analysis_session_id=analysis_session_id,
