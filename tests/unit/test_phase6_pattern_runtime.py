@@ -39,6 +39,17 @@ class _PatternSession:
         return _ScalarResult(list_value=self._patterns)
 
 
+class _AmbiguousVector:
+    def __iter__(self):
+        return iter([1.0, 0.0, 0.0])
+
+    def __len__(self):
+        return 3
+
+    def __bool__(self):
+        raise ValueError("ambiguous truth value")
+
+
 class _DiscoverySession:
     def __init__(self, cycle):
         self.cycle = cycle
@@ -151,6 +162,26 @@ def test_find_relevant_patterns_prefers_similarity_when_embeddings_exist() -> No
     )
 
     assert [match.pattern.title for match in matches] == ["Near", "Far"]
+
+
+def test_find_relevant_patterns_handles_pgvector_without_truthiness() -> None:
+    pattern = _pattern(
+        title="Vector",
+        summary="pgvector style value",
+        confidence=0.9,
+        embedding=_AmbiguousVector(),
+    )
+
+    matches = find_relevant_patterns(
+        _PatternSession([pattern]),
+        charter_id=uuid7(),
+        current_cycle_id=None,
+        problem_profile_embedding=[1.0, 0.0, 0.0],
+        limit=1,
+    )
+
+    assert matches[0].pattern.title == "Vector"
+    assert matches[0].similarity == 1.0
 
 
 def test_discovery_search_operator_injects_retrieval_patterns_into_query(monkeypatch) -> None:

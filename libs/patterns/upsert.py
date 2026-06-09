@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from datetime import UTC, datetime
 from typing import Any
 from uuid import UUID
 
@@ -12,6 +13,16 @@ from uuid_utils import uuid7
 from libs.core.clock import utcnow
 from libs.patterns.consolidation import AggregatedPattern, compute_confidence
 from libs.storage.models.patterns import CanonicalPattern, PatternObservation
+
+
+def _as_utc(value: datetime) -> datetime:
+    if value.tzinfo is None or value.tzinfo.utcoffset(value) is None:
+        return value.replace(tzinfo=UTC)
+    return value.astimezone(UTC)
+
+
+def _latest_datetime(left: datetime, right: datetime) -> datetime:
+    return max(_as_utc(left), _as_utc(right))
 
 
 def upsert_pattern(
@@ -70,7 +81,10 @@ def upsert_pattern(
     new_conf = compute_confidence(agg)
     if new_conf > existing.confidence:
         existing.confidence = new_conf
-    existing.last_observed_at = max(existing.last_observed_at, agg.last_observed_at)
+    existing.last_observed_at = _latest_datetime(
+        existing.last_observed_at,
+        agg.last_observed_at,
+    )
     existing.last_reinforced_at = now
     existing.staleness_score = 0.0
     existing.consolidation_version = consolidation_version

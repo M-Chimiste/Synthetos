@@ -32,13 +32,15 @@ class TestLoopDecidingTransitions:
         with pytest.raises(InvalidTransitionError):
             validate_transition(CycleStatus.loop_deciding, CycleStatus.verifying)
 
-    def test_running_to_loop_deciding_not_allowed(self) -> None:
-        with pytest.raises(InvalidTransitionError):
-            validate_transition(CycleStatus.running, CycleStatus.loop_deciding)
+    def test_running_to_loop_deciding_allowed(self) -> None:
+        validate_transition(CycleStatus.running, CycleStatus.loop_deciding)
 
     def test_reporting_to_loop_deciding_not_allowed(self) -> None:
         with pytest.raises(InvalidTransitionError):
             validate_transition(CycleStatus.reporting, CycleStatus.loop_deciding)
+
+    def test_reporting_to_reporting_allowed(self) -> None:
+        validate_transition(CycleStatus.reporting, CycleStatus.reporting)
 
     def test_get_allowed_from_loop_deciding(self) -> None:
         allowed = get_allowed_transitions(CycleStatus.loop_deciding)
@@ -60,6 +62,9 @@ class TestExistingTransitionsUnchanged:
 
     def test_reporting_to_closed_still_allowed(self) -> None:
         validate_transition(CycleStatus.reporting, CycleStatus.closed)
+
+    def test_closed_to_closed_allowed(self) -> None:
+        validate_transition(CycleStatus.closed, CycleStatus.closed)
 
     def test_running_to_verifying_still_allowed(self) -> None:
         validate_transition(CycleStatus.running, CycleStatus.verifying)

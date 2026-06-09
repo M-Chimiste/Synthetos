@@ -18,6 +18,7 @@ from apps.api.routers import (
     discovery,
     events,
     experiment,
+    goals,
     health,
     jobs,
     patterns,
@@ -120,6 +121,7 @@ def create_app() -> FastAPI:
     app.include_router(discovery.router, prefix=api_prefix)
     app.include_router(analysis.router, prefix=api_prefix)
     app.include_router(experiment.router, prefix=api_prefix)
+    app.include_router(goals.router, prefix=api_prefix)
     app.include_router(remediation.router, prefix=api_prefix)
     app.include_router(autonomy.router, prefix=api_prefix)
     app.include_router(patterns.router, prefix=api_prefix)

@@ -38,7 +38,12 @@ from libs.patterns.embedding import embed_text
 from libs.patterns.injection import InjectionPolicy, inject_patterns
 from libs.storage.base import get_sync_session_factory
 from libs.storage.models.autonomy import LoopDecision
-from libs.storage.models.experiment import ExperimentSpec, HypothesisCard, RunRecord
+from libs.storage.models.experiment import (
+    ExperimentSpec,
+    HypothesisCard,
+    HypothesisSession,
+    RunRecord,
+)
 from libs.storage.models.jobs import Job
 from libs.storage.models.remediation import (
     DirectionalSignal,
@@ -48,6 +53,20 @@ from libs.storage.models.remediation import (
 from libs.storage.models.research import ResearchCycle
 
 log = get_logger("autonomy.loop_decide")
+
+
+def _latest_completed_hypothesis_session(db, cycle_id):
+    """Return the completed hypothesis session to use for loop-driven compiles."""
+    return db.execute(
+        select(HypothesisSession)
+        .where(HypothesisSession.cycle_id == cycle_id)
+        .where(HypothesisSession.status == "completed")
+        .order_by(
+            HypothesisSession.completed_at.desc().nulls_last(),
+            HypothesisSession.created_at.desc(),
+        )
+        .limit(1)
+    ).scalar_one_or_none()
 
 
 def loop_decide_operator(op_input: OperatorInput) -> OperatorResult:
@@ -513,13 +532,7 @@ def _vary_parameters(
 ) -> OperatorResult:
     """Recompile spec with variation context."""
     # Count how many variations have been tried for this hypothesis
-    from libs.storage.models.experiment import HypothesisSession
-
-    hs = db.execute(
-        select(HypothesisSession).where(
-            HypothesisSession.cycle_id == run.cycle_id
-        ).limit(1)
-    ).scalar_one_or_none()
+    hs = _latest_completed_hypothesis_session(db, run.cycle_id)
 
     if hs is None:
         return OperatorResult(
@@ -755,13 +768,7 @@ def _pivot_hypothesis(
             )
 
     # Need to compile a new spec for this card
-    from libs.storage.models.experiment import HypothesisSession
-
-    hs = db.execute(
-        select(HypothesisSession).where(
-            HypothesisSession.cycle_id == run.cycle_id
-        ).limit(1)
-    ).scalar_one_or_none()
+    hs = _latest_completed_hypothesis_session(db, run.cycle_id)
 
     if hs is None:
         return _stop(

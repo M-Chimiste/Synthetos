@@ -8,6 +8,8 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 
+from libs.core.container_images import dependencies_satisfied_by_base_image
+
 
 @dataclass
 class ValidationResult:
@@ -70,7 +72,14 @@ def validate_spec(spec_data: dict) -> ValidationResult:
             dockerfile_content = raw_dockerfile
 
     dependencies = code_plan.get("dependencies") if isinstance(code_plan, dict) else None
-    if dependencies and not dockerfile_content.strip():
+    if (
+        dependencies
+        and not dockerfile_content.strip()
+        and not _dependencies_satisfied_by_base_image(
+            dependencies,
+            spec_data.get("base_image"),
+        )
+    ):
         result.errors.append(
             "code_plan dependencies require build_recipe.dockerfile_content"
         )
@@ -91,3 +100,7 @@ def _has_from_instruction(dockerfile_content: str) -> bool:
         if stripped.upper().startswith("FROM "):
             return True
     return False
+
+
+def _dependencies_satisfied_by_base_image(dependencies, base_image: str | None) -> bool:
+    return dependencies_satisfied_by_base_image(dependencies, base_image)

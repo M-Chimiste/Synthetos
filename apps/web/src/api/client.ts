@@ -69,6 +69,58 @@ export interface DomainEvent {
   created_at: string;
 }
 
+export interface RunArtifact {
+  artifact_id: string;
+  run_id: string;
+  name: string;
+  path: string;
+  size_bytes: number | null;
+  hash: string | null;
+  artifact_type: string;
+  download_url: string;
+}
+
+export interface CycleRunResult {
+  run_id: string;
+  experiment_spec_id: string;
+  attempt_number: number | null;
+  cycle_id: string;
+  run_number: number;
+  status: string;
+  title: string | null;
+  image_ref: string | null;
+  command: string | null;
+  gpu_enabled: boolean | null;
+  exit_code: number | null;
+  metrics: Record<string, unknown>;
+  artifacts: RunArtifact[];
+  verification_verdict: string | null;
+  verification_summary: string | null;
+  verification_warnings: string[];
+  failure_class: string | null;
+  error: string | null;
+}
+
+export interface CycleResultIntrospection {
+  cycle_id: string;
+  charter_id: string | null;
+  goal_id: string | null;
+  publication_readiness: "ready" | "needs_review" | "incomplete" | "failed";
+  summary: string;
+  interpretation: string;
+  caveats: string[];
+  next_steps: string[];
+  completion_report_path: string | null;
+  completion_report_json_path: string | null;
+  introspection_markdown_path: string | null;
+  introspection_json_path: string | null;
+  runs: CycleRunResult[];
+  metrics: Record<string, unknown[]>;
+  model_artifacts: RunArtifact[];
+  remediation_history: Array<Record<string, unknown>>;
+  generated_at: string;
+}
+
 export interface ResearchState {
   charter_id: string;
   charter_title: string;
@@ -240,6 +292,10 @@ export function fetchCycles(charterId: string) {
 
 export function fetchCycle(id: string) {
   return apiFetch<Cycle>(`/cycles/${id}`);
+}
+
+export function fetchCycleIntrospection(id: string) {
+  return apiFetch<CycleResultIntrospection>(`/cycles/${id}/introspection`);
 }
 
 export function createCycle(charterId: string) {

@@ -8,7 +8,7 @@ from collections.abc import AsyncGenerator
 from uuid import UUID
 
 from fastapi import APIRouter, Depends, HTTPException, Query
-from fastapi.responses import StreamingResponse
+from fastapi.responses import FileResponse, StreamingResponse
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -34,6 +34,11 @@ from libs.core.services.experiment_service import (
     start_run,
     update_hypothesis_card,
 )
+from libs.core.services.result_introspection import (
+    ResultIntrospectionError,
+    normalize_run_artifacts,
+    resolve_run_artifact_path,
+)
 from libs.schemas.common import PaginatedResponse
 from libs.schemas.experiment import (
     ExperimentSpecCompileRequest,
@@ -52,6 +57,7 @@ from libs.schemas.experiment import (
     RunTelemetryRead,
     VerificationReportRead,
 )
+from libs.schemas.results import RunArtifactRead
 from libs.storage.models.experiment import RunRecord, RunTelemetry
 
 router = APIRouter(tags=["experiment"])
@@ -272,6 +278,34 @@ async def get_run_record_endpoint(
     if result is None:
         raise HTTPException(status_code=404, detail="Run record not found")
     return result
+
+
+@router.get("/runs/{run_id}/artifacts", response_model=list[RunArtifactRead])
+async def list_run_artifacts_endpoint(
+    run_id: UUID,
+    _: None = Depends(require_scope("cycles.read")),
+    db: AsyncSession = Depends(get_db),
+) -> list[RunArtifactRead]:
+    run = await db.get(RunRecord, run_id)
+    if run is None:
+        raise HTTPException(status_code=404, detail="Run record not found")
+    return normalize_run_artifacts(run)
+
+
+@router.get("/runs/{run_id}/artifacts/{artifact_id}")
+async def download_run_artifact_endpoint(
+    run_id: UUID,
+    artifact_id: str,
+    _: None = Depends(require_scope("cycles.read")),
+    db: AsyncSession = Depends(get_db),
+) -> FileResponse:
+    try:
+        file_path, artifact = await db.run_sync(
+            lambda s: resolve_run_artifact_path(s, run_id, artifact_id)
+        )
+    except ResultIntrospectionError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    return FileResponse(file_path, filename=artifact.name)
 
 # ---- Run control -----------------------------------------------------------
 

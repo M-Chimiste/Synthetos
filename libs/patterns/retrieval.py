@@ -12,6 +12,7 @@ helper and the ``retrieve-preview`` API endpoint. It:
 
 from __future__ import annotations
 
+from collections.abc import Sequence
 from dataclasses import dataclass
 from datetime import datetime
 from typing import Any
@@ -74,6 +75,17 @@ def _effective_confidence(
     age_days = max(0.0, (now - last).total_seconds() / 86400.0)
     decay = min(age_days / float(max_staleness_days), 1.0)
     return max(0.0, pattern.confidence * (1.0 - decay))
+
+
+def _vector_to_list(vector: Any) -> list[float] | None:
+    if vector is None:
+        return None
+    if isinstance(vector, Sequence):
+        return list(vector)
+    try:
+        return list(vector)
+    except TypeError:
+        return None
 
 
 def _cosine(a: list[float] | None, b: list[float] | None) -> float | None:
@@ -140,7 +152,7 @@ def find_relevant_patterns(
 
     matches: list[PatternMatch] = []
     for p in rows:
-        sim = _cosine(problem_profile_embedding, list(p.embedding) if p.embedding else None)
+        sim = _cosine(problem_profile_embedding, _vector_to_list(p.embedding))
         eff = _effective_confidence(p, max_staleness_days=max_staleness_days, now=now)
         charters = list(p.source_charter_ids or [])
         cross_charter = len({c for c in charters}) > 1

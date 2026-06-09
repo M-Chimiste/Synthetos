@@ -99,7 +99,7 @@ class TestTimeoutStrategy:
 
 
 class TestMetricParseStrategy:
-    def test_not_remediable(self) -> None:
+    def test_routes_to_broad_debug(self) -> None:
         result = select_strategy(
             failure_class="metric_parse",
             stderr_tail="",
@@ -107,7 +107,20 @@ class TestMetricParseStrategy:
             prior_strategies=[],
             prior_failure_classes=[],
         )
+        assert result.remediable is True
+        assert result.strategy == "debug_broad"
+        assert "Metric contract failure" in result.reasoning
+
+    def test_metric_threshold_routes_to_research_variation(self) -> None:
+        result = select_strategy(
+            failure_class="metric_threshold",
+            stderr_tail="",
+            current_resource_limits={},
+            prior_strategies=[],
+            prior_failure_classes=[],
+        )
         assert result.remediable is False
+        assert "parameter variation" in result.reasoning
         assert result.strategy == "skip"
 
 

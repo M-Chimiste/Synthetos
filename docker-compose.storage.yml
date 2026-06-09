@@ -1,0 +1,19 @@
+name: synthetos
+
+# Optional storage override for large local artifact/dataset roots.
+#
+# Usage:
+#   LAB_HOST_DATA_ROOT=/mnt/ikaros/synthetos-data \
+#     docker compose -f docker-compose.yml -f docker-compose.storage.yml up -d
+#
+# The worker uses LAB_CONTAINER_DATA_VOLUME=synthetos_lab_data, so this file
+# keeps the Docker volume name stable while backing it with a host directory.
+
+volumes:
+  lab_data:
+    name: synthetos_lab_data
+    driver: local
+    driver_opts:
+      type: none
+      o: bind
+      device: ${LAB_HOST_DATA_ROOT:?Set LAB_HOST_DATA_ROOT to an absolute host path}

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+from pathlib import Path
 from typing import Any
 
 
@@ -16,6 +17,17 @@ class ArtifactCheck:
     required: bool
     passed: bool
     detail: str
+
+
+def expected_artifact_name(expected: dict[str, Any]) -> str:
+    """Return the manifest-facing name for an expected artifact spec."""
+    raw_name = str(expected.get("name") or "").strip()
+    if raw_name:
+        return Path(raw_name).name
+    raw_path = str(expected.get("path") or "").strip()
+    if raw_path:
+        return Path(raw_path).name
+    return ""
 
 
 def check_artifact_contract(
@@ -33,7 +45,7 @@ def check_artifact_contract(
     checks = []
 
     for expected in expected_artifacts:
-        name = expected.get("name", "")
+        name = expected_artifact_name(expected)
         required = expected.get("required", True)
         found = name in manifest_names
 

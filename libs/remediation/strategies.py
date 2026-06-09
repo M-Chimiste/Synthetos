@@ -60,11 +60,24 @@ def select_strategy(
     needs_escalation = len(same_class_prior) > 0
 
     if failure_class == "metric_parse":
+        return _broad_debug_result(
+            failure_class,
+            (
+                "Metric contract failure; ask LLM to patch the experiment code "
+                "so it writes /artifacts/metrics.json with exactly the expected "
+                "numeric metric keys."
+            ),
+        )
+
+    if failure_class == "metric_threshold":
         return StrategyResult(
             strategy="skip",
             strategy_tier="focused",
             remediable=False,
-            reasoning="Metric parse failures are not auto-remediable.",
+            reasoning=(
+                "Experiment completed but did not satisfy metric thresholds; "
+                "route through postmortem and parameter variation."
+            ),
         )
 
     if failure_class == "dependency":

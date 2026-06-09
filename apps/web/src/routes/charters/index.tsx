@@ -2,9 +2,8 @@ import { createFileRoute, Link } from "@tanstack/react-router";
 import { useCharters, useCycles } from "../../api/hooks";
 import type { Charter } from "../../api/client";
 import StatusBadge from "../../components/StatusBadge";
-import PipelineRail, {
-  progressFromCycleStatus,
-} from "../../components/PipelineRail";
+import PipelineRail from "../../components/PipelineRail";
+import { progressFromCycleStatus } from "../../components/cycleProgress";
 
 export const Route = createFileRoute("/charters/")({
   component: CharterListPage,

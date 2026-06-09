@@ -15,8 +15,13 @@ from libs.core.services.cycle_service import (
     list_cycles,
     transition_cycle,
 )
+from libs.core.services.result_introspection import (
+    ResultIntrospectionError,
+    build_cycle_result_introspection,
+)
 from libs.schemas.common import PaginatedResponse
 from libs.schemas.cycle import CycleCreate, CycleRead, CycleTransition
+from libs.schemas.results import CycleResultIntrospection
 
 router = APIRouter(prefix="/cycles", tags=["cycles"])
 
@@ -52,6 +57,20 @@ async def get_cycle_endpoint(
     if cycle is None:
         raise HTTPException(status_code=404, detail="Cycle not found")
     return cycle
+
+@router.get("/{cycle_id}/introspection", response_model=CycleResultIntrospection)
+async def get_cycle_introspection_endpoint(
+    cycle_id: UUID,
+    _: None = Depends(require_scope("cycles.read")),
+    db: AsyncSession = Depends(get_db),
+) -> CycleResultIntrospection:
+    """Fetch or build the result introspection bundle for a cycle."""
+    try:
+        return await db.run_sync(
+            lambda s: build_cycle_result_introspection(s, cycle_id, write_files=False)
+        )
+    except ResultIntrospectionError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
 
 @router.post("/{cycle_id}/transition", response_model=CycleRead)
 async def transition_cycle_endpoint(

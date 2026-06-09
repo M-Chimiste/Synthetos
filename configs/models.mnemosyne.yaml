@@ -33,6 +33,13 @@ roles:
     <<: *mnemosyne_role
     temperature: 0.5
   paper_analysis: *mnemosyne_role
+  graph_extraction:
+    <<: *mnemosyne_role
+    model: lfm2-5-8b-a1b
+    temperature: 0.1
+    max_tokens: 1024
+    extra_body: {}
+    strip_reasoning_tags: false
   paper_review: *mnemosyne_role
   hypothesis_generation:
     <<: *mnemosyne_role

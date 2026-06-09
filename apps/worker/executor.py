@@ -128,6 +128,16 @@ def _register_pattern_operators() -> None:
 _register_pattern_operators()
 
 
+def _register_goal_operators() -> None:
+    """Register goal-oriented research operators."""
+    from libs.goals.operators import register as register_goals
+
+    register_goals(register_operator)
+
+
+_register_goal_operators()
+
+
 def execute(op_input: OperatorInput) -> OperatorResult:
     """Dispatch a job to its registered operator handler.
 

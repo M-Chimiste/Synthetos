@@ -37,6 +37,7 @@ from libs.storage.models.analysis import (
     GraphNode,
     PaperAnalysisPacket,
     PaperChunk,
+    PaperReviewArtifact,
 )
 
 log = get_logger("analysis.operators.review")
@@ -79,42 +80,6 @@ def analysis_review_operator(op_input: OperatorInput) -> OperatorResult:
         ).scalar_one_or_none()
 
         try:
-            # Generate summary and analysis packet via LLM
-            router = ModelRouter()
-
-            # Build context from chunks and nodes
-            chunk_summary = "\n".join(
-                f"[{c.section_path or c.chunk_type}] {c.content[:300]}"
-                for c in chunks[:15]
-            )
-            node_summary = "\n".join(
-                f"- [{n.node_type}] {n.label}: {n.description or ''}"
-                for n in nodes[:20]
-            )
-
-            summary_resp = asyncio.run(
-                router.complete(
-                    ModelRole.paper_analysis,
-                    messages=[
-                        {
-                            "role": "system",
-                            "content": (
-                                "Summarize this research paper based on the "
-                                "extracted chunks and entities. Include key "
-                                "contributions, methods, and findings."
-                            ),
-                        },
-                        {
-                            "role": "user",
-                            "content": (
-                                f"Chunks:\n{chunk_summary}\n\n"
-                                f"Entities:\n{node_summary}"
-                            ),
-                        },
-                    ],
-                )
-            )
-
             # Build graph summary counts
             node_type_counts = dict(Counter(n.node_type for n in nodes))
             edge_type_counts = dict(Counter(e.edge_type for e in edges))
@@ -147,35 +112,125 @@ def analysis_review_operator(op_input: OperatorInput) -> OperatorResult:
                 for n in nodes if n.node_type == "dataset"
             ][:10]
 
-            # Create analysis packet
-            packet = PaperAnalysisPacket(
-                id=uuid7(),
-                analysis_session_id=session_id,
-                paper_card_id=analysis.paper_card_id,
-                charter_id=analysis.charter_id,
-                summary=summary_resp.content,
-                key_contributions=contributions,
-                methods_used=methods,
-                datasets_referenced=datasets,
-                reproducibility_notes=None,
-                graph_summary=graph_summary,
-                coverage_snapshot=coverage_snapshot,
-                chunk_count=len(chunks),
-                node_count=len(nodes),
-                edge_count=len(edges),
-                analysis_depth="full",
-                created_at=utcnow(),
-                updated_at=utcnow(),
-            )
-            db.add(packet)
+            packet = db.execute(
+                select(PaperAnalysisPacket).where(
+                    PaperAnalysisPacket.analysis_session_id == session_id,
+                )
+            ).scalar_one_or_none()
+
+            summary = packet.summary if packet else None
+            if not summary:
+                router = ModelRouter()
+
+                # Build context from chunks and nodes
+                chunk_summary = "\n".join(
+                    f"[{c.section_path or c.chunk_type}] {c.content[:300]}"
+                    for c in chunks[:15]
+                )
+                node_summary = "\n".join(
+                    f"- [{n.node_type}] {n.label}: {n.description or ''}"
+                    for n in nodes[:20]
+                )
+
+                summary_resp = asyncio.run(
+                    router.complete(
+                        ModelRole.paper_analysis,
+                        messages=[
+                            {
+                                "role": "system",
+                                "content": (
+                                    "Summarize this research paper based on the "
+                                    "extracted chunks and entities. Include key "
+                                    "contributions, methods, and findings."
+                                ),
+                            },
+                            {
+                                "role": "user",
+                                "content": (
+                                    f"Chunks:\n{chunk_summary}\n\n"
+                                    f"Entities:\n{node_summary}"
+                                ),
+                            },
+                        ],
+                    )
+                )
+                summary = summary_resp.content
+
+            if packet is None:
+                packet = PaperAnalysisPacket(
+                    id=uuid7(),
+                    analysis_session_id=session_id,
+                    paper_card_id=analysis.paper_card_id,
+                    charter_id=analysis.charter_id,
+                    summary=summary,
+                    key_contributions=contributions,
+                    methods_used=methods,
+                    datasets_referenced=datasets,
+                    reproducibility_notes=None,
+                    graph_summary=graph_summary,
+                    coverage_snapshot=coverage_snapshot,
+                    chunk_count=len(chunks),
+                    node_count=len(nodes),
+                    edge_count=len(edges),
+                    analysis_depth="full",
+                    created_at=utcnow(),
+                    updated_at=utcnow(),
+                )
+                db.add(packet)
+            else:
+                packet.paper_card_id = analysis.paper_card_id
+                packet.charter_id = analysis.charter_id
+                packet.summary = summary
+                packet.key_contributions = contributions
+                packet.methods_used = methods
+                packet.datasets_referenced = datasets
+                packet.graph_summary = graph_summary
+                packet.coverage_snapshot = coverage_snapshot
+                packet.chunk_count = len(chunks)
+                packet.node_count = len(nodes)
+                packet.edge_count = len(edges)
+                packet.analysis_depth = "full"
+                packet.updated_at = utcnow()
+                append_step_log(
+                    analysis, step="review",
+                    detail={
+                        "reused_packet_id": str(packet.id),
+                        "reason": "existing packet found for retry",
+                    },
+                )
+                log.info(
+                    "analysis_packet_reused",
+                    analysis_session_id=str(session_id),
+                    packet_id=str(packet.id),
+                )
             db.flush()
 
-            # Generate review artifact
-            from libs.analysis.paper_review import generate_review
+            review = db.execute(
+                select(PaperReviewArtifact)
+                .where(PaperReviewArtifact.analysis_packet_id == packet.id)
+                .order_by(PaperReviewArtifact.created_at.desc())
+            ).scalars().first()
 
-            review = asyncio.run(
-                generate_review(db, packet=packet, coverage=coverage)
-            )
+            if review is not None:
+                append_step_log(
+                    analysis, step="review",
+                    detail={
+                        "reused_review_id": str(review.id),
+                        "reason": "existing review found for retry",
+                    },
+                )
+                log.info(
+                    "paper_review_reused",
+                    analysis_session_id=str(session_id),
+                    review_id=str(review.id),
+                )
+            else:
+                # Generate review artifact
+                from libs.analysis.paper_review import generate_review
+
+                review = asyncio.run(
+                    generate_review(db, packet=packet, coverage=coverage)
+                )
 
             paths = build_report_paths(get_settings().data_root, session_id)
             markdown = render_markdown(

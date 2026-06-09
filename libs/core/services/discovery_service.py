@@ -10,6 +10,7 @@ from __future__ import annotations
 from datetime import datetime
 from uuid import UUID
 
+from pydantic import BaseModel
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 from uuid_utils import uuid7
@@ -39,6 +40,21 @@ from libs.storage.models.research import ResearchCharter, ResearchCycle
 
 class DiscoveryServiceError(Exception):
     """Raised when a discovery service operation cannot proceed."""
+
+
+def _read_model[ReadModelT: BaseModel](schema: type[ReadModelT], obj: object) -> ReadModelT:
+    """Validate SQLAlchemy rows while normalizing uuid_utils UUID values."""
+    mapper = getattr(obj, "__mapper__", None)
+    if mapper is None:
+        return schema.model_validate(obj)
+
+    data = {}
+    for attr in mapper.column_attrs:
+        value = getattr(obj, attr.key)
+        if value is not None and value.__class__.__module__.startswith("uuid_utils"):
+            value = UUID(str(value))
+        data[attr.key] = value
+    return schema.model_validate(data)
 
 
 async def _resolve_or_create_active_cycle(
@@ -104,6 +120,7 @@ async def _start_discovery_session_on_cycle(
         updated_at=utcnow(),
     )
     session.add(profile)
+    await session.flush()
 
     discovery = DiscoverySession(
         id=uuid7(),
@@ -147,8 +164,8 @@ async def _start_discovery_session_on_cycle(
 
     await session.flush()
     return (
-        DiscoverySessionRead.model_validate(discovery),
-        ProblemProfileRead.model_validate(profile),
+        _read_model(DiscoverySessionRead, discovery),
+        _read_model(ProblemProfileRead, profile),
         UUID(str(intake_job_id)),
     )
 
@@ -196,7 +213,7 @@ async def start_discovery_session_for_cycle(
         raise DiscoveryServiceError(f"charter {charter_id} not found")
 
     cycle = await session.get(ResearchCycle, cycle_id)
-    if cycle is None or cycle.charter_id != charter_id:
+    if cycle is None or str(cycle.charter_id) != str(charter_id):
         raise DiscoveryServiceError(
             f"cycle {cycle_id} not found for charter {charter_id}"
         )
@@ -216,7 +233,7 @@ async def get_discovery_session(
     session_id: UUID,
 ) -> DiscoverySessionRead | None:
     obj = await session.get(DiscoverySession, session_id)
-    return DiscoverySessionRead.model_validate(obj) if obj else None
+    return _read_model(DiscoverySessionRead, obj) if obj else None
 
 
 async def list_discovery_sessions(
@@ -235,7 +252,7 @@ async def list_discovery_sessions(
     result = await session.execute(
         query.order_by(DiscoverySession.created_at.desc()).offset(offset).limit(limit)
     )
-    items = [DiscoverySessionRead.model_validate(s) for s in result.scalars().all()]
+    items = [_read_model(DiscoverySessionRead, s) for s in result.scalars().all()]
     return items, len(count)
 
 
@@ -265,7 +282,7 @@ async def list_paper_cards(
     result = await session.execute(
         base.order_by(PaperCard.final_score.desc().nullslast()).offset(offset).limit(limit)
     )
-    items = [PaperCardRead.model_validate(c) for c in result.scalars().all()]
+    items = [_read_model(PaperCardRead, c) for c in result.scalars().all()]
     return items, total
 
 
@@ -281,7 +298,7 @@ async def get_paper_card(
         )
     )
     obj = result.scalar_one_or_none()
-    return PaperCardRead.model_validate(obj) if obj else None
+    return _read_model(PaperCardRead, obj) if obj else None
 
 
 async def triage_paper_card(
@@ -327,7 +344,7 @@ async def triage_paper_card(
         actor_id=actor_id,
     )
     await session.flush()
-    return PaperCardRead.model_validate(obj)
+    return _read_model(PaperCardRead, obj)
 
 
 async def get_profile_for_session(
@@ -338,7 +355,7 @@ async def get_profile_for_session(
     if discovery is None:
         return None
     profile = await session.get(ProblemProfile, discovery.profile_id)
-    return ProblemProfileRead.model_validate(profile) if profile else None
+    return _read_model(ProblemProfileRead, profile) if profile else None
 
 
 async def submit_evaluation(
@@ -398,7 +415,7 @@ async def submit_evaluation(
     )
 
     await session.flush()
-    return [EvaluationMetricRead.model_validate(m) for m in metric_rows]
+    return [_read_model(EvaluationMetricRead, m) for m in metric_rows]
 
 
 async def list_evaluations(
@@ -410,7 +427,7 @@ async def list_evaluations(
         .where(DiscoveryEvaluation.session_id == session_id)
         .order_by(DiscoveryEvaluation.created_at.desc())
     )
-    return [EvaluationMetricRead.model_validate(m) for m in result.scalars().all()]
+    return [_read_model(EvaluationMetricRead, m) for m in result.scalars().all()]
 
 
 async def read_report_file(

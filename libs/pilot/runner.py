@@ -95,10 +95,14 @@ def _cycle_config(fixture: PilotFixture) -> dict:
 def _discovery_profile(fixture: PilotFixture) -> ProblemProfileCreate:
     """Build the initial discovery problem profile for a pilot cycle."""
     charter = fixture.charter
+    reference_sources = fixture.expected.get("reference_sources", []) or []
+    derived_query = " ".join(str(item).strip() for item in reference_sources if str(item).strip())
     search_hints = {
         "categories": [],
         "synonyms": [str(charter.get("domain", "")).strip()],
     }
+    if derived_query:
+        search_hints["derived_query"] = derived_query
     return ProblemProfileCreate(
         query_text=str(charter.get("problem_statement", "")).strip()
         or str(charter.get("title", "")).strip(),

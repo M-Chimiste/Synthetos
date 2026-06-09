@@ -13,7 +13,11 @@ ALLOWED_TRANSITIONS: dict[CycleStatus, list[CycleStatus]] = {
     CycleStatus.evidence_ready: [CycleStatus.portfolio_ready],
     CycleStatus.portfolio_ready: [CycleStatus.protocol_ready],
     CycleStatus.protocol_ready: [CycleStatus.running],
-    CycleStatus.running: [CycleStatus.verifying, CycleStatus.running],
+    CycleStatus.running: [
+        CycleStatus.verifying,
+        CycleStatus.running,
+        CycleStatus.loop_deciding,
+    ],
     CycleStatus.verifying: [
         CycleStatus.reporting,
         CycleStatus.running,  # retry or next experiment
@@ -23,8 +27,11 @@ ALLOWED_TRANSITIONS: dict[CycleStatus, list[CycleStatus]] = {
         CycleStatus.running,  # continue/vary/pivot
         CycleStatus.reporting,  # stop (budget, gate, halt, exhausted)
     ],
-    CycleStatus.reporting: [CycleStatus.closed],
-    CycleStatus.closed: [],
+    CycleStatus.reporting: [
+        CycleStatus.reporting,
+        CycleStatus.closed,
+    ],
+    CycleStatus.closed: [CycleStatus.closed],
 }
 
 

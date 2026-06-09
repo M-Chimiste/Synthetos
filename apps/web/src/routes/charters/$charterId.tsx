@@ -5,6 +5,7 @@ import {
   useCharter,
   useCreateCycle,
   useCycles,
+  useGoals,
   useJobs,
   useResearchState,
   useUpdateCharter,
@@ -13,17 +14,18 @@ import { fetchAutonomyPolicy, stopAutonomyLoop } from "../../api/autonomy";
 import StatusBadge from "../../components/StatusBadge";
 import StatusDot from "../../components/StatusDot";
 import Icon from "../../components/Icon";
-import PipelineRail, {
-  progressFromCycleStatus,
-} from "../../components/PipelineRail";
+import PipelineRail from "../../components/PipelineRail";
+import { progressFromCycleStatus } from "../../components/cycleProgress";
 import EventStream from "../../components/EventStream";
 import AutonomyPanel from "../../components/AutonomyPanel";
+import GoalsPanel, { GoalSummaryCard } from "../../components/GoalsPanel";
+import type { ResearchGoal } from "../../api/goals";
 
 export const Route = createFileRoute("/charters/$charterId")({
   component: CharterDetailPage,
 });
 
-type Tab = "overview" | "cycles" | "jobs" | "events" | "autonomy";
+type Tab = "overview" | "cycles" | "jobs" | "events" | "autonomy" | "goals";
 
 function CharterDetailPage() {
   const { charterId } = Route.useParams();
@@ -31,6 +33,7 @@ function CharterDetailPage() {
   const queryClient = useQueryClient();
   const charter = useCharter(charterId);
   const cycles = useCycles(charterId);
+  const goals = useGoals(charterId);
   const state = useResearchState(charterId);
   const createCycle = useCreateCycle();
   const updateCharter = useUpdateCharter();
@@ -109,6 +112,7 @@ function CharterDetailPage() {
 
   const activeCycle = state.data?.active_cycle;
   const cycleItems = cycles.data?.items ?? [];
+  const goalItems = goals.data?.items ?? [];
   const jobItems = jobs.data?.items ?? [];
 
   return (
@@ -359,7 +363,7 @@ function CharterDetailPage() {
             borderBottom: "1px solid var(--c-line)",
           }}
         >
-          {(["overview", "cycles", "jobs", "events", "autonomy"] as Tab[]).map(
+          {(["overview", "cycles", "jobs", "events", "autonomy", "goals"] as Tab[]).map(
             (t) => (
               <button
                 key={t}
@@ -389,6 +393,7 @@ function CharterDetailPage() {
               problemStatement={c.problem_statement}
               recentEvents={state.data?.recent_events ?? []}
               cycleCount={state.data?.cycles.length ?? 0}
+              goals={goalItems}
             />
           )}
           {tab === "cycles" && (
@@ -410,6 +415,7 @@ function CharterDetailPage() {
           {tab === "autonomy" && (
             <AutonomyTab cycleId={activeCycleId} />
           )}
+          {tab === "goals" && <GoalsPanel charterId={charterId} />}
         </div>
       </div>
     </div>
@@ -477,6 +483,7 @@ function OverviewTab({
   problemStatement,
   recentEvents,
   cycleCount,
+  goals,
 }: {
   problemStatement: string;
   recentEvents: Array<{
@@ -487,6 +494,7 @@ function OverviewTab({
     created_at: string;
   }>;
   cycleCount: number;
+  goals: ResearchGoal[];
 }) {
   return (
     <div
@@ -497,6 +505,7 @@ function OverviewTab({
       }}
     >
       <div>
+        <GoalSummaryCard goals={goals} />
         <div className="card" style={{ padding: 20, marginBottom: 20 }}>
           <div className="section-label" style={{ marginBottom: 8 }}>
             Problem statement

@@ -1,0 +1,27 @@
+mode: "autonomous"
+max_total_runs: 4
+max_wall_clock_hours: 1.0
+max_runs_per_hypothesis: 3
+max_wall_time_per_run_s: 900
+summary_interval: 2
+checkpoint_gates:
+  after_every_run: false
+  after_every_n_runs:
+  before_hardware_escalation: false
+  before_result_promotion: false
+  before_network_execution: false
+compute_cap:
+  cpu_cores: 8
+  memory_gb: 48
+  gpu: true
+  gpu_count: 1
+  gpu_required: true
+  timeout_seconds: 900
+protocol:
+  base_image: "pytorch/pytorch:2.7.0-cuda12.8-cudnn9-runtime"
+  hardware_profile:
+    cpu_cores: 8
+    memory_gb: 48
+    gpu_required: true
+    gpu_count: 1
+    timeout_seconds: 900

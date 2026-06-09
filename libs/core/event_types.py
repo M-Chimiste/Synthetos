@@ -151,3 +151,28 @@ class AutonomyEvents(StrEnum):
     completion_report_generated = "autonomy.completion_report_generated"
     loop_completed = "autonomy.loop_completed"
     loop_stopped_manual = "autonomy.loop_stopped_manual"
+
+
+class GoalEvents(StrEnum):
+    """Goal-oriented research event types."""
+
+    created = "goal.created"
+    attempt_started = "goal.attempt_started"
+    attempt_evaluated = "goal.attempt_evaluated"
+    satisfied = "goal.satisfied"
+    exhausted = "goal.exhausted"
+    stopped = "goal.stopped"
+    report_generated = "goal.report_generated"
+    advance_started = "goal.advance_started"
+    advance_completed = "goal.advance_completed"
+    repair_requested = "goal.repair_requested"
+    repair_applied = "goal.repair_applied"
+    retry_rejected_duplicate = "goal.retry_rejected_duplicate"
+    ledger_updated = "goal.ledger_updated"
+    advance_blocked = "goal.advance_blocked"
+
+
+class ResultEvents(StrEnum):
+    """Result introspection event types."""
+
+    introspection_generated = "result.introspection_generated"

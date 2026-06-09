@@ -44,6 +44,12 @@ roles:
     model: claude-sonnet-4-20250514
     temperature: 0.5
 
+  graph_extraction:
+    provider: local
+    model: default
+    base_url: http://localhost:11434/v1
+    temperature: 0.1
+
   hypothesis_generation:
     provider: anthropic
     model: claude-sonnet-4-20250514

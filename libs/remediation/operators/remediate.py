@@ -78,7 +78,16 @@ async def _broad_debug_llm(
         system_msg = (
             "You are an ML experiment debugger. Given a failed experiment's error trace "
             "and source code, suggest specific file patches to fix the issue. "
-            "Only suggest changes that are likely to fix the root cause."
+            "Only suggest changes that are likely to fix the root cause. "
+            "If the failure involves DNS, name resolution, Hugging Face, datasets, "
+            "tokenizer/model downloads, or any unavailable network resource, keep the "
+            "scientific intent but make the next attempt fast and robust: use streaming "
+            "datasets or tiny explicit splits, cap examples/batches, and add a "
+            "deterministic synthetic/local fallback when the dataset cannot be reached. "
+            "Avoid large runtime model/tokenizer downloads for quick E2E experiments; "
+            "prefer tiny in-code torch models or clearly bounded cached paths when "
+            "supplied. Preserve required artifact outputs, especially "
+            "/artifacts/metrics.json and /artifacts/model_weights.pt for training jobs."
         )
         hint_text = ""
         if pattern_hints:
@@ -189,8 +198,19 @@ def _format_code_plan(code_plan: dict[str, Any] | None) -> str:
     """Format code plan files for the LLM prompt."""
     if not code_plan:
         return "(no code plan)"
+    metadata_parts = []
+    if code_plan.get("entry_point"):
+        metadata_parts.append(f"Entry point: {code_plan['entry_point']}")
+    if code_plan.get("dependencies"):
+        metadata_parts.append(f"Dependencies: {code_plan['dependencies']}")
+    if code_plan.get("expected_metrics"):
+        metadata_parts.append(f"Expected metrics: {code_plan['expected_metrics']}")
+    if code_plan.get("expected_artifacts"):
+        metadata_parts.append(f"Expected artifacts: {code_plan['expected_artifacts']}")
     files = code_plan.get("files", {})
     parts = []
+    if metadata_parts:
+        parts.append("\n".join(metadata_parts))
     for name, content in files.items():
         parts.append(f"--- {name} ---\n{content}")
     return "\n\n".join(parts) if parts else "(no files in code plan)"
@@ -297,6 +317,9 @@ def auto_remediate_operator(op_input: OperatorInput) -> OperatorResult:
             if stdout_path.exists():
                 lines = stdout_path.read_text(encoding="utf-8", errors="replace").splitlines()
                 stderr_tail = "\n".join(lines[-50:])
+        failure_context = "\n".join(
+            part for part in [run.error, stderr_tail] if part
+        ).strip()
 
         # Load prior strategies in lineage
         prior_actions = load_lineage_actions(db, run.id)
@@ -325,7 +348,7 @@ def auto_remediate_operator(op_input: OperatorInput) -> OperatorResult:
                 "\n".join(
                     [
                         run.failure_class or "unknown",
-                        stderr_tail,
+                        failure_context,
                         spec.title,
                         spec.description,
                     ]
@@ -496,10 +519,13 @@ def auto_remediate_operator(op_input: OperatorInput) -> OperatorResult:
             )
 
             try:
+                debug_code_plan = dict(spec.code_plan or {})
+                debug_code_plan["expected_metrics"] = spec.metrics or []
+                debug_code_plan["expected_artifacts"] = spec.expected_artifacts or []
                 debug_result = asyncio.run(
                     _broad_debug_llm(
-                        stderr_tail,
-                        spec.code_plan,
+                        failure_context or stderr_tail,
+                        debug_code_plan,
                         prior_detail,
                         pattern_hints=remediation_pattern_hints,
                     )

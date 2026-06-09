@@ -4,9 +4,8 @@ import { useCharters, useCycles, useJobs } from "../api/hooks";
 import type { Charter, Cycle } from "../api/client";
 import StatusBadge from "../components/StatusBadge";
 import StatusDot from "../components/StatusDot";
-import PipelineRail, {
-  progressFromCycleStatus,
-} from "../components/PipelineRail";
+import PipelineRail from "../components/PipelineRail";
+import { progressFromCycleStatus } from "../components/cycleProgress";
 import Sparkline from "../components/Sparkline";
 
 export const Route = createFileRoute("/")({

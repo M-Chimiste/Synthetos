@@ -16,11 +16,12 @@ from libs.autonomy.completion_report import (
     write_report_bundle,
 )
 from libs.core.config import get_settings
-from libs.core.event_types import AutonomyEvents
+from libs.core.event_types import AutonomyEvents, ResultEvents
 from libs.core.events import emit_event_sync
 from libs.core.logging import get_logger
 from libs.core.operators import OperatorInput, OperatorResult
 from libs.core.services.job_service import create_job
+from libs.core.services.result_introspection import build_cycle_result_introspection
 from libs.core.types import CycleStatus
 from libs.storage.base import get_sync_session_factory
 from libs.storage.models.autonomy import AutonomyBudget, LoopDecision
@@ -32,6 +33,7 @@ from libs.storage.models.remediation import (
     RemediationAction,
     RunRecommendation,
 )
+from libs.storage.models.research import ResearchCycle
 
 log = get_logger("autonomy.loop_report")
 
@@ -66,6 +68,39 @@ def _enqueue_consolidation_job(
             )
 
 
+def _enqueue_goal_evaluation_job(
+    *,
+    factory,
+    charter_id: UUID,
+    cycle_id: UUID,
+    goal_id: str,
+    artifacts: list[str],
+) -> None:
+    """Enqueue goal evaluation after a goal-linked cycle report."""
+    with factory() as db:
+        try:
+            create_job(
+                db,
+                cycle_id=cycle_id,
+                job_type="goal_evaluate",
+                payload={
+                    "goal_id": goal_id,
+                    "cycle_id": str(cycle_id),
+                    "artifacts": artifacts,
+                },
+                priority=5,
+            )
+            db.commit()
+        except Exception as exc:
+            db.rollback()
+            log.warning(
+                "loop_report.goal_evaluation_enqueue_failed",
+                error=str(exc),
+                cycle_id=str(cycle_id),
+                goal_id=goal_id,
+            )
+
+
 def loop_report_operator(op_input: OperatorInput) -> OperatorResult:
     """Generate a completion report and close the cycle."""
     factory = get_sync_session_factory()
@@ -78,6 +113,10 @@ def loop_report_operator(op_input: OperatorInput) -> OperatorResult:
 
     with factory() as db:
         # Gather all data for the report
+        cycle = db.get(ResearchCycle, cycle_id)
+        goal_cfg = ((cycle.config or {}).get("goal") or {}) if cycle else {}
+        goal_id = goal_cfg.get("goal_id")
+
         decisions = (
             db.execute(
                 select(LoopDecision)
@@ -157,6 +196,12 @@ def loop_report_operator(op_input: OperatorInput) -> OperatorResult:
             json_payload=report_json,
         )
 
+        introspection = build_cycle_result_introspection(
+            db,
+            cycle_id,
+            write_files=True,
+        )
+
         emit_event_sync(
             db,
             event_type=AutonomyEvents.completion_report_generated.value,
@@ -167,6 +212,18 @@ def loop_report_operator(op_input: OperatorInput) -> OperatorResult:
                 "iterations": len(decisions),
             },
         )
+        emit_event_sync(
+            db,
+            event_type=ResultEvents.introspection_generated.value,
+            charter_id=charter_id,
+            cycle_id=cycle_id,
+            payload={
+                "report_path": introspection.introspection_markdown_path,
+                "json_path": introspection.introspection_json_path,
+                "publication_readiness": introspection.publication_readiness,
+                "run_count": len(introspection.runs),
+            },
+        )
 
         db.commit()
 
@@ -175,10 +232,24 @@ def loop_report_operator(op_input: OperatorInput) -> OperatorResult:
         charter_id=charter_id,
         cycle_id=cycle_id,
     )
+    artifacts = [
+        str(paths.markdown),
+        str(paths.json),
+        str(introspection.introspection_markdown_path),
+        str(introspection.introspection_json_path),
+    ]
+    if goal_id:
+        _enqueue_goal_evaluation_job(
+            factory=factory,
+            charter_id=charter_id,
+            cycle_id=cycle_id,
+            goal_id=str(goal_id),
+            artifacts=artifacts,
+        )
 
     return OperatorResult(
         success=True,
         summary=f"Completion report generated ({len(decisions)} iterations)",
         state_patch={"cycle_status": CycleStatus.closed.value},
-        artifacts=[str(paths.markdown), str(paths.json)],
+        artifacts=artifacts,
     )

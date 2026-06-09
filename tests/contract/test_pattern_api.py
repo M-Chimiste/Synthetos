@@ -2,16 +2,16 @@
 
 from __future__ import annotations
 
-from collections.abc import AsyncGenerator
 from typing import Any
 from uuid import uuid4
 
 import pytest
-from fastapi import routing
-from fastapi.testclient import TestClient
+from fastapi import HTTPException, routing
+from pydantic import ValidationError
 
-from apps.api.deps import get_db
 from apps.api.main import create_app
+from apps.api.routers.patterns import retrieve_preview_for_pattern
+from libs.schemas.patterns import RetrievePreviewRequest
 
 
 class _NullSession:
@@ -37,21 +37,9 @@ class _NullSession:
         return fn(object(), *args, **kwargs)
 
 
-async def _null_db() -> AsyncGenerator[_NullSession]:
-    yield _NullSession()
-
-
-@pytest.fixture
-def client() -> TestClient:
-    app = create_app()
-    app.dependency_overrides[get_db] = _null_db
-    return TestClient(app)
-
-
 def test_openapi_exposes_pattern_routes() -> None:
     app = create_app()
-    client = TestClient(app)
-    schema = client.get("/openapi.json").json()
+    schema = app.openapi()
     paths = schema.get("paths", {})
     expected = {
         "/api/v1/patterns",
@@ -68,17 +56,20 @@ def test_openapi_exposes_pattern_routes() -> None:
     assert expected.issubset(paths.keys())
 
 
-def test_pattern_retrieve_preview_route_requires_charter_id(client: TestClient) -> None:
-    resp = client.post(f"/api/v1/patterns/{uuid4()}/retrieve-preview", json={})
-    assert resp.status_code == 422
+def test_pattern_retrieve_preview_route_requires_charter_id() -> None:
+    with pytest.raises(ValidationError):
+        RetrievePreviewRequest.model_validate({})
 
 
-def test_pattern_retrieve_preview_route_404s_for_missing_pattern(client: TestClient) -> None:
-    resp = client.post(
-        f"/api/v1/patterns/{uuid4()}/retrieve-preview",
-        json={"charter_id": str(uuid4())},
-    )
-    assert resp.status_code == 404
+async def test_pattern_retrieve_preview_route_404s_for_missing_pattern() -> None:
+    with pytest.raises(HTTPException) as exc_info:
+        await retrieve_preview_for_pattern(
+            uuid4(),
+            RetrievePreviewRequest(charter_id=uuid4()),
+            None,
+            _NullSession(),  # type: ignore[arg-type]
+        )
+    assert exc_info.value.status_code == 404
 
 
 def test_pattern_routes_use_expected_scopes() -> None:

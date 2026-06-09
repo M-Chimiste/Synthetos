@@ -1,7 +1,9 @@
 import { createFileRoute } from "@tanstack/react-router";
+import { useQuery } from "@tanstack/react-query";
 import { useEffect, useRef, useState } from "react";
 
-import type { DomainEvent } from "../../../api/client";
+import { fetchCycleIntrospection, type DomainEvent } from "../../../api/client";
+import StatusBadge from "../../../components/StatusBadge";
 
 export const Route = createFileRoute("/cycles/$cycleId/timeline")({
   component: TimelinePage,
@@ -32,6 +34,8 @@ const PHASE_GROUPS: Array<{
   { prefix: "remediation.", label: "Remediation", tone: "warn" },
   { prefix: "signal.", label: "Signal", tone: "ok" },
   { prefix: "autonomy.", label: "Autonomy", tone: "violet" },
+  { prefix: "goal.", label: "Goals", tone: "accent" },
+  { prefix: "result.", label: "Results", tone: "ok" },
   { prefix: "pattern.", label: "Patterns", tone: "warn" },
   { prefix: "skill.", label: "Skills", tone: "slate" },
   { prefix: "job.", label: "Jobs", tone: "slate" },
@@ -51,6 +55,12 @@ function TimelinePage() {
   const [connected, setConnected] = useState(false);
   const [filter, setFilter] = useState<string>("");
   const lastEventIdRef = useRef<string | undefined>(undefined);
+  const introspection = useQuery({
+    queryKey: ["cycles", cycleId, "introspection"],
+    queryFn: () => fetchCycleIntrospection(cycleId),
+    retry: false,
+    refetchInterval: 10_000,
+  });
 
   useEffect(() => {
     const params = new URLSearchParams({ cycle_id: cycleId });
@@ -106,6 +116,71 @@ function TimelinePage() {
       >
         {cycleId}
       </div>
+
+      {introspection.data && (
+        <div className="card" style={{ marginTop: 16, padding: 16 }}>
+          <div
+            style={{
+              display: "flex",
+              gap: 8,
+              alignItems: "center",
+              flexWrap: "wrap",
+              marginBottom: 8,
+            }}
+          >
+            <div className="section-label">Result introspection</div>
+            <StatusBadge status={introspection.data.publication_readiness} />
+            <span style={{ fontSize: 12, color: "var(--c-ink-3)" }}>
+              {introspection.data.runs.length} runs ·{" "}
+              {introspection.data.model_artifacts.length} model artifacts
+            </span>
+          </div>
+          <div style={{ fontSize: 13, color: "var(--c-ink-2)", lineHeight: 1.55 }}>
+            {introspection.data.interpretation}
+          </div>
+          {Object.keys(introspection.data.metrics).length > 0 && (
+            <div
+              style={{
+                marginTop: 10,
+                display: "flex",
+                gap: 8,
+                flexWrap: "wrap",
+                fontSize: 12,
+              }}
+            >
+              {Object.entries(introspection.data.metrics)
+                .slice(0, 6)
+                .map(([name, values]) => (
+                  <span
+                    key={name}
+                    className="mono"
+                    style={{
+                      color: "var(--c-accent-ink)",
+                      background: "var(--c-panel)",
+                      padding: "3px 6px",
+                      borderRadius: 4,
+                    }}
+                  >
+                    {name}={values.map(formatValue).join(", ")}
+                  </span>
+                ))}
+            </div>
+          )}
+          {introspection.data.model_artifacts.length > 0 && (
+            <div style={{ marginTop: 10, display: "flex", gap: 8, flexWrap: "wrap" }}>
+              {introspection.data.model_artifacts.slice(0, 6).map((artifact) => (
+                <a
+                  key={`${artifact.run_id}-${artifact.artifact_id}`}
+                  href={artifact.download_url}
+                  style={{ color: "var(--c-accent-ink)", fontSize: 12.5 }}
+                >
+                  {artifact.name}
+                </a>
+              ))}
+            </div>
+          )}
+        </div>
+      )}
 
       <div
         style={{
@@ -241,4 +316,8 @@ function TimelinePage() {
       </div>
     </div>
   );
+}
+
+function formatValue(value: unknown): string {
+  return typeof value === "number" ? value.toFixed(4) : String(value);
 }

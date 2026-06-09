@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from libs.core.container_images import BLACKWELL_PYTORCH_IMAGE
 from libs.protocols.validation import validate_spec
 
 
@@ -43,6 +44,16 @@ def test_valid_agent_authored_dockerfile_passes_validation() -> None:
     spec["build_recipe"] = {
         "dockerfile_content": "FROM python:3.12-slim\nRUN pip install numpy\n"
     }
+
+    result = validate_spec(spec)
+
+    assert result.valid is True
+
+
+def test_pytorch_base_satisfies_torch_numpy_dependencies() -> None:
+    spec = _valid_spec()
+    spec["base_image"] = BLACKWELL_PYTORCH_IMAGE
+    spec["code_plan"]["dependencies"] = ["torch", "numpy"]
 
     result = validate_spec(spec)
 

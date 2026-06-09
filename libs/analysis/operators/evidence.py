@@ -18,9 +18,12 @@ from libs.core.event_types import AnalysisEvents
 from libs.core.events import emit_event_sync
 from libs.core.logging import get_logger
 from libs.core.operators import OperatorInput, OperatorResult
+from libs.core.state_machine import validate_transition
+from libs.core.types import CycleStatus
 from libs.storage.base import get_sync_session_factory
 from libs.storage.models.analysis import GraphNode, PaperAnalysisPacket, PaperChunk
 from libs.storage.models.papers import PaperCard
+from libs.storage.models.research import ResearchCycle
 
 log = get_logger("analysis.operators.evidence")
 
@@ -101,6 +104,14 @@ def analysis_evidence_operator(op_input: OperatorInput) -> OperatorResult:
         ).scalar_one_or_none()
         if paper:
             paper.analysis_status = "analyzed"
+
+        cycle = db.get(ResearchCycle, analysis.cycle_id)
+        if cycle is not None and cycle.status == CycleStatus.analysis_ready.value:
+            validate_transition(
+                CycleStatus.analysis_ready,
+                CycleStatus.evidence_ready,
+            )
+            cycle.status = CycleStatus.evidence_ready.value
 
         # Mark session completed
         from libs.core.clock import utcnow

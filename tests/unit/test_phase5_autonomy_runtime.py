@@ -15,6 +15,7 @@ from libs.autonomy import context_summary as context_summary_module
 from libs.autonomy.operators import loop_decide as loop_decide_module
 from libs.autonomy.operators import loop_report as loop_report_module
 from libs.core.operators import OperatorInput
+from libs.core.services import result_introspection as result_introspection_module
 from libs.core.services.autonomy_service import read_report_file
 from libs.protocols.operators import compile as compile_module
 from libs.remediation.operators import recommend as recommend_module
@@ -180,6 +181,18 @@ class _LoopReportSession:
         self.frontiers = frontiers
         self.recommendation = recommendation
         self.committed = False
+        self.cycle_id = decisions[0].cycle_id if decisions else uuid7()
+        self.charter_id = decisions[0].charter_id if decisions else uuid7()
+
+    def get(self, model: Any, key: Any) -> Any:
+        name = getattr(model, "__name__", "")
+        if name == "ResearchCycle":
+            return SimpleNamespace(
+                id=key,
+                charter_id=self.charter_id,
+                config={},
+            )
+        return None
 
     def execute(self, query: Any) -> _ScalarResult:
         query_text = str(query)
@@ -193,8 +206,14 @@ class _LoopReportSession:
             return _ScalarResult(list_value=self.frontiers)
         if "count(*) AS count_1" in query_text and "remediation_actions" in query_text:
             return _ScalarResult(1)
+        if "FROM remediation_actions" in query_text:
+            return _ScalarResult(list_value=[])
         if "FROM run_recommendations" in query_text:
             return _ScalarResult(self.recommendation)
+        if "FROM run_records" in query_text:
+            return _ScalarResult(list_value=[])
+        if "FROM goal_attempts" in query_text:
+            return _ScalarResult(None)
         raise AssertionError(f"Unexpected query in loop_report test: {query_text}")
 
     def commit(self) -> None:
@@ -641,6 +660,11 @@ def test_loop_report_writes_sections_and_canonical_event(
         lambda: SimpleNamespace(data_root=tmp_path),
     )
     monkeypatch.setattr(
+        result_introspection_module,
+        "get_settings",
+        lambda: SimpleNamespace(data_root=tmp_path),
+    )
+    monkeypatch.setattr(
         loop_report_module,
         "generate_executive_summary",
         lambda *_args, **_kwargs: "Executive summary for the autonomy loop.",
@@ -673,6 +697,13 @@ def test_loop_report_writes_sections_and_canonical_event(
     assert "## Executive Summary" in markdown
     assert "## Frontier Progression" in markdown
     assert "## Recommendations" in markdown
+    introspection_path = (
+        tmp_path / "reports" / "cycles" / str(cycle_id) / "introspection" / "report.md"
+    )
+    assert introspection_path.exists()
+    introspection = introspection_path.read_text(encoding="utf-8")
+    assert "## What Was Attempted" in introspection
+    assert "## Interpretation" in introspection
 
 
 def test_loop_report_still_closes_cycle_when_consolidation_enqueue_fails(
@@ -726,6 +757,11 @@ def test_loop_report_still_closes_cycle_when_consolidation_enqueue_fails(
         lambda: SimpleNamespace(data_root=tmp_path),
     )
     monkeypatch.setattr(
+        result_introspection_module,
+        "get_settings",
+        lambda: SimpleNamespace(data_root=tmp_path),
+    )
+    monkeypatch.setattr(
         loop_report_module,
         "generate_executive_summary",
         lambda *_args, **_kwargs: "Executive summary for the autonomy loop.",
@@ -755,6 +791,10 @@ def test_loop_report_still_closes_cycle_when_consolidation_enqueue_fails(
     assert enqueue_session.rolled_back is True
     report_path = tmp_path / "reports" / "cycles" / str(cycle_id) / "completion" / "report.md"
     assert report_path.exists()
+    introspection_path = (
+        tmp_path / "reports" / "cycles" / str(cycle_id) / "introspection" / "report.md"
+    )
+    assert introspection_path.exists()
 
 
 @pytest.mark.asyncio

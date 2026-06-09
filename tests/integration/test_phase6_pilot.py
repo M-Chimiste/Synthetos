@@ -13,8 +13,12 @@ from uuid import UUID
 
 from uuid_utils import uuid7
 
+from libs.core.clock import utcnow
+from libs.core.services import discovery_service
 from libs.pilot import runner as pilot_runner
 from libs.pilot.fixture import load_fixture
+from libs.schemas.discovery import DiscoverySessionRead
+from libs.storage.models.discovery import DiscoverySession
 
 FIXTURE_ROOT = Path("configs/problems")
 
@@ -90,3 +94,73 @@ def test_start_pilot_creates_cycle_and_kicks_off_discovery(monkeypatch) -> None:
     assert captured["cycle_id"] == handle.cycle_id
     assert captured["problem_id"] == fixture.problem_id
     assert any(getattr(obj, "charter_id", None) == charter.id for obj in session.added)
+
+
+async def test_discovery_kickoff_accepts_uuid_utils_cycle_charter_id(monkeypatch) -> None:
+    charter_id = UUID(str(uuid7()))
+    cycle_id = UUID(str(uuid7()))
+    cycle = SimpleNamespace(id=cycle_id, charter_id=uuid7())
+    cycle.charter_id = type(cycle.charter_id)(str(charter_id))
+    charter = SimpleNamespace(id=charter_id)
+    captured: dict[str, object] = {}
+
+    class FakeAsyncSession:
+        async def get(self, model, key):
+            if model.__name__ == "ResearchCharter" and str(key) == str(charter_id):
+                return charter
+            if model.__name__ == "ResearchCycle" and str(key) == str(cycle_id):
+                return cycle
+            return None
+
+    async def fake_start(session, *, charter_id, cycle, body, actor_type, actor_id):
+        captured["charter_id"] = charter_id
+        captured["cycle"] = cycle
+        return SimpleNamespace(), SimpleNamespace(), uuid7()
+
+    monkeypatch.setattr(
+        discovery_service,
+        "_start_discovery_session_on_cycle",
+        fake_start,
+    )
+
+    _session, _profile, job_id = await discovery_service.start_discovery_session_for_cycle(
+        FakeAsyncSession(),
+        charter_id=charter_id,
+        cycle_id=cycle_id,
+        body=SimpleNamespace(),
+    )
+
+    assert job_id is not None
+    assert captured["charter_id"] == charter_id
+    assert captured["cycle"] is cycle
+
+
+def test_discovery_read_model_normalizes_uuid_utils_ids() -> None:
+    now = utcnow()
+    row = DiscoverySession(
+        id=uuid7(),
+        cycle_id=uuid7(),
+        charter_id=uuid7(),
+        profile_id=uuid7(),
+        status="created",
+        view="both",
+        stats={},
+        step_log=[],
+        created_at=now,
+        updated_at=now,
+    )
+
+    read = discovery_service._read_model(DiscoverySessionRead, row)
+
+    assert isinstance(read.id, UUID)
+    assert isinstance(read.charter_id, UUID)
+    assert read.status == "created"
+
+
+def test_pilot_discovery_profile_uses_reference_sources_as_derived_query() -> None:
+    fixture = load_fixture(FIXTURE_ROOT / "diffusionblocks_e2e")
+
+    profile = pilot_runner._discovery_profile(fixture)
+
+    hints = profile.source_scope["search_hints"]
+    assert hints["derived_query"] == "https://arxiv.org/html/2506.14202v3"

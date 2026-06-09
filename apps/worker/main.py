@@ -34,6 +34,7 @@ from libs.core.config import get_settings
 from libs.core.events import emit_event_sync
 from libs.core.logging import get_logger, setup_logging
 from libs.core.operators import OperatorInput
+from libs.core.services.goal_service import enqueue_goal_advance_sync
 from libs.core.services.job_service import (
     complete_job,
     fail_job,
@@ -41,7 +42,7 @@ from libs.core.services.job_service import (
     pause_job,
     start_job,
 )
-from libs.core.state_machine import validate_transition
+from libs.core.state_machine import ALLOWED_TRANSITIONS, validate_transition
 from libs.core.types import ActorType, CycleStatus, JobStatus
 from libs.discovery.operators._common import (
     DiscoveryStateError,
@@ -77,6 +78,20 @@ _DEFAULT_POLL_INTERVAL = 1.0
 
 log = get_logger("worker")
 
+_GOAL_ADVANCE_SUCCESS_JOBS = {
+    "discovery_finalize",
+    "analysis_evidence",
+    "hypothesis_rank",
+    "protocol_compile",
+}
+
+_GOAL_ADVANCE_FAILURE_PREFIXES = (
+    "discovery_",
+    "analysis_",
+    "hypothesis_",
+    "protocol_",
+)
+
 
 def _resolve_charter_id(session_factory, job: Job) -> UUID | None:
     """Resolve the charter ID for a job by looking up its cycle."""
@@ -88,6 +103,73 @@ def _resolve_charter_id(session_factory, job: Job) -> UUID | None:
         if cycle is None:
             return None
         return cycle.charter_id
+
+
+def _goal_id_for_job(session: Session, job: Job) -> str | None:
+    if job.cycle_id is None:
+        return None
+    cycle = session.get(ResearchCycle, job.cycle_id)
+    if cycle is None:
+        return None
+    goal_cfg = (cycle.config or {}).get("goal") or {}
+    goal_id = goal_cfg.get("goal_id")
+    return str(goal_id) if goal_id else None
+
+
+def _enqueue_goal_advance_after_success(session: Session, job: Job) -> None:
+    if job.cycle_id is None or job.job_type not in _GOAL_ADVANCE_SUCCESS_JOBS:
+        return
+    goal_id = _goal_id_for_job(session, job)
+    if not goal_id:
+        return
+    enqueue_goal_advance_sync(
+        session,
+        cycle_id=job.cycle_id,
+        goal_id=goal_id,
+        trigger=f"{job.job_type}_completed",
+    )
+
+
+def _enqueue_goal_advance_after_failure(
+    session: Session,
+    *,
+    job: Job,
+    error: str,
+    discovery_session_id: UUID | None = None,
+    analysis_session_id: UUID | None = None,
+    analysis_paper_card_id: UUID | None = None,
+    ideation_session_id: UUID | None = None,
+) -> None:
+    if job.cycle_id is None or not job.job_type.startswith(_GOAL_ADVANCE_FAILURE_PREFIXES):
+        return
+    if job.job_type.startswith(("execution_", "verification_")):
+        return
+    goal_id = _goal_id_for_job(session, job)
+    if not goal_id:
+        return
+    session_id = discovery_session_id or analysis_session_id or ideation_session_id
+    enqueue_goal_advance_sync(
+        session,
+        cycle_id=job.cycle_id,
+        goal_id=goal_id,
+        trigger=f"{job.job_type}_failed",
+        failure={
+            "failed_job_id": str(job.id),
+            "job_type": job.job_type,
+            "job_payload": job.payload or {},
+            "session_id": str(session_id) if session_id else None,
+            "paper_card_id": str(analysis_paper_card_id) if analysis_paper_card_id else None,
+            "error": error,
+        },
+    )
+
+
+def _should_enqueue_goal_advance_after_failure(job: Job) -> bool:
+    if job.cycle_id is None:
+        return False
+    if not job.job_type.startswith(_GOAL_ADVANCE_FAILURE_PREFIXES):
+        return False
+    return not job.job_type.startswith(("execution_", "verification_"))
 
 
 def _build_operator_input(session_factory, job: Job) -> OperatorInput:
@@ -126,27 +208,65 @@ def _apply_state_patch(
 
     target_status = CycleStatus(raw_target)
     current_status = CycleStatus(cycle.status)
+    if current_status == CycleStatus.closed and target_status != CycleStatus.closed:
+        log.info(
+            "state_patch_ignored_cycle_closed",
+            cycle_id=str(cycle.id),
+            target_status=target_status.value,
+            worker_id=worker_id,
+        )
+        return
+    transition_path = _state_transition_path(current_status, target_status)
+    previous_status = current_status
+    for next_status in transition_path:
+        validate_transition(previous_status, next_status)
+        cycle.status = next_status
+        cycle.updated_at = utcnow()
+
+        if next_status == CycleStatus.discovery_ready and cycle.started_at is None:
+            cycle.started_at = cycle.updated_at
+        if next_status == CycleStatus.closed:
+            cycle.completed_at = cycle.updated_at
+
+        emit_event_sync(
+            session,
+            event_type="research_cycle_transitioned",
+            charter_id=charter_id or cycle.charter_id,
+            cycle_id=cycle.id,
+            payload={
+                "from_status": previous_status.value,
+                "to_status": next_status.value,
+            },
+            actor_type=ActorType.worker,
+            actor_id=worker_id,
+        )
+        previous_status = next_status
+
+
+def _state_transition_path(
+    current_status: CycleStatus,
+    target_status: CycleStatus,
+) -> list[CycleStatus]:
+    if current_status == target_status:
+        return []
+    if target_status in ALLOWED_TRANSITIONS.get(current_status, []):
+        return [target_status]
+
+    queue: list[tuple[CycleStatus, list[CycleStatus]]] = [(current_status, [])]
+    visited = {current_status}
+    while queue:
+        status, path = queue.pop(0)
+        for next_status in ALLOWED_TRANSITIONS.get(status, []):
+            if next_status in visited:
+                continue
+            next_path = [*path, next_status]
+            if next_status == target_status:
+                return next_path
+            visited.add(next_status)
+            queue.append((next_status, next_path))
+
     validate_transition(current_status, target_status)
-    cycle.status = target_status
-    cycle.updated_at = utcnow()
-
-    if target_status == CycleStatus.discovery_ready and cycle.started_at is None:
-        cycle.started_at = cycle.updated_at
-    if target_status == CycleStatus.closed:
-        cycle.completed_at = cycle.updated_at
-
-    emit_event_sync(
-        session,
-        event_type="research_cycle_transitioned",
-        charter_id=charter_id or cycle.charter_id,
-        cycle_id=cycle.id,
-        payload={
-            "from_status": current_status.value,
-            "to_status": target_status.value,
-        },
-        actor_type=ActorType.worker,
-        actor_id=worker_id,
-    )
+    return [target_status]
 
 
 def _persist_operator_events(
@@ -448,6 +568,7 @@ def run(*, poll_interval: float = _DEFAULT_POLL_INTERVAL) -> None:
                             "events": result.events,
                         },
                     )
+                    _enqueue_goal_advance_after_success(session, current_job)
                     emit_event_sync(
                         session,
                         event_type="job_completed",
@@ -558,6 +679,16 @@ def run(*, poll_interval: float = _DEFAULT_POLL_INTERVAL) -> None:
                             },
                             actor_type=ActorType.worker,
                             actor_id=worker_id,
+                        )
+                    if _should_enqueue_goal_advance_after_failure(current_job):
+                        _enqueue_goal_advance_after_failure(
+                            session,
+                            job=current_job,
+                            error=result.error or "unknown error",
+                            discovery_session_id=discovery_session_id,
+                            analysis_session_id=analysis_session_id,
+                            analysis_paper_card_id=analysis_paper_card_id,
+                            ideation_session_id=ideation_session_id,
                         )
                     emit_event_sync(
                         session,

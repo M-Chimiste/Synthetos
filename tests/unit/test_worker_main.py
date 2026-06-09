@@ -56,6 +56,74 @@ def test_apply_state_patch_updates_cycle_and_emits_transition(monkeypatch) -> No
     assert emitted[0]["event_type"] == "research_cycle_transitioned"
 
 
+def test_apply_state_patch_ignores_nonterminal_patch_for_closed_cycle(monkeypatch) -> None:
+    completed_at = datetime.now(UTC)
+    cycle = ResearchCycle(
+        id=uuid7(),
+        charter_id=uuid7(),
+        status=CycleStatus.closed,
+        config=None,
+        created_at=datetime.now(UTC),
+        updated_at=datetime.now(UTC),
+        started_at=datetime.now(UTC),
+        completed_at=completed_at,
+    )
+    session = _FakeSession(cycle)
+    emitted: list[dict[str, object]] = []
+
+    def fake_emit_event_sync(session_obj: object, **kwargs: object) -> None:
+        emitted.append({"session": session_obj, **kwargs})
+
+    monkeypatch.setattr(worker_main, "emit_event_sync", fake_emit_event_sync)
+
+    worker_main._apply_state_patch(
+        session,
+        cycle_id=cycle.id,
+        charter_id=cycle.charter_id,
+        state_patch={"target_status": CycleStatus.reporting.value},
+        worker_id="worker-1",
+    )
+
+    assert cycle.status == CycleStatus.closed
+    assert cycle.completed_at == completed_at
+    assert emitted == []
+
+
+def test_apply_state_patch_walks_allowed_intermediate_states(monkeypatch) -> None:
+    cycle = ResearchCycle(
+        id=uuid7(),
+        charter_id=uuid7(),
+        status=CycleStatus.portfolio_ready,
+        config=None,
+        created_at=datetime.now(UTC),
+        updated_at=datetime.now(UTC),
+        started_at=datetime.now(UTC),
+        completed_at=None,
+    )
+    session = _FakeSession(cycle)
+    emitted: list[dict[str, object]] = []
+
+    def fake_emit_event_sync(session_obj: object, **kwargs: object) -> None:
+        emitted.append({"session": session_obj, **kwargs})
+
+    monkeypatch.setattr(worker_main, "emit_event_sync", fake_emit_event_sync)
+
+    worker_main._apply_state_patch(
+        session,
+        cycle_id=cycle.id,
+        charter_id=cycle.charter_id,
+        state_patch={"target_status": CycleStatus.verifying.value},
+        worker_id="worker-1",
+    )
+
+    assert cycle.status == CycleStatus.verifying
+    assert [event["payload"] for event in emitted] == [
+        {"from_status": "portfolio_ready", "to_status": "protocol_ready"},
+        {"from_status": "protocol_ready", "to_status": "running"},
+        {"from_status": "running", "to_status": "verifying"},
+    ]
+
+
 def test_persist_operator_events_writes_each_event(monkeypatch) -> None:
     emitted: list[dict[str, object]] = []
 
@@ -204,3 +272,32 @@ def test_mark_analysis_job_failed_marks_session(monkeypatch) -> None:
     assert session_id == analysis.id
     assert paper_card_id == analysis.paper_card_id
     assert calls == [("review", "report write failed")]
+
+
+def test_goal_advance_failure_predicate_covers_pre_run_failures() -> None:
+    cycle_id = uuid7()
+
+    def job(job_type: str, *, cycle=True) -> Job:
+        return Job(
+            id=uuid7(),
+            cycle_id=cycle_id if cycle else None,
+            job_type=job_type,
+            status="failed",
+            payload={},
+            result=None,
+            error=None,
+            claimed_by=None,
+            claimed_at=None,
+            heartbeat_at=None,
+            priority=0,
+            created_at=datetime.now(UTC),
+            completed_at=None,
+        )
+
+    assert worker_main._should_enqueue_goal_advance_after_failure(job("analysis_chunk"))
+    assert worker_main._should_enqueue_goal_advance_after_failure(job("hypothesis_generate"))
+    assert worker_main._should_enqueue_goal_advance_after_failure(job("protocol_compile"))
+    assert not worker_main._should_enqueue_goal_advance_after_failure(job("execution_run"))
+    assert not worker_main._should_enqueue_goal_advance_after_failure(
+        job("analysis_chunk", cycle=False)
+    )

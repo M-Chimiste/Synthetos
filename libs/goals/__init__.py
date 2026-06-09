@@ -1,0 +1,1 @@
+"""Goal-oriented research package."""

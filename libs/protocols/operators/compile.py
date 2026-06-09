@@ -17,6 +17,14 @@ from libs.autonomy.budget import load_or_create_budget
 from libs.autonomy.gates import GateContext, evaluate_gates, preview_next_spec
 from libs.autonomy.policy import AutonomyPolicy
 from libs.core.clock import utcnow
+from libs.core.container_images import (
+    BLACKWELL_PYTORCH_IMAGE,
+    DEFAULT_CPU_IMAGE,
+    default_base_image_for_hardware,
+    dependencies_satisfied_by_base_image,
+    gpu_requested,
+    package_name,
+)
 from libs.core.event_types import AutonomyEvents, ProtocolEvents
 from libs.core.events import emit_event_sync
 from libs.core.logging import get_logger
@@ -38,7 +46,6 @@ from libs.storage.models.jobs import Job
 from libs.storage.models.research import ResearchCharter, ResearchCycle
 
 log = get_logger("protocols.compile")
-
 
 class _CompiledSpec(BaseModel):
     """Structured output from the protocol-drafting LLM call."""
@@ -86,8 +93,23 @@ async def _compile_specs(
             "uses the workspace as the build context, and installs every runtime "
             "dependency required by code_plan.files. Do not rely on code_plan.dependencies "
             "as the install mechanism; it is descriptive metadata only. "
+            f"When the hardware profile requests GPU, prefer base_image "
+            f"{BLACKWELL_PYTORCH_IMAGE} unless the caller selected another "
+            "CUDA-capable image. Do not use python:3.12-slim for GPU training. "
+            "Keep autonomous experiments fast and bounded. External datasets such as "
+            "WikiText are valid, but use streaming mode or very small explicit splits "
+            "and cap the number of examples/batches so the run finishes quickly. "
+            "If a runtime network request fails or cached data is unavailable, the "
+            "experiment code must fall back to a deterministic tiny synthetic/local "
+            "token corpus rather than failing. Avoid downloading large pretrained "
+            "models/tokenizers during quick E2E experiments; prefer a tiny torch model "
+            "defined in code or a clearly bounded cached model path when supplied. "
+            "If base_image is synthetos:latest and the code only needs packages "
+            "already present there, such as torch and numpy, leave build_recipe null. "
             "The code should write metrics to /artifacts/metrics.json as a flat "
-            "{metric_name: numeric_value} JSON object."
+            "{metric_name: numeric_value} JSON object. Training code should also save "
+            "model weights to /artifacts/model_weights.pt when the experiment trains "
+            "a model."
         )
         system_msg = join_skill_prompts(system_msg, skill_prompt) or system_msg
         hyp_text = "\n\n".join(
@@ -102,6 +124,8 @@ async def _compile_specs(
         hw_hint = ""
         if hardware_profile:
             hw_hint = f"\nHardware profile: {hardware_profile}"
+            if gpu_requested(hardware_profile) and not base_image:
+                hw_hint += f"\nRecommended GPU base image: {BLACKWELL_PYTORCH_IMAGE}"
         if base_image:
             hw_hint += f"\nBase image: {base_image}"
 
@@ -176,6 +200,16 @@ def protocol_compile_operator(op_input: OperatorInput) -> OperatorResult:
 
         charter = db.get(ResearchCharter, hs.charter_id)
         problem_statement = charter.problem_statement if charter else ""
+        cycle = db.get(ResearchCycle, hs.cycle_id)
+        cycle_autonomy = (cycle.config or {}).get("autonomy", {}) if cycle else {}
+        cycle_protocol = cycle_autonomy.get("protocol") or {}
+        if hardware_profile is None:
+            hardware_profile = (
+                cycle_protocol.get("hardware_profile")
+                or cycle_autonomy.get("compute_cap")
+            )
+        if base_image is None:
+            base_image = cycle_protocol.get("base_image")
 
         # Select hypotheses: explicit IDs or top-ranked
         if explicit_card_ids:
@@ -291,6 +325,11 @@ def protocol_compile_operator(op_input: OperatorInput) -> OperatorResult:
 
         for card, compiled in zip(cards, spec_set.specs, strict=False):
             spec_data = compiled.model_dump()
+            spec_data = _normalize_compiled_spec(
+                spec_data,
+                fallback_base_image=base_image,
+                hardware_profile=hardware_profile,
+            )
             validation = validate_spec(spec_data)
 
             spec = ExperimentSpec(
@@ -307,8 +346,8 @@ def protocol_compile_operator(op_input: OperatorInput) -> OperatorResult:
                 stop_conditions=compiled.stop_conditions,
                 code_plan=compiled.code_plan,
                 hardware_profile=hardware_profile,
-                base_image=compiled.base_image or base_image,
-                build_recipe=compiled.build_recipe,
+                base_image=spec_data.get("base_image"),
+                build_recipe=spec_data.get("build_recipe"),
                 created_at=utcnow(),
                 updated_at=utcnow(),
             )
@@ -371,6 +410,7 @@ def protocol_compile_operator(op_input: OperatorInput) -> OperatorResult:
         from libs.execution.operators._common import enqueue_next
 
         first_spec_id = compiled_ids[0]
+        state_patch: dict[str, str] = {}
         with factory() as db:
             spec_row = db.get(ExperimentSpec, first_spec_id)
             if spec_row is None:
@@ -397,6 +437,8 @@ def protocol_compile_operator(op_input: OperatorInput) -> OperatorResult:
             db.add(new_run)
 
             cycle = db.get(ResearchCycle, spec_row.cycle_id)
+            if cycle and cycle.status == CycleStatus.portfolio_ready.value:
+                state_patch = {"cycle_status": CycleStatus.protocol_ready.value}
             policy = AutonomyPolicy.model_validate(
                 (cycle.config or {}).get("autonomy", {}) if cycle else {}
             )
@@ -474,6 +516,7 @@ def protocol_compile_operator(op_input: OperatorInput) -> OperatorResult:
                 f"Compiled {len(compiled_ids)} specs from loop "
                 f"({rejected_count} rejected); enqueued execution_setup"
             ),
+            state_patch=state_patch,
         )
 
     result = OperatorResult(
@@ -544,3 +587,112 @@ def _persist_loop_gate(
         created_at=utcnow(),
     )
     db.add(decision)
+
+
+def _normalize_compiled_spec(
+    spec_data: dict[str, Any],
+    *,
+    fallback_base_image: str | None,
+    hardware_profile: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    """Apply executor-aware guardrails to LLM-authored protocol specs."""
+    normalized = dict(spec_data)
+    effective_base = normalized.get("base_image") or fallback_base_image
+    if gpu_requested(hardware_profile) and effective_base in {None, "", DEFAULT_CPU_IMAGE}:
+        effective_base = default_base_image_for_hardware(hardware_profile)
+    normalized["base_image"] = effective_base
+
+    code_plan = normalized.get("code_plan")
+    dependencies = code_plan.get("dependencies") if isinstance(code_plan, dict) else None
+    if dependencies and not dependencies_satisfied_by_base_image(
+        dependencies,
+        effective_base,
+    ):
+        build_recipe = normalized.get("build_recipe")
+        dockerfile = ""
+        if isinstance(build_recipe, dict):
+            dockerfile = str(build_recipe.get("dockerfile_content") or "")
+        if not dockerfile.strip():
+            base = effective_base or default_base_image_for_hardware(hardware_profile)
+            normalized["base_image"] = base
+            normalized["build_recipe"] = {
+                "dockerfile_content": _default_dependency_dockerfile(
+                    base,
+                    dependencies,
+                )
+            }
+
+    if not dependencies_satisfied_by_base_image(dependencies or [], effective_base):
+        return normalized
+
+    build_recipe = normalized.get("build_recipe")
+    if not isinstance(build_recipe, dict):
+        return normalized
+
+    dockerfile = str(build_recipe.get("dockerfile_content") or "")
+    if _dockerfile_only_installs_preloaded_packages(dockerfile):
+        normalized["build_recipe"] = None
+    return normalized
+
+
+def _default_dependency_dockerfile(base_image: str, dependencies: Any) -> str:
+    packages = [
+        str(dep).strip()
+        for dep in dependencies
+        if isinstance(dep, str) and str(dep).strip()
+    ]
+    if not packages:
+        return f"FROM {base_image}\n"
+    return (
+        f"FROM {base_image}\n"
+        "RUN pip install --no-cache-dir "
+        + " ".join(packages)
+        + "\n"
+    )
+
+
+def _dockerfile_only_installs_preloaded_packages(dockerfile: str) -> bool:
+    """Return true for no-op Dockerfiles that only reinstall torch/numpy."""
+    meaningful_lines = [
+        line.strip()
+        for line in dockerfile.splitlines()
+        if line.strip() and not line.strip().startswith("#")
+    ]
+    if not meaningful_lines:
+        return False
+
+    saw_pip_install = False
+    for line in meaningful_lines:
+        lower = line.lower()
+        if lower.startswith("from ") and (
+            "synthetos:latest" in lower or "pytorch/pytorch:" in lower
+        ):
+            continue
+        if lower.startswith("run ") and "pip install" in lower:
+            saw_pip_install = True
+            packages = _extract_pip_install_packages(lower)
+            if not dependencies_satisfied_by_base_image(
+                list(packages),
+                "pytorch/pytorch:preloaded",
+            ):
+                return False
+            continue
+        return False
+    return saw_pip_install
+
+
+def _extract_pip_install_packages(line: str) -> set[str]:
+    tokens = line.replace("&&", " ").replace("\\", " ").split()
+    try:
+        install_idx = tokens.index("install")
+    except ValueError:
+        return set()
+
+    packages: set[str] = set()
+    for token in tokens[install_idx + 1 :]:
+        if token.startswith("-"):
+            continue
+        if token in {"python", "-m", "pip", "install"}:
+            continue
+        packages.add(package_name(token))
+    return packages

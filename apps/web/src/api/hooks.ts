@@ -4,6 +4,7 @@ import {
   useQueryClient,
 } from "@tanstack/react-query";
 import * as api from "./client";
+import * as goalsApi from "./goals";
 
 // ---- Charter hooks ----
 
@@ -84,6 +85,55 @@ export function useTransitionCycle() {
     onSuccess: () => {
       void qc.invalidateQueries({ queryKey: ["cycles"] });
       void qc.invalidateQueries({ queryKey: ["state"] });
+    },
+  });
+}
+
+// ---- Goal hooks ----
+
+export function useGoals(charterId?: string) {
+  return useQuery({
+    queryKey: ["goals", charterId ?? "all"],
+    queryFn: () => goalsApi.fetchGoals(charterId),
+    refetchInterval: 5_000,
+  });
+}
+
+export function useGoalAttempts(goalId: string, enabled = true) {
+  return useQuery({
+    queryKey: ["goals", goalId, "attempts"],
+    queryFn: () => goalsApi.fetchGoalAttempts(goalId),
+    enabled,
+    refetchInterval: 5_000,
+  });
+}
+
+export function useGoalReport(goalId: string, enabled = true) {
+  return useQuery({
+    queryKey: ["goals", goalId, "report"],
+    queryFn: () => goalsApi.fetchGoalReport(goalId),
+    enabled,
+    retry: false,
+  });
+}
+
+export function useGoalResults(goalId: string, enabled = true) {
+  return useQuery({
+    queryKey: ["goals", goalId, "results"],
+    queryFn: () => goalsApi.fetchGoalResults(goalId),
+    enabled,
+    refetchInterval: 5_000,
+  });
+}
+
+export function useStopGoal() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: goalsApi.stopGoal,
+    onSuccess: (goal) => {
+      void qc.invalidateQueries({ queryKey: ["goals"] });
+      void qc.invalidateQueries({ queryKey: ["state", goal.charter_id] });
+      void qc.invalidateQueries({ queryKey: ["cycles", goal.charter_id] });
     },
   });
 }

@@ -80,7 +80,7 @@ async def extract_graph(
         async with sem:
             try:
                 result = await router.complete_structured(
-                    ModelRole.paper_analysis,
+                    ModelRole.graph_extraction,
                     messages=[
                         {
                             "role": "system",
@@ -127,7 +127,7 @@ async def extract_graph(
                     properties=en.properties,
                     provenance={
                         "source_chunk_ids": [str(chunk.id)],
-                        "extraction_model": "paper_analysis",
+                        "extraction_model": "graph_extraction",
                     },
                     created_at=utcnow(),
                 )
@@ -167,7 +167,7 @@ async def extract_graph(
                 target_node_id=tgt_node.id,
                 edge_type=ee.edge_type,
                 properties=ee.properties,
-                provenance={"extraction_model": "paper_analysis"},
+                provenance={"extraction_model": "graph_extraction"},
                 confidence=ee.confidence,
                 created_at=utcnow(),
             )

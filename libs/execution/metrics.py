@@ -39,6 +39,60 @@ class MetricVerdict:
     detail: str = ""
 
 
+def _as_finite_float(value: Any) -> float | None:
+    if isinstance(value, int):
+        value = float(value)
+    if not isinstance(value, float):
+        return None
+    if math.isnan(value) or math.isinf(value):
+        return None
+    return value
+
+
+def _preferred_nested_group(
+    raw: dict[str, Any],
+    expected_names: set[str],
+) -> tuple[str, dict[str, Any]] | None:
+    """Choose a nested metric group to canonicalize into the flat contract.
+
+    Research scripts often compare a baseline against a treatment and emit:
+    {"standard": {...}, "diffusionblocks": {...}}.  The verifier still needs
+    flat metrics such as "final_perplexity", so prefer treatment-like groups.
+    """
+    candidates: list[tuple[int, str, dict[str, Any]]] = []
+    preferred_markers = (
+        "diffusion",
+        "treatment",
+        "variant",
+        "method",
+        "experiment",
+        "model",
+    )
+    baseline_markers = ("baseline", "standard", "control")
+
+    for group_name, group_value in raw.items():
+        if not isinstance(group_value, dict):
+            continue
+        numeric_expected = {
+            name for name in expected_names if _as_finite_float(group_value.get(name)) is not None
+        }
+        if not numeric_expected:
+            continue
+        lowered = group_name.lower()
+        score = len(numeric_expected) * 10
+        if any(marker in lowered for marker in preferred_markers):
+            score += 5
+        if any(marker in lowered for marker in baseline_markers):
+            score -= 3
+        candidates.append((score, group_name, group_value))
+
+    if not candidates:
+        return None
+    candidates.sort(key=lambda item: (item[0], item[1]), reverse=True)
+    _, group_name, group_value = candidates[0]
+    return group_name, group_value
+
+
 def parse_metrics(
     artifacts_dir: Path,
     expected_metrics: list[dict[str, Any]],
@@ -71,18 +125,42 @@ def parse_metrics(
 
     expected_names = {m["name"] for m in expected_metrics if "name" in m}
 
+    preferred_group = _preferred_nested_group(raw, expected_names)
+    if preferred_group is not None:
+        group_name, group_value = preferred_group
+        for metric_name in expected_names:
+            if metric_name not in raw and metric_name in group_value:
+                value = _as_finite_float(group_value.get(metric_name))
+                if value is not None:
+                    result.values[metric_name] = value
+        result.warnings.append(
+            f"canonicalized flat metrics from nested group '{group_name}'"
+        )
+
     for key, value in raw.items():
-        if isinstance(value, int):
-            value = float(value)
-        if not isinstance(value, float):
+        if isinstance(value, dict):
+            for nested_key, nested_value in value.items():
+                numeric_value = _as_finite_float(nested_value)
+                if numeric_value is not None:
+                    result.values[f"{key}.{nested_key}"] = numeric_value
+            if key not in expected_names:
+                result.warnings.append(
+                    f"extra metric group '{key}' flattened with namespaced keys"
+                )
+                continue
+        numeric = _as_finite_float(value)
+        if numeric is None:
+            if key not in expected_names:
+                result.warnings.append(
+                    f"extra metric '{key}' ignored because value is not numeric "
+                    f"(type {type(value).__name__})"
+                )
+                continue
             result.errors.append(
                 f"metric '{key}': value {value!r} is not numeric (type {type(value).__name__})"
             )
             continue
-        if math.isnan(value) or math.isinf(value):
-            result.errors.append(f"metric '{key}': value is {value} (NaN/inf not allowed)")
-            continue
-        result.values[key] = value
+        result.values[key] = numeric
 
     # Check for missing expected metrics
     for name in expected_names:

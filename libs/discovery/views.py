@@ -9,6 +9,15 @@ if TYPE_CHECKING:
     from libs.storage.models.papers import PaperCard
 
 
+def _has_embedding(value: object) -> bool:
+    if value is None:
+        return False
+    try:
+        return len(value) > 0  # type: ignore[arg-type]
+    except TypeError:
+        return False
+
+
 def build_stable_view(cards: list[PaperCard], *, top_k: int) -> list[PaperCard]:
     """Top-k by ``final_score`` descending, deterministic tie-break by id."""
     return sorted(
@@ -40,7 +49,7 @@ def _category_overlap(a: list[str] | None, b: list[str] | None) -> float:
 
 def _similarity(a: PaperCard, b: PaperCard) -> float:
     """Cosine over embeddings if both have one; else Jaccard over categories."""
-    if a.embedding and b.embedding:
+    if _has_embedding(a.embedding) and _has_embedding(b.embedding):
         return _cosine(list(a.embedding), list(b.embedding))
     return _category_overlap(a.categories, b.categories)
 

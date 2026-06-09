@@ -29,6 +29,7 @@ def _register_subcommands() -> None:
     from apps.cli.commands.db import app as db_app
     from apps.cli.commands.discovery import app as discovery_app
     from apps.cli.commands.experiment import app as experiment_app
+    from apps.cli.commands.goal import app as goal_app
     from apps.cli.commands.patterns import app as patterns_app
     from apps.cli.commands.pilot import app as pilot_app
     from apps.cli.commands.skill import app as skill_app
@@ -41,6 +42,7 @@ def _register_subcommands() -> None:
     app.add_typer(discovery_app, name="discovery")
     app.add_typer(analysis_app, name="analysis")
     app.add_typer(experiment_app, name="experiment")
+    app.add_typer(goal_app, name="goal")
     app.add_typer(autonomy_app, name="autonomy")
     app.add_typer(patterns_app, name="patterns")
     app.add_typer(pilot_app, name="pilot")

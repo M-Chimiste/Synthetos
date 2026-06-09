@@ -102,15 +102,27 @@ class TestFailedPath:
         )
         assert result.recommendation_type == "parameter_variation"
 
-    def test_resolved_failure(self) -> None:
+    def test_unresolved_failure_with_prior_successes_varies_parameters(self) -> None:
         result = compute_recommendation(
             _inputs(
                 failed=True,
                 signal=None,
                 remediation_exhausted=False,
+                successful_runs=2,
             )
         )
-        assert result.recommendation_type == "continue_current"
+        assert result.recommendation_type == "parameter_variation"
+
+    def test_unresolved_failure_with_no_successes_pivots(self) -> None:
+        result = compute_recommendation(
+            _inputs(
+                failed=True,
+                signal=None,
+                remediation_exhausted=False,
+                successful_runs=0,
+            )
+        )
+        assert result.recommendation_type == "hypothesis_pivot"
 
 
 class TestFallback:

@@ -18,6 +18,7 @@ SkillDefId = NewType("SkillDefId", UUID)
 OrchestratorClientId = NewType("OrchestratorClientId", UUID)
 ApiTokenId = NewType("ApiTokenId", UUID)
 ModelCallId = NewType("ModelCallId", UUID)
+GoalId = NewType("GoalId", UUID)
 
 
 # --- Enums ---
@@ -50,6 +51,17 @@ class CharterStatus(StrEnum):
     paused = "paused"
     completed = "completed"
     archived = "archived"
+
+
+class GoalStatus(StrEnum):
+    """Status of a ResearchGoal."""
+
+    created = "created"
+    running = "running"
+    satisfied = "satisfied"
+    exhausted = "exhausted"
+    stopped = "stopped"
+    failed = "failed"
 
 
 class JobStatus(StrEnum):

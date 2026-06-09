@@ -22,50 +22,6 @@ const PHASE_LABELS: Record<PhaseKey, string> = {
   verification: "Verification",
 };
 
-// Maps a domain cycle status onto the 0-based index of the phase that's
-// currently `running`. Everything before that index is `done`, everything
-// after is `pending`. Returns -1 for not-yet-started and 6 (out of bounds)
-// when the whole pipeline is complete.
-function cycleStatusToPhaseIndex(status: string): number {
-  switch (status) {
-    case "created":
-      return -1;
-    case "discovery_ready":
-    case "discovery_screened":
-      return 0;
-    case "analysis_ready":
-    case "evidence_ready":
-      return 1;
-    case "portfolio_ready":
-      return 2;
-    case "protocol_ready":
-      return 3;
-    case "running":
-    case "experimenting":
-      return 4;
-    case "verifying":
-      return 5;
-    case "loop_deciding":
-    case "reporting":
-    case "completed":
-    case "closed":
-      return 6;
-    default:
-      return -1;
-  }
-}
-
-export function progressFromCycleStatus(
-  status: string,
-): Record<PhaseKey, PhaseState> {
-  const idx = cycleStatusToPhaseIndex(status);
-  const out = {} as Record<PhaseKey, PhaseState>;
-  PHASE_KEYS.forEach((key, i) => {
-    out[key] = i < idx ? "done" : i === idx ? "running" : "pending";
-  });
-  return out;
-}
-
 export default function PipelineRail({
   progress,
   compact = false,

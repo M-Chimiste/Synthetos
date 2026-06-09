@@ -74,12 +74,28 @@ def compute_recommendation(inputs: RecommendationInputs) -> RecommendationResult
                     "The approach has worked before; parameter adjustments may help."
                 ),
             )
-        # Failed but remediation resolved it (shouldn't normally reach recommend
-        # via this path, but handle gracefully)
+        if inputs.successful_runs == 0:
+            return RecommendationResult(
+                recommendation_type="hypothesis_pivot",
+                action=(
+                    "The run still failed and no successful runs exist for this "
+                    "hypothesis. Consider a fundamentally different approach."
+                ),
+                reasoning=(
+                    "Failed paths that reach recommendation without a directional "
+                    "signal are unresolved unless a retry later succeeds."
+                ),
+            )
         return RecommendationResult(
-            recommendation_type="continue_current",
-            action="Remediation resolved the failure. Continue with current approach.",
-            reasoning="Failure was mechanical and has been resolved through remediation.",
+            recommendation_type="parameter_variation",
+            action=(
+                "The latest run failed verification. Try a parameter or protocol "
+                "variation before rerunning the same setup."
+            ),
+            reasoning=(
+                f"{inputs.successful_runs} prior successes exist, but this failed "
+                "path has no successful retry or directional signal."
+            ),
         )
 
     # Successful run path (has signal)

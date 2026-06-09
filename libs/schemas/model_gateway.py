@@ -19,6 +19,7 @@ class ModelRole(StrEnum):
     evaluation = "evaluation"
     report_writing = "report_writing"
     paper_analysis = "paper_analysis"
+    graph_extraction = "graph_extraction"
     paper_review = "paper_review"
     hypothesis_generation = "hypothesis_generation"
     protocol_drafting = "protocol_drafting"

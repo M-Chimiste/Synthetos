@@ -12,9 +12,12 @@ by :func:`libs.adapters.sources.dedupe.dedupe_key`.
 from __future__ import annotations
 
 import asyncio
+import html
+import re
 import time
 import xml.etree.ElementTree as ET
 from datetime import datetime
+from html.parser import HTMLParser
 from typing import Any
 
 import httpx
@@ -38,6 +41,91 @@ _ATOM_NS = {
 
 _DEFAULT_BASE_URL = "https://export.arxiv.org/api/query"
 _MIN_REQUEST_INTERVAL_S = 3.0
+_ARXIV_ID_RE = re.compile(
+    r"(?:arxiv\.org/(?:abs|html|pdf)/)?(?P<id>\d{4}\.\d{4,5}(?:v\d+)?)",
+    re.IGNORECASE,
+)
+
+
+def _extract_arxiv_ids(text: str) -> list[str]:
+    """Extract arXiv IDs from free text, URLs, or explicit ID strings."""
+    ids: list[str] = []
+    seen: set[str] = set()
+    for match in _ARXIV_ID_RE.finditer(text):
+        arxiv_id = match.group("id")
+        if arxiv_id.lower().endswith(".pdf"):
+            arxiv_id = arxiv_id[:-4]
+        if arxiv_id not in seen:
+            seen.add(arxiv_id)
+            ids.append(arxiv_id)
+    return ids
+
+
+class _ArxivHtmlParser(HTMLParser):
+    """Tiny metadata parser for arXiv's generated HTML pages."""
+
+    def __init__(self) -> None:
+        super().__init__()
+        self._title_depth = 0
+        self._abstract_depth = 0
+        self.title_parts: list[str] = []
+        self.abstract_parts: list[str] = []
+
+    def handle_starttag(self, tag: str, attrs: list[tuple[str, str | None]]) -> None:
+        attr_map = {name: value or "" for name, value in attrs}
+        classes = attr_map.get("class", "")
+        if (tag == "h1" and "ltx_title" in classes) or self._title_depth:
+            self._title_depth += 1
+
+        if (tag in {"div", "section"} and "ltx_abstract" in classes) or self._abstract_depth:
+            self._abstract_depth += 1
+
+    def handle_endtag(self, tag: str) -> None:
+        if self._title_depth:
+            self._title_depth -= 1
+        if self._abstract_depth:
+            self._abstract_depth -= 1
+
+    def handle_data(self, data: str) -> None:
+        text = " ".join(html.unescape(data).split())
+        if not text:
+            return
+        if self._title_depth:
+            self.title_parts.append(text)
+        if self._abstract_depth:
+            self.abstract_parts.append(text)
+
+
+def _parse_arxiv_html(payload: str, *, arxiv_id: str) -> SourceHit | None:
+    parser = _ArxivHtmlParser()
+    parser.feed(payload)
+    title = " ".join(parser.title_parts).strip()
+    abstract = " ".join(parser.abstract_parts).strip()
+    if title.lower().startswith("title:"):
+        title = title.split(":", 1)[1].strip()
+    if abstract.lower().startswith("abstract"):
+        abstract = abstract[len("abstract"):].strip(" .:-")
+    if not title:
+        return None
+
+    year = _year_from_arxiv_id(arxiv_id)
+    return SourceHit(
+        source="arxiv_live",
+        external_id=arxiv_id,
+        title=title,
+        abstract=abstract,
+        year=year,
+        source_url=f"https://arxiv.org/abs/{arxiv_id}",
+        pdf_url=f"https://arxiv.org/pdf/{arxiv_id}",
+    )
+
+
+def _year_from_arxiv_id(arxiv_id: str) -> int | None:
+    match = re.match(r"(?P<yy>\d{2})\d{2}\.", arxiv_id)
+    if match is None:
+        return None
+    yy = int(match.group("yy"))
+    return 2000 + yy if yy < 91 else 1900 + yy
 
 
 def _build_search_query(query: SourceQuery) -> str:
@@ -50,6 +138,22 @@ def _build_search_query(query: SourceQuery) -> str:
         parts.append(f"({cat_clause})")
 
     return " AND ".join(parts)
+
+
+def _build_request_params(query: SourceQuery) -> dict[str, Any]:
+    """Build arXiv API params, using exact ID lookup when possible."""
+    ids = _extract_arxiv_ids(query.text)
+    params: dict[str, Any] = {
+        "start": 0,
+        "max_results": min(query.top_k, 100),
+        "sortBy": "relevance",
+        "sortOrder": "descending",
+    }
+    if ids:
+        params["id_list"] = ",".join(ids[: min(query.top_k, 100)])
+    else:
+        params["search_query"] = _build_search_query(query)
+    return params
 
 
 def _parse_entry(entry: ET.Element) -> SourceHit | None:
@@ -162,13 +266,8 @@ class ArxivLiveAdapter:
             ArxivLiveAdapter._last_request_at = time.monotonic()
 
     async def search(self, query: SourceQuery) -> list[SourceHit]:
-        params: dict[str, Any] = {
-            "search_query": _build_search_query(query),
-            "start": 0,
-            "max_results": min(query.top_k, 100),
-            "sortBy": "relevance",
-            "sortOrder": "descending",
-        }
+        exact_ids = _extract_arxiv_ids(query.text)
+        params = _build_request_params(query)
 
         payload: bytes = b""
         async for attempt in AsyncRetrying(
@@ -190,6 +289,8 @@ class ArxivLiveAdapter:
                 payload = resp.content
 
         hits = _parse_atom(payload)
+        if not hits and exact_ids:
+            hits = await self._search_exact_html(exact_ids[: min(query.top_k, 100)])
         log.info(
             "arxiv_live.search_done",
             query=query.text[:100],
@@ -199,6 +300,24 @@ class ArxivLiveAdapter:
         # something to work with even though arxiv returns relevance order.
         for idx, hit in enumerate(hits):
             hit.first_stage_score = 1.0 / (idx + 1)
+        return hits
+
+    async def _search_exact_html(self, arxiv_ids: list[str]) -> list[SourceHit]:
+        hits: list[SourceHit] = []
+        for arxiv_id in arxiv_ids:
+            try:
+                await self._wait_for_rate_limit()
+                resp = await self._client.get(f"https://arxiv.org/html/{arxiv_id}")
+                resp.raise_for_status()
+                hit = _parse_arxiv_html(resp.text, arxiv_id=arxiv_id)
+                if hit is not None:
+                    hits.append(hit)
+            except Exception as exc:
+                log.warning(
+                    "arxiv_live.html_fallback_failed",
+                    arxiv_id=arxiv_id,
+                    error=str(exc),
+                )
         return hits
 
     async def close(self) -> None:

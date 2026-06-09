@@ -1,0 +1,20 @@
+title: "DiffusionBlocks Mini LLM Research E2E"
+description: "End-to-end AI co-scientist fixture for testing whether Synthetos can turn a recent arXiv method into an executable, verifiable mini language-model experiment."
+problem_statement: |
+  Study the methodology described in arXiv:2506.14202v3 and design a small,
+  runnable experiment that tests whether independently trained diffusion-style
+  blocks can reduce training memory while preserving language-modeling loss.
+
+  The experiment must be small enough for a workstation smoke test, but it
+  should use a real PyTorch training loop, a token-sequence language-modeling
+  objective, and an end-to-end baseline. It must produce verifiable outputs:
+  metrics.json, model_weights.pt, and a concise report artifact. Prefer tiny
+  synthetic or cached text data over large downloads. Do not claim publishable
+  novelty unless the measured evidence supports it.
+domain: "small-llm-training"
+success_criteria:
+  - "At least one run completes with verification verdict == passed or inconclusive."
+  - "The experiment produces metrics.json and model_weights.pt."
+  - "The completion report distinguishes measured evidence from speculation."
+  - "The autonomous loop avoids repeating the same failed protocol after verification failures."
+expected_runtime_bucket: "workstation_cpu"

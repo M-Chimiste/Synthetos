@@ -7,7 +7,6 @@ additive changes pass.
 """
 
 from fastapi import routing
-from fastapi.testclient import TestClient
 
 from apps.api.main import create_app
 
@@ -47,10 +46,7 @@ EXPECTED_COMPONENTS: set[str] = {
 
 def _openapi_schema() -> dict:
     app = create_app()
-    client = TestClient(app)
-    resp = client.get("/openapi.json")
-    assert resp.status_code == 200, f"/openapi.json returned {resp.status_code}"
-    return resp.json()
+    return app.openapi()
 
 
 def test_openapi_schema_exposes_required_paths() -> None:

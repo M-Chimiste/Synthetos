@@ -51,6 +51,8 @@ DEFAULT_TYPES: tuple[str, ...] = ck_mod.PATTERN_TYPES
 def _filter_charter(stmt, model, charter_id: UUID | None):
     if charter_id is None:
         return stmt
+    if model is ResearchCharter:
+        return stmt.where(ResearchCharter.id == charter_id)
     return stmt.where(model.charter_id == charter_id)
 
 

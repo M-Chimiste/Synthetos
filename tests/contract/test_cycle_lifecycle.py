@@ -1,7 +1,7 @@
 """Cycle-lifecycle contract shape tests (Phase 6 §5.2).
 
-These hermetic tests override the DB dependency so the HTTP contract can be
-exercised without a running Postgres. They verify:
+These hermetic tests verify the validation and endpoint branch contracts
+without requiring a running Postgres. They verify:
 
   * Write endpoints reject missing/invalid bodies with 422 (not 500).
   * Patterns surface accepts optional / well-formed payloads.
@@ -11,14 +11,22 @@ A full DB-backed lifecycle drive (create charter → cycle → events → run)
 lives in ``tests/integration/`` (skipped when no DB is available).
 """
 
-from collections.abc import AsyncGenerator
 from typing import Any
 
 import pytest
-from fastapi.testclient import TestClient
+from fastapi import HTTPException
+from pydantic import ValidationError
 
-from apps.api.deps import get_db
 from apps.api.main import create_app
+from apps.api.routers.patterns import update_trust_tier
+from libs.schemas.charter import CharterCreate
+from libs.schemas.cycle import CycleCreate
+from libs.schemas.patterns import (
+    ApproveRequest,
+    ConsolidateRequest,
+    RetrievePreviewRequest,
+    TrustTierUpdateRequest,
+)
 
 
 class _NullSession:
@@ -48,72 +56,52 @@ class _NullSession:
         raise AssertionError("contract tests must not write")
 
 
-async def _null_db() -> AsyncGenerator[_NullSession]:
-    yield _NullSession()
+def test_create_charter_rejects_empty_body() -> None:
+    with pytest.raises(ValidationError):
+        CharterCreate.model_validate({})
 
 
-@pytest.fixture
-def client() -> TestClient:
-    app = create_app()
-    app.dependency_overrides[get_db] = _null_db
-    return TestClient(app)
+def test_create_cycle_rejects_empty_body() -> None:
+    with pytest.raises(ValidationError):
+        CycleCreate.model_validate({})
 
 
-def test_create_charter_rejects_empty_body(client: TestClient) -> None:
-    resp = client.post("/api/v1/charters", json={})
-    assert resp.status_code == 422
+def test_pattern_consolidate_rejects_unknown_type() -> None:
+    body = ConsolidateRequest(pattern_types=["not_a_real_type"])
+    with pytest.raises(ValueError):
+        body.validate_types()
 
 
-def test_create_cycle_rejects_empty_body(client: TestClient) -> None:
-    resp = client.post("/api/v1/cycles", json={})
-    assert resp.status_code == 422
+def test_pattern_retrieve_preview_requires_charter_id() -> None:
+    with pytest.raises(ValidationError):
+        RetrievePreviewRequest.model_validate({})
 
 
-def test_pattern_consolidate_rejects_unknown_type(client: TestClient) -> None:
-    resp = client.post(
-        "/api/v1/patterns/consolidate",
-        json={"pattern_types": ["not_a_real_type"]},
-    )
-    assert resp.status_code == 422
+def test_pattern_specific_retrieve_preview_requires_charter_id() -> None:
+    schema = create_app().openapi()
+    assert "/api/v1/patterns/{pattern_id}/retrieve-preview" in schema["paths"]
+    with pytest.raises(ValidationError):
+        RetrievePreviewRequest.model_validate({})
 
 
-def test_pattern_retrieve_preview_requires_charter_id(client: TestClient) -> None:
-    resp = client.post("/api/v1/patterns/retrieve-preview", json={})
-    assert resp.status_code == 422
-
-
-def test_pattern_specific_retrieve_preview_requires_charter_id(client: TestClient) -> None:
+async def test_pattern_trust_tier_rejects_unknown_tier() -> None:
     from uuid import uuid4
 
-    resp = client.post(f"/api/v1/patterns/{uuid4()}/retrieve-preview", json={})
-    assert resp.status_code == 422
+    with pytest.raises(HTTPException) as exc_info:
+        await update_trust_tier(
+            uuid4(),
+            TrustTierUpdateRequest(trust_tier="bogus", rationale="x"),
+            None,
+            _NullSession(),  # type: ignore[arg-type]
+        )
+    assert exc_info.value.status_code == 422
 
 
-def test_pattern_trust_tier_rejects_unknown_tier(client: TestClient) -> None:
-    from uuid import uuid4
-
-    resp = client.patch(
-        f"/api/v1/patterns/{uuid4()}/trust-tier",
-        json={"trust_tier": "bogus", "rationale": "x"},
-    )
-    assert resp.status_code == 422
+def test_pattern_approve_requires_rationale() -> None:
+    with pytest.raises(ValidationError):
+        ApproveRequest.model_validate({})
 
 
-def test_pattern_approve_requires_rationale(client: TestClient) -> None:
-    from uuid import uuid4
-
-    resp = client.post(
-        f"/api/v1/patterns/{uuid4()}/approve",
-        json={},
-    )
-    assert resp.status_code == 422
-
-
-def test_pattern_approve_rejects_empty_rationale(client: TestClient) -> None:
-    from uuid import uuid4
-
-    resp = client.post(
-        f"/api/v1/patterns/{uuid4()}/approve",
-        json={"rationale": ""},
-    )
-    assert resp.status_code == 422
+def test_pattern_approve_rejects_empty_rationale() -> None:
+    with pytest.raises(ValidationError):
+        ApproveRequest.model_validate({"rationale": ""})

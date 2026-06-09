@@ -29,11 +29,12 @@ substantially from week to week:
   Migrations may be squashed or rewritten; pinning to a commit SHA is the
   only safe way to depend on a specific behavior.
 - **Coverage is uneven.** Some surfaces (discovery, analysis, experiment
-  kickoff, pattern memory) are exercised end-to-end; others (protocol
-  compilation, run creation, pattern curation, autonomy policy updates)
-  are API/dashboard-only today and may move around as the CLI catches up.
-  Real-environment validation is still focused on the discovery → analysis
-  → experiment chain with live Docker/GPU execution.
+  kickoff, protocol compilation, container execution, verification, and
+  pattern memory) are exercised end-to-end; others (pattern curation,
+  autonomy policy updates, and some protocol/run write paths) are
+  API/dashboard-only today and may move around as the CLI catches up.
+  Real-environment validation is focused on the discovery → analysis →
+  ideation → protocol → experiment chain with live Docker execution.
 - **Built for one researcher on one machine.** Auth, multi-tenant
   isolation, horizontal scaling, and operational hardening are explicitly
   out of scope. `LAB_ENV=dev` bypasses browser auth; `prod` exists but has
@@ -63,6 +64,10 @@ Issues and design discussion are welcome; production use is not the goal (yet).
   telemetry; experiment containers are spawned as GPU-capable siblings.
 - **Verification & postmortems** — baseline checks, auto-remediation,
   directional signals, frontier tracking, next-step recommendations.
+- **Local inference routing** — role-based model routing can target hosted
+  providers or OpenAI-compatible local servers, including Mnemosyne/vLLM and
+  llama.cpp-style endpoints; structured JSON responses are normalized and
+  repaired at the adapter boundary.
 - **Autonomous loop** — opt-in per cycle, with run / wall-clock /
   per-hypothesis budgets, configurable checkpoint gates, spec-repetition
   detection, and completion reports.
@@ -98,8 +103,8 @@ Synthetos makes a few opinionated bets that shape every design decision:
   embeddings, paper sources, rerankers, ingestion, and graph storage all
   sit behind interfaces in `libs/adapters/`. Core domain code does not
   import vendor SDKs, so providers are swappable (Anthropic ↔ OpenAI ↔
-  local Ollama/vLLM) and degradations are graceful (AGE → relational,
-  rerank → fallback).
+  local OpenAI-compatible servers such as Mnemosyne/vLLM/llama.cpp) and
+  degradations are graceful (AGE → relational, rerank → fallback).
 - **Metadata-first triage.** Title + abstract screening runs before any
   full-text fetch; full text is HTML-first with Docling PDF as fallback.
   This keeps the literature loop cheap enough to run often and reserves
@@ -277,6 +282,24 @@ the database volume; pass service names such as `api worker web` to rebuild a
 subset, `--no-cache` for a clean rebuild, `--pull` for newer base images,
 `--gpu` to include `experiment-runner`, or `--prod` to ignore the dev override.
 
+### 1c. Optional: local Mnemosyne inference
+
+For a fully local research loop, point model routing at the checked-in
+Mnemosyne profile:
+
+```bash
+export LAB_MODEL_CONFIG=configs/models.mnemosyne.yaml
+curl http://localhost:8000/v1/models
+```
+
+The profile routes co-scientist roles to the local OpenAI-compatible
+Mnemosyne endpoint and uses a local `sentence-transformers` embedding
+adapter. It also passes endpoint-specific options to disable visible
+reasoning when the selected model supports that control. The checked-in
+profile expects the inference server at `http://localhost:8000/v1`; the
+host dev script runs the Synthetos API on `:8002` to avoid that port
+collision.
+
 ### 2. Host-mode (without Docker)
 
 If you'd rather run API/worker/web on the host (no container boundary),
@@ -316,7 +339,33 @@ available through the dashboard and API (`POST /api/v1/protocols/compile`,
 `POST /api/v1/runs`, `PUT /api/v1/cycles/{cycle_id}/autonomy/policy`). The CLI
 covers discovery, analysis, hypothesis kickoff, inspection, and run controls.
 
-### 3a. Emit structured signals from inside an experiment
+### 3b. Run the DiffusionBlocks tiny-LM research smoke
+
+The repo includes a small, self-contained validation payload inspired by
+DiffusionBlocks-style independent block training:
+
+```bash
+ARTIFACTS_PATH=/tmp/diffusionblocks_tiny_lm \
+  uv run python experiments/diffusionblocks_tiny_lm/train_diffusionblocks_tiny_lm.py \
+  --quick --device cpu
+```
+
+The script trains a tiny causal transformer baseline with ordinary
+end-to-end cross-entropy, then trains a blockwise variant with detached
+inputs, per-block local heads, and log-noise conditioning. It writes flat
+numeric metrics to `metrics.json` plus a compact `summary.json`, matching
+the experiment runner's capture contract.
+
+Recent quick CPU smoke results:
+
+| Metric | Value |
+|---|---:|
+| Baseline eval loss | `3.3800` |
+| Blockwise eval loss | `3.4218` |
+| Trainable-parameter memory proxy ratio | `0.3621` |
+| Blockwise minus baseline loss delta | `0.0418` |
+
+### 3c. Emit structured signals from inside an experiment
 
 Synthetos auto-injects a tiny `synthetos_signal.py` SDK into every
 experiment worktree, so user code in your `code_plan.files` can emit
@@ -411,8 +460,9 @@ All settings use the `LAB_` env prefix (stripped in
 |---|---|---|
 | `LAB_ENV` | `dev` | `dev` bypasses browser auth; `prod` requires bearer tokens |
 | `LAB_DB_URL` | local docker creds | Postgres DSN (psycopg) |
-| `LAB_DATA_ROOT` | `data` | Artifact / report / workspace root |
-| `LAB_MODEL_CONFIG` | `configs/models.yaml` | Role → provider / model routing |
+| `LAB_DATA_ROOT` | `data` | Artifact / report / workspace root; relative paths are resolved to absolute paths at startup |
+| `LAB_MODEL_CONFIG` / `LAB_MODEL_CONFIG_PATH` | `configs/models.yaml` | Role → provider / model routing |
+| `LAB_CONTAINER_DATA_VOLUME` | unset | Named Docker volume used when a containerized worker spawns sibling experiment containers |
 | `LAB_SKILL_PATHS` | `skills` | Colon-separated skill discovery roots |
 | `LAB_JOB_HEARTBEAT_TIMEOUT_S` | `120` | Stale-job reclaim threshold |
 | `LAB_JOB_MAX_RECLAIMS` | `3` | Reclaims before a job is force-failed |
@@ -439,4 +489,4 @@ skills:
 - Browser auth is bypassed in `LAB_ENV=dev`; production requires bearer tokens with scoped access (`patterns.read`, `patterns.write`, `cycles.write`, etc.).
 - The arXiv metadata corpus is already downloaded and embedded. Full text is fetched only for shortlisted papers.
 - One active charter at a time is assumed due to single-GPU constraints.
-- The repo includes autonomy, canonical-pattern, and pilot surfaces, but real-environment validation is still focused on discovery → analysis → experiment integration and live Docker/GPU execution.
+- The repo includes autonomy, canonical-pattern, and pilot surfaces. Current real-environment validation covers discovery, analysis, ideation, protocol compilation, container execution, capture, verification, and recommendation loops.

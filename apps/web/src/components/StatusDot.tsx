@@ -1,4 +1,4 @@
-import { statusTone } from "./StatusBadge";
+import { statusTone } from "./statusTone";
 
 export default function StatusDot({
   status,

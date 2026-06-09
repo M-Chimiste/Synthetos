@@ -101,7 +101,10 @@ def verification_postmortem_operator(op_input: OperatorInput) -> OperatorResult:
         from sqlalchemy import select
 
         vr = db.execute(
-            select(VerificationReport).where(VerificationReport.run_record_id == run.id)
+            select(VerificationReport)
+            .where(VerificationReport.run_record_id == run.id)
+            .order_by(VerificationReport.created_at.desc())
+            .limit(1)
         ).scalar_one_or_none()
 
         # Read error trace from stderr file

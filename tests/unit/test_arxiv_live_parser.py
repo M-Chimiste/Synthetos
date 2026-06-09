@@ -2,7 +2,13 @@
 
 from __future__ import annotations
 
-from libs.adapters.sources.arxiv_live import _build_search_query, _parse_atom
+from libs.adapters.sources.arxiv_live import (
+    _build_request_params,
+    _build_search_query,
+    _extract_arxiv_ids,
+    _parse_arxiv_html,
+    _parse_atom,
+)
 from libs.adapters.sources.base import SourceQuery
 
 _FIXTURE = b"""<?xml version="1.0" encoding="UTF-8"?>
@@ -32,6 +38,18 @@ _FIXTURE = b"""<?xml version="1.0" encoding="UTF-8"?>
     <link rel="alternate" type="text/html" href="http://arxiv.org/abs/2401.00001v2"/>
   </entry>
 </feed>
+"""
+
+_HTML_FIXTURE = """
+<html>
+  <body>
+    <h1 class="ltx_title ltx_title_document">DiffusionBlocks: Block-wise Training</h1>
+    <div class="ltx_abstract">
+      <h6>Abstract</h6>
+      <p>Independent block training reduces activation memory.</p>
+    </div>
+  </body>
+</html>
 """
 
 
@@ -67,3 +85,26 @@ def test_build_search_query_combines_text_and_categories() -> None:
     assert "cat:cs.LG" in s
     assert "cat:cs.CV" in s
     assert " AND " in s
+
+
+def test_extract_arxiv_ids_from_url_and_text() -> None:
+    ids = _extract_arxiv_ids("Use https://arxiv.org/html/2506.14202v3 and 2401.00001")
+    assert ids == ["2506.14202v3", "2401.00001"]
+
+
+def test_build_request_params_uses_id_list_for_exact_arxiv_references() -> None:
+    params = _build_request_params(
+        SourceQuery(text="https://arxiv.org/html/2506.14202v3", top_k=10)
+    )
+    assert params["id_list"] == "2506.14202v3"
+    assert "search_query" not in params
+
+
+def test_parse_arxiv_html_fallback_extracts_metadata() -> None:
+    hit = _parse_arxiv_html(_HTML_FIXTURE, arxiv_id="2506.14202v3")
+
+    assert hit is not None
+    assert hit.external_id == "2506.14202v3"
+    assert hit.title == "DiffusionBlocks: Block-wise Training"
+    assert "activation memory" in hit.abstract
+    assert hit.year == 2025

@@ -26,7 +26,7 @@ from libs.storage.base import get_sync_session_factory
 from libs.storage.models.experiment import ExperimentSpec, RunRecord, VerificationReport
 from libs.storage.models.research import ResearchCycle
 from libs.verification.baseline import compare_to_baseline
-from libs.verification.contracts import check_artifact_contract
+from libs.verification.contracts import check_artifact_contract, expected_artifact_name
 from libs.verification.operators._common import enqueue_next_verification
 
 log = get_logger("verification.check")
@@ -41,7 +41,7 @@ def _build_output_contract(
     manifest_by_name = {artifact["name"]: artifact for artifact in artifact_manifest}
 
     for expected in expected_artifacts:
-        name = expected.get("name", "")
+        name = expected_artifact_name(expected)
         artifact_type = str(expected.get("type", "") or "").lower()
         found = manifest_by_name.get(name)
         if found is None:
@@ -116,6 +116,23 @@ def _build_metric_sanity(
         checks.append({"name": name, "pass": True, "detail": "extra metric present"})
 
     return {"checks": checks}
+
+
+def _classify_verification_failure(
+    *,
+    failed_metrics: list[str],
+    failed_artifacts: list[str],
+    failed_output_checks: list[str],
+    failed_sanity_checks: list[str],
+) -> str:
+    """Map verification contract failures onto remediation lanes."""
+    if failed_artifacts or failed_output_checks:
+        return "invalid_artifact"
+    if failed_sanity_checks:
+        return "metric_parse"
+    if failed_metrics:
+        return "metric_threshold"
+    return "verification"
 
 
 def verification_check_operator(op_input: OperatorInput) -> OperatorResult:
@@ -291,6 +308,16 @@ def verification_check_operator(op_input: OperatorInput) -> OperatorResult:
                 warnings.append(f"output contract issues: {', '.join(failed_output_checks)}")
             if failed_sanity_checks:
                 warnings.append(f"metric sanity issues: {', '.join(failed_sanity_checks)}")
+            run.failure_class = _classify_verification_failure(
+                failed_metrics=failed_metrics,
+                failed_artifacts=failed_artifacts,
+                failed_output_checks=failed_output_checks,
+                failed_sanity_checks=failed_sanity_checks,
+            )
+            run.error = "; ".join(warnings) if warnings else "verification failed"
+        if verdict != "failed":
+            run.failure_class = None
+            run.error = None
         if prior_run is not None:
             warnings.append(f"historical comparison anchor: run {prior_run.id}")
         if pattern_ids:

@@ -120,6 +120,16 @@ class OpenAICompatAdapter:
             raise TypeError(msg)
 
         schema = response_model.model_json_schema()
+        response_format = {
+            "type": "json_schema",
+            # llama.cpp accepts the schema here.
+            "schema": schema,
+            # vLLM expects the OpenAI-compatible json_schema wrapper.
+            "json_schema": {
+                "name": response_model.__name__,
+                "schema": schema,
+            },
+        }
 
         # Try native json_schema response_format first
         payload: dict[str, Any] = {
@@ -127,10 +137,7 @@ class OpenAICompatAdapter:
             "messages": messages,
             "temperature": temperature if temperature is not None else self.default_temperature,
             "max_tokens": max_tokens if max_tokens is not None else self.default_max_tokens,
-            "response_format": {
-                "type": "json_schema",
-                "schema": schema,
-            },
+            "response_format": response_format,
         }
         payload.update(self.extra_body)
 
@@ -140,9 +147,11 @@ class OpenAICompatAdapter:
             response_model=response_model.__name__,
         )
 
+        schema_request_accepted = False
         try:
             resp = await self._client.post(self.chat_completions_path, json=payload)
             resp.raise_for_status()
+            schema_request_accepted = True
             data = resp.json()
             content = self._clean_content(data["choices"][0]["message"]["content"])
             return self._validate_json_response(response_model, content)
@@ -178,6 +187,8 @@ class OpenAICompatAdapter:
             "temperature": temperature if temperature is not None else self.default_temperature,
             "max_tokens": max_tokens if max_tokens is not None else self.default_max_tokens,
         }
+        if schema_request_accepted:
+            fallback_payload["response_format"] = response_format
         fallback_payload.update(self.extra_body)
 
         try:
