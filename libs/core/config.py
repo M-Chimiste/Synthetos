@@ -46,6 +46,9 @@ class Settings(BaseSettings):
     # Skill discovery paths (colon-separated)
     skill_paths: str = "skills"
 
+    # Versioned prompt templates root
+    prompts_root: Path = Field(default=Path("prompts"))
+
     # API
     api_port: int = 8000
 
@@ -59,6 +62,31 @@ class Settings(BaseSettings):
     job_heartbeat_timeout_s: int = 120
     job_max_reclaims: int = 3
     worker_periodic_tick_s: int = 30
+
+    # Worker: job retry policy. Transient failures (connection errors, LLM
+    # retry exhaustion, timeouts) requeue with exponential backoff until
+    # max_attempts; permanent failures fail immediately.
+    job_default_max_attempts: int = 3
+    job_max_attempts_overrides: dict[str, int] = Field(default_factory=dict)
+    job_retry_backoff_base_s: int = 60
+    job_retry_backoff_cap_s: int = 1800
+
+    # Worker: per-job wall-clock deadline. LLM-heavy operators on slow local
+    # inference are legitimately slow, so the default is generous (4h). When
+    # the deadline trips, the job supervisor signals cooperative cancellation
+    # (classified as a retryable timeout).
+    job_default_timeout_s: int = 14400
+    job_timeout_overrides: dict[str, int] = Field(default_factory=dict)
+
+    # How long after a cancel/timeout signal before the supervisor starts
+    # logging errors about an operator that won't unwind.
+    job_cancel_grace_s: int = 600
+
+    # LLM call transcript logging (llm_calls table). Prompt/response text is
+    # only stored when llm_log_prompts is enabled; hashes are always stored.
+    llm_call_logging_enabled: bool = True
+    llm_log_prompts: bool = False
+    llm_log_max_response_chars: int = 20000
 
     # Pattern decay scheduling (Phase 6 §1.5)
     pattern_decay_interval_h: int = 24
@@ -75,6 +103,8 @@ class Settings(BaseSettings):
             self.data_root = self.data_root.resolve()
         if not self.repo_root.is_absolute():
             self.repo_root = self.repo_root.resolve()
+        if not self.prompts_root.is_absolute():
+            self.prompts_root = self.prompts_root.resolve()
         return self
 
     @property

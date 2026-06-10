@@ -18,6 +18,8 @@ from sqlalchemy import func, select
 from libs.adapters.llm.router import ModelRouter
 from libs.core.config import get_settings
 from libs.core.logging import get_logger
+from libs.core.tokens import ContextSection, prompt_budget, trim_to_budget
+from libs.prompts import render_prompt
 from libs.schemas.model_gateway import ModelRole
 from libs.skills.lineage import record_model_call
 from libs.storage.models.autonomy import LoopDecision
@@ -89,44 +91,41 @@ def generate_summary(
             )
         ).scalar_one_or_none()
 
-        summary.hypotheses_tried.append({
-            "card_id": str(card.id),
-            "title": card.title,
-            "status": card.status,
-            "total_runs": frontier.total_runs if frontier else 0,
-            "best_metric": frontier.best_metric_value if frontier else None,
-            "runs_since_improvement": (
-                frontier.runs_since_improvement if frontier else 0
-            ),
-        })
+        summary.hypotheses_tried.append(
+            {
+                "card_id": str(card.id),
+                "title": card.title,
+                "status": card.status,
+                "total_runs": frontier.total_runs if frontier else 0,
+                "best_metric": frontier.best_metric_value if frontier else None,
+                "runs_since_improvement": (frontier.runs_since_improvement if frontier else 0),
+            }
+        )
 
     # Frontier progression
     frontiers = (
-        session.execute(
-            select(MetricFrontier).where(MetricFrontier.charter_id == charter_id)
-        )
+        session.execute(select(MetricFrontier).where(MetricFrontier.charter_id == charter_id))
         .scalars()
         .all()
     )
     for f in frontiers:
-        summary.frontier_progression.append({
-            "hypothesis_card_id": str(f.hypothesis_card_id),
-            "best_metric_value": f.best_metric_value,
-            "total_runs": f.total_runs,
-            "successful_runs": f.successful_runs,
-            "runs_since_improvement": f.runs_since_improvement,
-        })
+        summary.frontier_progression.append(
+            {
+                "hypothesis_card_id": str(f.hypothesis_card_id),
+                "best_metric_value": f.best_metric_value,
+                "total_runs": f.total_runs,
+                "successful_runs": f.successful_runs,
+                "runs_since_improvement": f.runs_since_improvement,
+            }
+        )
 
     # Failure patterns
-    failure_counts = (
-        session.execute(
-            select(RunRecord.failure_class, func.count())
-            .where(RunRecord.cycle_id == cycle_id)
-            .where(RunRecord.failure_class.isnot(None))
-            .group_by(RunRecord.failure_class)
-        )
-        .all()
-    )
+    failure_counts = session.execute(
+        select(RunRecord.failure_class, func.count())
+        .where(RunRecord.cycle_id == cycle_id)
+        .where(RunRecord.failure_class.isnot(None))
+        .group_by(RunRecord.failure_class)
+    ).all()
     summary.failure_patterns = {fc: count for fc, count in failure_counts if fc}
 
     # Remediation summary
@@ -179,9 +178,7 @@ def write_summary(
 ) -> str:
     """Write summary to disk and return the file path."""
     settings = get_settings()
-    summary_dir = (
-        settings.data_root / "reports" / "cycles" / str(cycle_id) / "summaries"
-    )
+    summary_dir = settings.data_root / "reports" / "cycles" / str(cycle_id) / "summaries"
     summary_dir.mkdir(parents=True, exist_ok=True)
 
     filename = f"summary_{summary.iteration_number}.json"
@@ -200,26 +197,32 @@ def write_summary(
     return str(path)
 
 
+_SUMMARY_RECENT_N = 10
+
+
 async def _summarize_with_model(summary: LoopContextSummary) -> tuple[str, dict[str, Any]]:
     router = ModelRouter()
     try:
-        system = (
-            "You summarize the progress of an autonomous ML research loop. "
-            "Write 2-3 concise sentences that capture what has been tried, "
-            "where the frontier stands, and what the loop should avoid repeating."
-        )
+        system = render_prompt("autonomy.context_summary")
+        # Cap unbounded histories to the most recent entries, then budget the
+        # whole dump against the summarization role's context window.
         user = json.dumps(
             {
                 "iteration_number": summary.iteration_number,
-                "hypotheses_tried": summary.hypotheses_tried,
-                "frontier_progression": summary.frontier_progression,
+                "hypotheses_tried": summary.hypotheses_tried[-_SUMMARY_RECENT_N:],
+                "frontier_progression": summary.frontier_progression[-_SUMMARY_RECENT_N:],
                 "failure_patterns": summary.failure_patterns,
                 "remediation_summary": summary.remediation_summary,
-                "repeated_approaches": summary.repeated_approaches,
+                "repeated_approaches": summary.repeated_approaches[-_SUMMARY_RECENT_N:],
             },
             indent=2,
             default=str,
         )
+        budget = prompt_budget(router.get_role_config(ModelRole.summarization), system_text=system)
+        report = trim_to_budget(
+            [ContextSection("loop_state", user, priority=1, shrinkable=True)], budget
+        )
+        user = report.text
         response = await router.complete(
             ModelRole.summarization,
             messages=[
@@ -252,10 +255,7 @@ def _fallback_findings(summary: LoopContextSummary) -> str:
         if best_frontier is not None
         else "No frontier improvement has been recorded yet."
     )
-    return (
-        f"The loop has explored {hypothesis_count} hypotheses so far. "
-        f"{frontier_text} {repeated}"
-    )
+    return f"The loop has explored {hypothesis_count} hypotheses so far. {frontier_text} {repeated}"
 
 
 def _generate_key_findings(session: Session, summary: LoopContextSummary) -> str:

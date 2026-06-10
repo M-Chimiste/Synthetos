@@ -6,6 +6,22 @@
 defaults:
   temperature: 0.3
   max_tokens: 4096
+  # MUST match the llama.cpp/vLLM serving window (-c / --max-model-len),
+  # not the model-card maximum. Used for prompt budget trimming and the
+  # truncation re-call ceiling.
+  context_window: 32768
+  # Single RTX Pro 6000: one generation can exceed 15 minutes on large
+  # prompts. 40 min before the call is treated as hung.
+  timeout_s: 2400
+  retry:
+    transport_attempts: 3
+    timeout_attempts: 2          # a 40-min timeout retried more is hours lost
+    validation_attempts: 2       # feedback re-prompts (prefix-cache friendly)
+    truncation_attempts: 1       # one max_tokens-doubling re-call
+    backoff_base_s: 2.0
+    backoff_max_s: 60.0
+    max_tokens_growth: 2.0
+    max_tokens_ceiling: 16384
 
 roles:
   planning: &mnemosyne_role
@@ -38,6 +54,12 @@ roles:
     model: lfm2-5-8b-a1b
     temperature: 0.1
     max_tokens: 1024
+    # Small model served small: budget chunks to its actual window and give
+    # the cheapest calls an extra feedback retry.
+    context_window: 8192
+    timeout_s: 900
+    retry:
+      validation_attempts: 3
     extra_body: {}
     strip_reasoning_tags: false
   paper_review: *mnemosyne_role
@@ -47,6 +69,13 @@ roles:
   protocol_drafting:
     <<: *mnemosyne_role
     temperature: 0.3
+    # Opt-in fallback chain example: after local retries exhaust, escalate
+    # this one call to a hosted model. Uncomment to enable (needs
+    # ANTHROPIC_API_KEY).
+    # fallback:
+    #   provider: anthropic
+    #   model: claude-sonnet-4-20250514
+    #   timeout_s: 300
   remediation:
     <<: *mnemosyne_role
     temperature: 0.2
@@ -65,5 +94,10 @@ providers:
   mnemosyne:
     type: openai_compatible
     base_url: http://localhost:8000/v1
+    # Cap in-flight requests to the single GPU server (per process).
+    max_concurrent_requests: 2
+  anthropic:
+    type: anthropic
+    max_concurrent_requests: 4
   local_embeddings:
     type: sentence_transformers

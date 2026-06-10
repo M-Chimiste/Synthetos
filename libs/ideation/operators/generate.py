@@ -29,6 +29,7 @@ from libs.ideation.operators._common import (
 )
 from libs.patterns.embedding import embed_text
 from libs.patterns.injection import InjectionPolicy, inject_patterns
+from libs.prompts import render_prompt
 from libs.schemas.model_gateway import ModelRole
 from libs.skills.lineage import record_model_call, record_skill_usage
 from libs.storage.base import get_sync_session_factory
@@ -61,11 +62,8 @@ async def _generate_hypotheses(
     """Call the LLM to generate candidate hypotheses from evidence."""
     router = ModelRouter()
     try:
-        system_msg = (
-            "You are a research hypothesis generator. Given a research problem and "
-            "supporting evidence, generate novel, testable hypotheses. Each hypothesis "
-            "should be grounded in the evidence and include a clear rationale. "
-            f"Generate up to {max_hypotheses} hypotheses."
+        system_msg = render_prompt(
+            "ideation.hypothesis_generate", max_hypotheses=max_hypotheses
         )
         system_msg = join_skill_prompts(system_msg, skill_prompt) or system_msg
         evidence_text = "\n\n".join(

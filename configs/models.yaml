@@ -5,6 +5,21 @@
 defaults:
   temperature: 0.7
   max_tokens: 4096
+  # Serving context window for budget trimming. Sonnet-class default here;
+  # local-model configs MUST override with the actual serving window.
+  context_window: 200000
+  # Per-LLM-call timeout. Hosted models respond in seconds-to-minutes.
+  timeout_s: 600
+  # Reliability-layer budgets (deep-merged with per-role `retry` overrides).
+  retry:
+    transport_attempts: 3
+    timeout_attempts: 2
+    validation_attempts: 2
+    truncation_attempts: 1
+    backoff_base_s: 2.0
+    backoff_max_s: 60.0
+    max_tokens_growth: 2.0
+    max_tokens_ceiling: 16384
 
 roles:
   planning:
@@ -76,15 +91,21 @@ providers:
   anthropic:
     # Uses ANTHROPIC_API_KEY env var
     type: anthropic
+    max_concurrent_requests: 4
 
   openai:
     # Uses OPENAI_API_KEY env var
     type: openai
+    max_concurrent_requests: 4
 
   google:
     # Uses GOOGLE_API_KEY env var
     type: google
+    max_concurrent_requests: 4
 
   local:
     type: openai_compatible
     base_url: http://localhost:11434/v1
+    # Cap in-flight requests to the single local server (per process):
+    # piling up concurrent 15-minute generations only compounds latency.
+    max_concurrent_requests: 2

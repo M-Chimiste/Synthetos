@@ -23,8 +23,15 @@ class JobRead(BaseModel):
     payload: dict[str, Any] | None
     result: dict[str, Any] | None
     error: str | None
+    error_detail: dict[str, Any] | None = None
     claimed_by: str | None
     priority: int
+    reclaim_count: int = 0
+    attempt_count: int = 0
+    max_attempts: int = 3
+    not_before: datetime | None = None
+    started_at: datetime | None = None
+    cancel_requested: bool = False
     created_at: datetime
     completed_at: datetime | None
 

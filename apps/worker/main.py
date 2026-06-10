@@ -19,7 +19,7 @@ from uuid_utils import uuid7
 
 from apps.worker.claimer import try_claim
 from apps.worker.executor import execute
-from apps.worker.heartbeat import HeartbeatThread
+from apps.worker.heartbeat import JobSupervisor
 from apps.worker.periodic import run_periodic_tasks
 from libs.analysis.operators._common import (
     AnalysisStateError,
@@ -31,15 +31,23 @@ from libs.analysis.operators._common import (
 )
 from libs.core.clock import utcnow
 from libs.core.config import get_settings
+from libs.core.errors import ErrorClass
+from libs.core.event_types import JobLifecycleEvents
 from libs.core.events import emit_event_sync
 from libs.core.logging import get_logger, setup_logging
-from libs.core.operators import OperatorInput
+from libs.core.operators import OperatorInput, OperatorResult
+from libs.core.run_context import (
+    CancelToken,
+    JobContext,
+    current_job_context,
+)
 from libs.core.services.goal_service import enqueue_goal_advance_sync
 from libs.core.services.job_service import (
+    cancel_job_record,
     complete_job,
-    fail_job,
     get_job,
     pause_job,
+    retry_or_fail_job,
     start_job,
 )
 from libs.core.state_machine import ALLOWED_TRANSITIONS, validate_transition
@@ -472,6 +480,7 @@ def run(*, poll_interval: float = _DEFAULT_POLL_INTERVAL) -> None:
             with session_factory() as session:
                 job = start_job(session, job.id)
                 charter_id = _resolve_charter_id(session_factory, job)
+                attempt_number = int(job.attempt_count or 0) + 1
                 emit_event_sync(
                     session,
                     event_type="job_started",
@@ -481,11 +490,38 @@ def run(*, poll_interval: float = _DEFAULT_POLL_INTERVAL) -> None:
                     actor_type=ActorType.worker,
                     actor_id=worker_id,
                 )
+                emit_event_sync(
+                    session,
+                    event_type=JobLifecycleEvents.attempt_started.value,
+                    charter_id=charter_id,
+                    cycle_id=job.cycle_id,
+                    payload={
+                        "job_id": str(job.id),
+                        "job_type": job.job_type,
+                        "attempt": attempt_number,
+                        "max_attempts": int(job.max_attempts or 1),
+                    },
+                    actor_type=ActorType.worker,
+                    actor_id=worker_id,
+                )
                 session.commit()
 
-            # Start heartbeat for the claimed job
-            heartbeat = HeartbeatThread(session_factory, job.id)
-            heartbeat.start()
+            # Supervise the claimed job: heartbeat + cancel polling + deadline.
+            cancel_token = CancelToken()
+            supervisor = JobSupervisor(
+                session_factory,
+                job.id,
+                token=cancel_token,
+                deadline_s=float(
+                    settings.job_timeout_overrides.get(job.job_type, settings.job_default_timeout_s)
+                ),
+                started_at=job.started_at,
+                grace_s=float(settings.job_cancel_grace_s),
+            )
+            supervisor.start()
+            ctx_token = current_job_context.set(
+                JobContext(job_id=job.id, cycle_id=job.cycle_id, cancel_token=cancel_token)
+            )
 
             try:
                 op_input = _build_operator_input(session_factory, job)
@@ -493,11 +529,13 @@ def run(*, poll_interval: float = _DEFAULT_POLL_INTERVAL) -> None:
                     "job_executing",
                     job_id=str(job.id),
                     job_type=job.job_type,
+                    attempt=attempt_number,
                     worker_id=worker_id,
                 )
                 result = execute(op_input)
             finally:
-                heartbeat.stop()
+                current_job_context.reset(ctx_token)
+                supervisor.stop()
 
             # Persist outcome
             with session_factory() as session:
@@ -568,7 +606,17 @@ def run(*, poll_interval: float = _DEFAULT_POLL_INTERVAL) -> None:
                             "events": result.events,
                         },
                     )
-                    _enqueue_goal_advance_after_success(session, current_job)
+                    try:
+                        _enqueue_goal_advance_after_success(session, current_job)
+                    except Exception:
+                        # Never let goal bookkeeping roll back complete_job: a
+                        # rollback here leaves the job "running" with a dead
+                        # heartbeat -> reclaim -> full re-execution.
+                        log.exception(
+                            "goal_advance_enqueue_failed",
+                            job_id=str(current_job.id),
+                            trigger="success",
+                        )
                     emit_event_sync(
                         session,
                         event_type="job_completed",
@@ -587,128 +635,282 @@ def run(*, poll_interval: float = _DEFAULT_POLL_INTERVAL) -> None:
                         worker_id=worker_id,
                     )
                 else:
-                    _persist_operator_events(
-                        session,
-                        charter_id=charter_id,
-                        cycle_id=current_job.cycle_id,
-                        events=result.events,
-                        worker_id=worker_id,
-                    )
-                    discovery_session_id, discovery_failure_changed = _mark_discovery_job_failed(
+                    _handle_failure(
                         session,
                         job=current_job,
-                        error=result.error or "unknown error",
-                    )
-                    (
-                        analysis_session_id,
-                        analysis_paper_card_id,
-                        analysis_failure_changed,
-                    ) = _mark_analysis_job_failed(
-                        session,
-                        job=current_job,
-                        error=result.error or "unknown error",
-                    )
-                    ideation_session_id, ideation_failure_changed = (
-                        _mark_ideation_job_failed(
-                            session,
-                            job=current_job,
-                            error=result.error or "unknown error",
-                        )
-                    )
-                    execution_run_id, execution_failure_changed = (
-                        _mark_execution_job_failed(
-                            session,
-                            job=current_job,
-                            error=result.error or "unknown error",
-                        )
-                    )
-                    fail_job(session, current_job.id, result.error or "unknown error")
-                    if ideation_failure_changed:
-                        emit_event_sync(
-                            session,
-                            event_type="ideation.session_failed",
-                            charter_id=charter_id,
-                            cycle_id=current_job.cycle_id,
-                            payload={
-                                "hypothesis_session_id": str(ideation_session_id),
-                                "operator": current_job.job_type,
-                                "error": result.error,
-                            },
-                            actor_type=ActorType.worker,
-                            actor_id=worker_id,
-                        )
-                    if execution_failure_changed:
-                        emit_event_sync(
-                            session,
-                            event_type="execution.run_failed",
-                            charter_id=charter_id,
-                            cycle_id=current_job.cycle_id,
-                            payload={
-                                "run_record_id": str(execution_run_id),
-                                "operator": current_job.job_type,
-                                "error": result.error,
-                            },
-                            actor_type=ActorType.worker,
-                            actor_id=worker_id,
-                        )
-                    if discovery_failure_changed:
-                        emit_event_sync(
-                            session,
-                            event_type="discovery.session_failed",
-                            charter_id=charter_id,
-                            cycle_id=current_job.cycle_id,
-                            payload={
-                                "session_id": str(discovery_session_id),
-                                "operator": current_job.job_type,
-                                "error": result.error,
-                            },
-                            actor_type=ActorType.worker,
-                            actor_id=worker_id,
-                        )
-                    if analysis_failure_changed:
-                        emit_event_sync(
-                            session,
-                            event_type="analysis.session_failed",
-                            charter_id=charter_id,
-                            cycle_id=current_job.cycle_id,
-                            payload={
-                                "analysis_session_id": str(analysis_session_id),
-                                "paper_card_id": str(analysis_paper_card_id),
-                                "operator": current_job.job_type,
-                                "error": result.error,
-                            },
-                            actor_type=ActorType.worker,
-                            actor_id=worker_id,
-                        )
-                    if _should_enqueue_goal_advance_after_failure(current_job):
-                        _enqueue_goal_advance_after_failure(
-                            session,
-                            job=current_job,
-                            error=result.error or "unknown error",
-                            discovery_session_id=discovery_session_id,
-                            analysis_session_id=analysis_session_id,
-                            analysis_paper_card_id=analysis_paper_card_id,
-                            ideation_session_id=ideation_session_id,
-                        )
-                    emit_event_sync(
-                        session,
-                        event_type="job_failed",
+                        result=result,
                         charter_id=charter_id,
-                        cycle_id=current_job.cycle_id,
-                        payload={"job_id": str(current_job.id), "error": result.error},
-                        actor_type=ActorType.worker,
-                        actor_id=worker_id,
-                    )
-                    session.commit()
-                    log.warning(
-                        "job_failed",
-                        job_id=str(current_job.id),
-                        job_type=current_job.job_type,
-                        error=result.error,
                         worker_id=worker_id,
                     )
     finally:
         log.info("worker_stopped", worker_id=worker_id)
+
+
+def _failure_error_detail(result: OperatorResult, attempt: int) -> dict[str, Any]:
+    failure = result.failure
+    detail: dict[str, Any] = {
+        "error_class": (failure.error_class.value if failure else ErrorClass.permanent.value),
+        "attempt": attempt,
+        "occurred_at": utcnow().isoformat(),
+    }
+    if failure is not None:
+        detail["exc_type"] = failure.exc_type
+        detail["traceback"] = failure.traceback
+    return detail
+
+
+def _emit_attempt_failed(
+    session: Session,
+    *,
+    job: Job,
+    error: str,
+    error_class: ErrorClass,
+    attempt: int,
+    charter_id: UUID | None,
+    worker_id: str,
+) -> None:
+    emit_event_sync(
+        session,
+        event_type=JobLifecycleEvents.attempt_failed.value,
+        charter_id=charter_id,
+        cycle_id=job.cycle_id,
+        payload={
+            "job_id": str(job.id),
+            "job_type": job.job_type,
+            "attempt": attempt,
+            "error_class": error_class.value,
+            "error": error[:500],
+        },
+        actor_type=ActorType.worker,
+        actor_id=worker_id,
+    )
+
+
+def _handle_failure(
+    session: Session,
+    *,
+    job: Job,
+    result: OperatorResult,
+    charter_id: UUID | None,
+    worker_id: str,
+) -> None:
+    """Route a failed operator result: cancelled, retry-scheduled, or final.
+
+    Phase/session failure side-effects (marking discovery/analysis/ideation
+    sessions failed, goal-advance) run only on FINAL failure -- a scheduled
+    retry must not poison downstream state, and a user cancel is not a
+    failure at all.
+    """
+    error = result.error or "unknown error"
+    failure = result.failure
+    error_class = failure.error_class if failure else ErrorClass.permanent
+    attempt = int(job.attempt_count or 0) + 1
+    error_detail = _failure_error_detail(result, attempt)
+
+    _persist_operator_events(
+        session,
+        charter_id=charter_id,
+        cycle_id=job.cycle_id,
+        events=result.events,
+        worker_id=worker_id,
+    )
+
+    # User cancel honored mid-run: mark cancelled, skip all failure side-effects.
+    if error_class == ErrorClass.cancelled:
+        cancel_job_record(session, job.id, error_detail=error_detail)
+        emit_event_sync(
+            session,
+            event_type="job_cancelled_acknowledged",
+            charter_id=charter_id,
+            cycle_id=job.cycle_id,
+            payload={"job_id": str(job.id), "job_type": job.job_type},
+            actor_type=ActorType.worker,
+            actor_id=worker_id,
+        )
+        session.commit()
+        log.info("job_cancelled", job_id=str(job.id), job_type=job.job_type)
+        return
+
+    if error_class == ErrorClass.timeout:
+        emit_event_sync(
+            session,
+            event_type=JobLifecycleEvents.timeout_signalled.value,
+            charter_id=charter_id,
+            cycle_id=job.cycle_id,
+            payload={"job_id": str(job.id), "job_type": job.job_type, "attempt": attempt},
+            actor_type=ActorType.worker,
+            actor_id=worker_id,
+        )
+
+    # A job the user paused mid-run keeps its paused status; record the error.
+    if job.status == JobStatus.paused:
+        job.error = error
+        job.error_detail = error_detail
+        _emit_attempt_failed(
+            session,
+            job=job,
+            error=error,
+            error_class=error_class,
+            attempt=attempt,
+            charter_id=charter_id,
+            worker_id=worker_id,
+        )
+        session.commit()
+        return
+
+    retryable = error_class in (ErrorClass.transient, ErrorClass.timeout)
+    updated = retry_or_fail_job(
+        session,
+        job.id,
+        error=error,
+        error_detail=error_detail,
+        retryable=retryable,
+    )
+    _emit_attempt_failed(
+        session,
+        job=job,
+        error=error,
+        error_class=error_class,
+        attempt=attempt,
+        charter_id=charter_id,
+        worker_id=worker_id,
+    )
+
+    if updated.status == JobStatus.pending:
+        # Retry scheduled: no failure side-effects, downstream state untouched.
+        emit_event_sync(
+            session,
+            event_type=JobLifecycleEvents.retry_scheduled.value,
+            charter_id=charter_id,
+            cycle_id=job.cycle_id,
+            payload={
+                "job_id": str(job.id),
+                "job_type": job.job_type,
+                "attempt": attempt,
+                "max_attempts": int(updated.max_attempts or 1),
+                "next_attempt_at": (updated.not_before.isoformat() if updated.not_before else None),
+            },
+            actor_type=ActorType.worker,
+            actor_id=worker_id,
+        )
+        session.commit()
+        log.warning(
+            "job_retry_scheduled",
+            job_id=str(job.id),
+            job_type=job.job_type,
+            attempt=attempt,
+            error=error,
+            worker_id=worker_id,
+        )
+        return
+
+    # Final failure: mark linked sessions failed and notify the goal system.
+    discovery_session_id, discovery_failure_changed = _mark_discovery_job_failed(
+        session, job=job, error=error
+    )
+    (
+        analysis_session_id,
+        analysis_paper_card_id,
+        analysis_failure_changed,
+    ) = _mark_analysis_job_failed(session, job=job, error=error)
+    ideation_session_id, ideation_failure_changed = _mark_ideation_job_failed(
+        session, job=job, error=error
+    )
+    execution_run_id, execution_failure_changed = _mark_execution_job_failed(
+        session, job=job, error=error
+    )
+    if ideation_failure_changed:
+        emit_event_sync(
+            session,
+            event_type="ideation.session_failed",
+            charter_id=charter_id,
+            cycle_id=job.cycle_id,
+            payload={
+                "hypothesis_session_id": str(ideation_session_id),
+                "operator": job.job_type,
+                "error": error,
+            },
+            actor_type=ActorType.worker,
+            actor_id=worker_id,
+        )
+    if execution_failure_changed:
+        emit_event_sync(
+            session,
+            event_type="execution.run_failed",
+            charter_id=charter_id,
+            cycle_id=job.cycle_id,
+            payload={
+                "run_record_id": str(execution_run_id),
+                "operator": job.job_type,
+                "error": error,
+            },
+            actor_type=ActorType.worker,
+            actor_id=worker_id,
+        )
+    if discovery_failure_changed:
+        emit_event_sync(
+            session,
+            event_type="discovery.session_failed",
+            charter_id=charter_id,
+            cycle_id=job.cycle_id,
+            payload={
+                "session_id": str(discovery_session_id),
+                "operator": job.job_type,
+                "error": error,
+            },
+            actor_type=ActorType.worker,
+            actor_id=worker_id,
+        )
+    if analysis_failure_changed:
+        emit_event_sync(
+            session,
+            event_type="analysis.session_failed",
+            charter_id=charter_id,
+            cycle_id=job.cycle_id,
+            payload={
+                "analysis_session_id": str(analysis_session_id),
+                "paper_card_id": str(analysis_paper_card_id),
+                "operator": job.job_type,
+                "error": error,
+            },
+            actor_type=ActorType.worker,
+            actor_id=worker_id,
+        )
+    if _should_enqueue_goal_advance_after_failure(job):
+        try:
+            _enqueue_goal_advance_after_failure(
+                session,
+                job=job,
+                error=error,
+                discovery_session_id=discovery_session_id,
+                analysis_session_id=analysis_session_id,
+                analysis_paper_card_id=analysis_paper_card_id,
+                ideation_session_id=ideation_session_id,
+            )
+        except Exception:
+            log.exception(
+                "goal_advance_enqueue_failed",
+                job_id=str(job.id),
+                trigger="failure",
+            )
+    emit_event_sync(
+        session,
+        event_type="job_failed",
+        charter_id=charter_id,
+        cycle_id=job.cycle_id,
+        payload={"job_id": str(job.id), "error": error},
+        actor_type=ActorType.worker,
+        actor_id=worker_id,
+    )
+    session.commit()
+    log.warning(
+        "job_failed",
+        job_id=str(job.id),
+        job_type=job.job_type,
+        error=error,
+        attempt=attempt,
+        worker_id=worker_id,
+    )
 
 
 def main() -> None:

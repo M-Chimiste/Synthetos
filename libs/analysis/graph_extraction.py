@@ -8,7 +8,7 @@ equation nodes plus typed relations.
 from __future__ import annotations
 
 import asyncio
-from typing import Any
+from typing import Literal
 from uuid import UUID
 
 from pydantic import BaseModel, Field
@@ -17,7 +17,11 @@ from uuid_utils import uuid7
 
 from libs.adapters.llm.router import ModelRouter
 from libs.core.clock import utcnow
+from libs.core.errors import OperationCancelled, OperatorTimeout
 from libs.core.logging import get_logger
+from libs.core.run_context import check_cancelled
+from libs.core.tokens import prompt_budget
+from libs.prompts import render_prompt
 from libs.schemas.model_gateway import ModelRole
 from libs.storage.models.analysis import GraphEdge, GraphNode, PaperChunk
 
@@ -29,13 +33,28 @@ log = get_logger("analysis.graph_extraction")
 # ---------------------------------------------------------------------------
 
 
-class ExtractedNode(BaseModel):
-    """A graph node extracted by the LLM."""
+# Closed vocabularies: constrained-decoding backends (llama.cpp/vLLM json_schema)
+# enforce these as enums, which a small model cannot drift away from. "section"
+# and "paper" are structural node types created by the chunker, not the LLM,
+# but edges may reference them so the lookup below includes them.
+NodeType = Literal["concept", "method", "experiment", "dataset", "figure", "table", "equation"]
 
-    node_type: str
+EdgeType = Literal[
+    "defines", "proposes", "uses", "evaluates", "illustrates", "compares", "depends_on"
+]
+
+
+class ExtractedNode(BaseModel):
+    """A graph node extracted by the LLM.
+
+    ``properties`` was removed from the LLM-facing schema: free-form dicts are
+    noise from small models and nothing downstream consumes them. Persisted
+    nodes get an empty dict server-side.
+    """
+
+    node_type: NodeType
     label: str
     description: str | None = None
-    properties: dict[str, Any] = Field(default_factory=dict)
 
 
 class ExtractedEdge(BaseModel):
@@ -43,9 +62,8 @@ class ExtractedEdge(BaseModel):
 
     source_label: str
     target_label: str
-    edge_type: str
-    properties: dict[str, Any] = Field(default_factory=dict)
-    confidence: float = 0.8
+    edge_type: EdgeType
+    confidence: float = Field(default=0.8, ge=0.0, le=1.0)
 
 
 class ChunkExtractionResult(BaseModel):
@@ -76,27 +94,45 @@ async def extract_graph(
     sem = asyncio.Semaphore(concurrency)
     all_results: list[tuple[PaperChunk, ChunkExtractionResult]] = []
 
+    system_prompt = render_prompt("analysis.graph_extraction")
+    # graph_extraction is typically served by the smallest model: clamp chunk
+    # content to its window rather than silently overflowing it.
+    role_cfg = router.get_role_config(ModelRole.graph_extraction)
+    budget_chars = max(prompt_budget(role_cfg, system_text=system_prompt), 256) * 4
+
     async def _extract_one(chunk: PaperChunk) -> None:
         async with sem:
+            check_cancelled()
+            content = chunk.content
+            if len(content) > budget_chars:
+                log.info(
+                    "graph_extraction.chunk_clamped",
+                    chunk_id=str(chunk.id),
+                    original_chars=len(content),
+                    budget_chars=budget_chars,
+                )
+                content = content[:budget_chars]
             try:
                 result = await router.complete_structured(
                     ModelRole.graph_extraction,
                     messages=[
                         {
                             "role": "system",
-                            "content": _EXTRACTION_SYSTEM_PROMPT,
+                            "content": system_prompt,
                         },
                         {
                             "role": "user",
                             "content": (
                                 f"Extract graph entities and relations from "
-                                f"this paper chunk:\n\n{chunk.content}"
+                                f"this paper chunk:\n\n{content}"
                             ),
                         },
                     ],
                     response_model=ChunkExtractionResult,
                 )
                 all_results.append((chunk, result))
+            except (OperationCancelled, OperatorTimeout):
+                raise  # cancellation must abort the whole batch, not one chunk
             except Exception:
                 log.warning(
                     "chunk_extraction_failed",
@@ -124,7 +160,7 @@ async def extract_graph(
                     node_type=en.node_type,
                     label=en.label,
                     description=en.description,
-                    properties=en.properties,
+                    properties={},
                     provenance={
                         "source_chunk_ids": [str(chunk.id)],
                         "extraction_model": "graph_extraction",
@@ -150,8 +186,17 @@ async def extract_graph(
             # Try to find source and target across all node types
             src_node = None
             tgt_node = None
-            for nt in ("concept", "method", "experiment", "dataset",
-                       "figure", "table", "equation", "section", "paper"):
+            for nt in (
+                "concept",
+                "method",
+                "experiment",
+                "dataset",
+                "figure",
+                "table",
+                "equation",
+                "section",
+                "paper",
+            ):
                 if src_node is None:
                     src_node = nodes_by_label.get(f"{nt}::{ee.source_label}")
                 if tgt_node is None:
@@ -166,7 +211,7 @@ async def extract_graph(
                 source_node_id=src_node.id,
                 target_node_id=tgt_node.id,
                 edge_type=ee.edge_type,
-                properties=ee.properties,
+                properties={},
                 provenance={"extraction_model": "graph_extraction"},
                 confidence=ee.confidence,
                 created_at=utcnow(),
@@ -239,32 +284,3 @@ async def project_to_graph_adapter(
                 log.debug("edge_projection_failed", edge_id=str(edge.id))
 
     return True
-
-
-_EXTRACTION_SYSTEM_PROMPT = """\
-You are a research paper analysis system. Extract structured graph entities
-and relations from the given paper chunk.
-
-For each chunk, extract:
-
-**Nodes** (entities):
-- concept: Key ideas, theories, or principles
-- method: Algorithms, techniques, or approaches
-- experiment: Experimental setups or evaluation procedures
-- dataset: Named datasets or data sources
-- figure: Referenced figures
-- table: Referenced tables
-- equation: Key equations or formulas
-
-**Edges** (relations between entities):
-- defines: A section or passage defines a concept
-- proposes: The paper proposes a method
-- uses: An experiment uses a dataset or method
-- evaluates: An experiment evaluates a method
-- illustrates: A figure illustrates a concept
-- compares: A comparison between methods or results
-- depends_on: A method depends on another
-
-Return only entities and relations that are explicitly mentioned or clearly
-implied in the chunk text. Use concise, specific labels.
-"""

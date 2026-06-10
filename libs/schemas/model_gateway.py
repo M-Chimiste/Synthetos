@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from dataclasses import dataclass
 from enum import StrEnum
 from typing import Any
 
@@ -51,6 +52,21 @@ class CompletionResponse(BaseModel):
     input_tokens: int | None = None
     output_tokens: int | None = None
     structured_output: Any | None = None
+    # Normalized across providers: "stop" | "length" | "tool_use" |
+    # "content_filter" | "other"; None when the provider omitted it.
+    finish_reason: str | None = None
+    # Wall-clock of the single provider request, measured in the adapter.
+    latency_ms: int | None = None
+    # Total attempts behind this response; set by the reliability layer.
+    attempts: int = 1
+
+
+@dataclass
+class StructuredCompletion[T]:
+    """A parsed structured output plus the response metadata behind it."""
+
+    parsed: T
+    response: CompletionResponse
 
 
 class EmbeddingRequest(BaseModel):

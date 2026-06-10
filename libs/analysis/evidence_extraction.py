@@ -8,7 +8,7 @@ against existing cycle evidence.
 from __future__ import annotations
 
 import asyncio
-from typing import Any
+from typing import Any, Literal
 from uuid import UUID
 
 from pydantic import BaseModel, Field
@@ -19,7 +19,11 @@ from uuid_utils import uuid7
 from libs.adapters.embeddings.router import EmbeddingsRouter
 from libs.adapters.llm.router import ModelRouter
 from libs.core.clock import utcnow
+from libs.core.errors import OperationCancelled, OperatorTimeout
 from libs.core.logging import get_logger
+from libs.core.run_context import check_cancelled
+from libs.core.tokens import ContextSection, prompt_budget, trim_to_budget
+from libs.prompts import render_prompt
 from libs.schemas.model_gateway import ModelRole
 from libs.storage.models.analysis import (
     EvidenceCard,
@@ -36,10 +40,17 @@ log = get_logger("analysis.evidence_extraction")
 # ---------------------------------------------------------------------------
 
 
+EvidenceType = Literal[
+    "finding", "method_claim", "dataset_availability", "limitation", "comparison"
+]
+
+EvidenceRelationship = Literal["contradictory", "redundant", "independent"]
+
+
 class ExtractedEvidence(BaseModel):
     """One evidence claim extracted by the LLM."""
 
-    evidence_type: str  # finding, method_claim, dataset_availability, limitation, comparison
+    evidence_type: EvidenceType
     claim: str
     supporting_text: str | None = None
     confidence: float = Field(default=0.7, ge=0.0, le=1.0)
@@ -54,7 +65,7 @@ class ExtractionOutput(BaseModel):
 class ContradictionResult(BaseModel):
     """Result of comparing two evidence claims."""
 
-    relationship: str  # contradictory, redundant, independent
+    relationship: EvidenceRelationship
     reason: str = ""
     model_confidence: float = Field(default=0.5, ge=0.0, le=1.0)
 
@@ -77,12 +88,15 @@ async def extract_evidence(
     """Extract evidence cards from an analysis packet with contradiction detection."""
     router = ModelRouter()
 
-    # 1. Extract evidence claims via LLM
-    context = _build_extraction_context(packet, chunks, nodes)
+    # 1. Extract evidence claims via LLM, budgeted to the role's context window
+    system_prompt = render_prompt("analysis.evidence_extraction")
+    role_cfg = router.get_role_config(ModelRole.paper_analysis)
+    budget = prompt_budget(role_cfg, system_text=system_prompt)
+    context = _build_extraction_context(packet, chunks, nodes, budget_tokens=budget)
     extraction = await router.complete_structured(
         ModelRole.paper_analysis,
         messages=[
-            {"role": "system", "content": _EXTRACTION_SYSTEM_PROMPT},
+            {"role": "system", "content": system_prompt},
             {"role": "user", "content": context},
         ],
         response_model=ExtractionOutput,
@@ -121,7 +135,11 @@ async def extract_evidence(
 
     # 4. Detect contradictions/redundancy against existing cycle evidence
     await _detect_contradictions(
-        db, cards, cycle_id, router, concurrency=concurrency,
+        db,
+        cards,
+        cycle_id,
+        router,
+        concurrency=concurrency,
     )
 
     # 5. Persist
@@ -174,14 +192,20 @@ async def _detect_contradictions(
             continue
 
         # Query existing evidence with similar embeddings
-        candidates = db.execute(
-            select(EvidenceCard).where(
-                EvidenceCard.cycle_id == cycle_id,
-                EvidenceCard.embedding.isnot(None),
-                EvidenceCard.embedding.cosine_distance(card.embedding)
-                < (1.0 - similarity_threshold),
-            ).limit(10)
-        ).scalars().all()
+        candidates = (
+            db.execute(
+                select(EvidenceCard)
+                .where(
+                    EvidenceCard.cycle_id == cycle_id,
+                    EvidenceCard.embedding.isnot(None),
+                    EvidenceCard.embedding.cosine_distance(card.embedding)
+                    < (1.0 - similarity_threshold),
+                )
+                .limit(10)
+            )
+            .scalars()
+            .all()
+        )
 
         if not candidates:
             continue
@@ -195,30 +219,37 @@ async def _detect_contradictions(
             results: list[dict[str, Any]] = contradictions,
         ) -> None:
             async with sem:
+                check_cancelled()
                 try:
                     cr = await router.complete_structured(
                         ModelRole.paper_analysis,
                         messages=[
-                            {"role": "system", "content": _CONTRADICTION_PROMPT},
+                            {
+                                "role": "system",
+                                "content": render_prompt("analysis.evidence_contradiction"),
+                            },
                             {
                                 "role": "user",
                                 "content": (
-                                    f"Claim A: {current_card.claim}\n\n"
-                                    f"Claim B: {existing.claim}"
+                                    f"Claim A: {current_card.claim}\n\nClaim B: {existing.claim}"
                                 ),
                             },
                         ],
                         response_model=ContradictionResult,
                     )
                     if cr.relationship == "contradictory":
-                        results.append({
-                            "evidence_id": str(existing.id),
-                            "reason": cr.reason,
-                            "model_confidence": cr.model_confidence,
-                        })
+                        results.append(
+                            {
+                                "evidence_id": str(existing.id),
+                                "reason": cr.reason,
+                                "model_confidence": cr.model_confidence,
+                            }
+                        )
                     elif cr.relationship == "redundant":
                         group = existing.redundancy_group or str(existing.id)
                         current_card.redundancy_group = group
+                except (OperationCancelled, OperatorTimeout):
+                    raise  # cancellation must abort the whole batch
                 except Exception:
                     log.debug(
                         "contradiction_check_failed",
@@ -236,67 +267,56 @@ def _build_extraction_context(
     packet: PaperAnalysisPacket,
     chunks: list[PaperChunk],
     nodes: list[GraphNode],
+    *,
+    budget_tokens: int | None = None,
 ) -> str:
-    parts = [
-        f"## Paper Summary\n{packet.summary}",
+    """Assemble prioritized context, trimmed to the role's token budget.
+
+    The summary is never dropped; passages shrink before contributions and
+    methods are touched; entity context goes first when space runs out.
+    """
+    sections: list[ContextSection] = [
+        ContextSection("summary", f"## Paper Summary\n{packet.summary}", priority=0),
     ]
 
     if packet.key_contributions:
         contribs = "\n".join(f"- {c}" for c in packet.key_contributions)
-        parts.append(f"## Key Contributions\n{contribs}")
+        sections.append(
+            ContextSection("contributions", f"## Key Contributions\n{contribs}", priority=1)
+        )
 
     if packet.methods_used:
         methods = "\n".join(f"- {m}" for m in packet.methods_used)
-        parts.append(f"## Methods\n{methods}")
+        sections.append(ContextSection("methods", f"## Methods\n{methods}", priority=1))
 
-    # Include top chunks for grounding
+    # Top chunks for grounding: the budget governs how much survives.
     if chunks:
         chunk_text = "\n\n".join(
-            f"[{c.section_path or c.chunk_type}] {c.content[:300]}"
-            for c in chunks[:10]
+            f"[{c.section_path or c.chunk_type}] {c.content}" for c in chunks[:10]
         )
-        parts.append(f"## Key Passages\n{chunk_text}")
+        sections.append(
+            ContextSection("passages", f"## Key Passages\n{chunk_text}", priority=2, min_chars=400)
+        )
 
-    # Include graph nodes for entity context
+    # Graph nodes for entity context: first to go when over budget.
     if nodes:
         node_text = "\n".join(
-            f"- [{n.node_type}] {n.label}: {n.description or ''}"
-            for n in nodes[:15]
+            f"- [{n.node_type}] {n.label}: {n.description or ''}" for n in nodes[:15]
         )
-        parts.append(f"## Extracted Entities\n{node_text}")
+        sections.append(
+            ContextSection("entities", f"## Extracted Entities\n{node_text}", priority=3)
+        )
 
-    return "\n\n".join(parts)
+    if budget_tokens is None:
+        return "\n\n".join(s.content for s in sections)
 
-
-_EXTRACTION_SYSTEM_PROMPT = """\
-You are a research evidence extraction system. Given a structured analysis
-of a research paper, extract discrete evidence claims.
-
-For each piece of evidence, provide:
-- **evidence_type**: one of: finding, method_claim, dataset_availability, limitation, comparison
-- **claim**: A concise, self-contained evidence statement
-- **supporting_text**: The specific text that supports this claim (if available)
-- **confidence**: Your confidence in this evidence (0.0-1.0)
-
-Focus on:
-- Key empirical findings and results
-- Novel methodological claims
-- Dataset availability and characteristics
-- Known limitations acknowledged by the authors
-- Comparisons with prior work
-
-Extract 5-15 evidence claims per paper, prioritizing quality over quantity.
-"""
-
-_CONTRADICTION_PROMPT = """\
-You are comparing two research evidence claims. Classify their relationship:
-
-- **contradictory**: The claims make opposing assertions about the same topic
-- **redundant**: The claims say essentially the same thing
-- **independent**: The claims are about different topics or compatible
-
-Provide:
-- relationship: contradictory, redundant, or independent
-- reason: Brief explanation
-- model_confidence: Your confidence in this classification (0.0-1.0)
-"""
+    report = trim_to_budget(sections, budget_tokens)
+    if report.trimmed:
+        log.info(
+            "evidence_extraction.context_trimmed",
+            paper_card_id=str(packet.paper_card_id),
+            estimated_tokens=report.estimated_tokens,
+            dropped=report.dropped,
+            truncated=report.truncated,
+        )
+    return report.text

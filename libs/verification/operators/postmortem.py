@@ -24,6 +24,7 @@ from libs.execution.operators._common import (
     load_run_record,
     run_record_id_from_payload,
 )
+from libs.prompts import render_prompt
 from libs.schemas.model_gateway import ModelRole
 from libs.skills.lineage import record_model_call, record_skill_usage
 from libs.storage.base import get_sync_session_factory
@@ -36,12 +37,18 @@ log = get_logger("verification.postmortem")
 
 
 class _PostmortemOutput(BaseModel):
-    """Structured output from the postmortem LLM call."""
+    """Structured output from the postmortem LLM call.
+
+    contributing_factors/lessons are plain strings in the LLM-facing schema
+    (free-form dicts from small models are noise); they are wrapped as
+    ``{"description": ...}`` dicts at persist time to preserve the JSONB/API
+    list[dict] contract.
+    """
 
     root_cause: str
-    contributing_factors: list[dict[str, Any]] = Field(default_factory=list)
+    contributing_factors: list[str] = Field(default_factory=list)
     next_step_recommendation: str = ""
-    lessons: list[dict[str, Any]] = Field(default_factory=list)
+    lessons: list[str] = Field(default_factory=list)
 
 
 async def _generate_postmortem(
@@ -55,11 +62,7 @@ async def _generate_postmortem(
     """Call the LLM to generate a failure postmortem."""
     router = ModelRouter()
     try:
-        system_msg = (
-            "You are an ML experiment failure analyst. Given a failed experiment run, "
-            "determine the root cause, contributing factors, and recommend next steps. "
-            "Be specific and actionable."
-        )
+        system_msg = render_prompt("verification.postmortem")
         system_msg = join_skill_prompts(system_msg, skill_prompt) or system_msg
         user_msg = (
             f"Failure class: {failure_class}\n"
@@ -169,10 +172,12 @@ def verification_postmortem_operator(op_input: OperatorInput) -> OperatorResult:
             cycle_id=run.cycle_id,
             failure_class=run.failure_class or "unknown",
             root_cause=pm_output.root_cause,
-            contributing_factors=pm_output.contributing_factors or None,
+            contributing_factors=(
+                [{"description": f} for f in pm_output.contributing_factors] or None
+            ),
             error_trace=error_trace or None,
             next_step_recommendation=pm_output.next_step_recommendation or None,
-            lessons=pm_output.lessons or None,
+            lessons=[{"description": lesson} for lesson in pm_output.lessons] or None,
             created_at=utcnow(),
         )
         db.add(postmortem)

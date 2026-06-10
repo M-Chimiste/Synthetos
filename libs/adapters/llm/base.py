@@ -5,9 +5,11 @@ from __future__ import annotations
 from typing import TYPE_CHECKING, Protocol, TypeVar, runtime_checkable
 
 if TYPE_CHECKING:
-    from libs.schemas.model_gateway import CompletionResponse
+    from pydantic import BaseModel
 
-T = TypeVar("T")
+    from libs.schemas.model_gateway import CompletionResponse, StructuredCompletion
+
+T = TypeVar("T", bound="BaseModel")
 
 
 @runtime_checkable
@@ -17,6 +19,12 @@ class LLMAdapter(Protocol):
     Adapters provide two core operations:
     - complete: free-form text completion
     - complete_structured: completion parsed into a typed Pydantic model
+
+    Adapters are deliberately dumb: one provider request per call (plus
+    capability fallbacks), light JSON repair only, typed errors
+    (LLMValidationError / LLMTruncationError) on parse failure, and raw
+    transport exceptions propagated. Retry policy lives in the reliability
+    layer above.
     """
 
     async def complete(
@@ -36,8 +44,8 @@ class LLMAdapter(Protocol):
         *,
         temperature: float | None = None,
         max_tokens: int | None = None,
-    ) -> T:
-        """Generate a chat completion and parse it into a Pydantic model instance."""
+    ) -> StructuredCompletion[T]:
+        """Generate a completion parsed into a Pydantic model, with response metadata."""
         ...
 
     async def close(self) -> None:

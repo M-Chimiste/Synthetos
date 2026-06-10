@@ -41,18 +41,48 @@ cd apps/web && npm run test             # Frontend tests (vitest)
 - **Postgres** runs in Docker via docker-compose. Extensions (pgvector, Apache AGE) are loaded by `docker/init-extensions.sql`. AGE is optional—falls back to relational tables if unavailable.
 - **API, worker, CLI** run on the host with hot reload. They share `libs/` but run as separate processes.
 - **API is async** (async SQLAlchemy sessions); **worker and CLI are sync** (sync session factory). Don't mix session types.
-- **Experiment containers** (future) will be spawned as sibling Docker containers with GPU passthrough.
+- **Experiment containers** are spawned as sibling Docker containers with GPU passthrough (`libs/adapters/container/docker_runner.py`, used by `libs/execution/`).
 
 ### Core Pattern: Queue-Driven Operator Execution
 
 The system is a **job queue + operator** architecture, not an agent framework:
 
 1. **API/CLI** receives user requests → calls a **service** (`libs/core/services/`) → enqueues a **job** in Postgres.
-2. **Worker** polls for jobs using `SELECT FOR UPDATE SKIP LOCKED` (ordered by priority DESC, created_at), claims one, builds an `OperatorInput`, and calls the appropriate **operator**.
+2. **Worker** polls for jobs using `SELECT FOR UPDATE SKIP LOCKED` (ordered by priority DESC, created_at; jobs with a future `not_before` are skipped), claims one, builds an `OperatorInput`, and calls the appropriate **operator**.
 3. **Operators** (`libs/discovery/operators/`, `libs/analysis/operators/`) do the actual work (LLM calls, data processing) and return an `OperatorResult` containing events, state patches, and artifacts.
-4. **Worker** persists events, applies state patches, and updates job status—all atomically. A heartbeat thread (5s interval) signals liveness during execution.
+4. **Worker** persists events, applies state patches, and updates job status—all atomically. A `JobSupervisor` thread (`apps/worker/heartbeat.py`, 5s interval) heartbeats, polls for cancellation, and watches the wall-clock deadline during execution.
 
-Key contracts are in `libs/core/operators.py`: `OperatorInput` (frozen dataclass) and `OperatorResult` (events + state_patch + artifacts + summary).
+Key contracts are in `libs/core/operators.py`: `OperatorInput` (frozen dataclass) and `OperatorResult` (events + state_patch + artifacts + summary + optional `failure` detail).
+
+### Job Reliability: Retry, Cancellation, Timeouts
+
+- **Error taxonomy** (`libs/core/errors.py`): operator exceptions classify as `transient | permanent | cancelled | timeout` via `classify_exception()`. Unknown types are **permanent** (never blindly re-run an hour-long job on a logic bug); operators opt in to retry by raising `RetryableOperatorError`; other layers register transient types via `register_transient()`.
+- **Job retry**: transient/timeout failures requeue with exponential backoff (`Job.attempt_count`/`max_attempts`/`not_before`; settings `LAB_JOB_DEFAULT_MAX_ATTEMPTS` etc.). Session-failure side effects and goal-advance run only on FINAL failure. Full tracebacks land in `Job.error_detail` (see `synthetos jobs show <id>`).
+- **Kill switch**: `POST /api/v1/jobs/{id}/cancel` (or `synthetos jobs cancel <id>`) sets `cancel_requested` for running jobs; the supervisor trips a `CancelToken` (`libs/core/run_context.py`, exposed via ContextVar) within 5s; the LLM reliability layer cancels the in-flight HTTP request (vLLM/llama.cpp abort generation on disconnect); the operator unwinds with `OperationCancelled` and the job is marked cancelled, not failed.
+- **Per-job deadline**: `LAB_JOB_DEFAULT_TIMEOUT_S` (4h default, per-type overrides) trips the same token with reason=timeout (retryable).
+
+### LLM Reliability Layer
+
+ALL LLM calls flow through `ModelRouter.complete/complete_structured` → `ReliableLLMClient` (`libs/adapters/llm/reliability.py`). Adapters are deliberately dumb (one provider request, light JSON repair, typed `LLMValidationError`/`LLMTruncationError`); the reliability layer owns, per call:
+
+- transport retry with backoff/jitter (timeouts on a smaller separate budget),
+- truncation re-call (`finish_reason == "length"` → grow max_tokens before last-resort brace repair),
+- validation feedback retry (re-prompt with the bad output + pydantic error; original messages stay a byte-identical prefix for vLLM prefix-cache reuse),
+- per-endpoint concurrency caps (`providers.<name>.max_concurrent_requests`; default 2 for local servers),
+- opt-in per-role `fallback:` chain (e.g. escalate one call to Anthropic after local budgets exhaust),
+- cancellation racing, and one `llm_calls` transcript row per logical call.
+
+Per-role knobs in `configs/models*.yaml`: `timeout_s`, `context_window` (MUST match the serving window, not the model card), `retry: {...}` (deep-merged with defaults), `sampling: {top_p, seed, stop}`, `fallback: {...}`. The `llm_calls` table records role/model/outcome/attempts/latency/tokens (prompt text only when `LAB_LLM_LOG_PROMPTS=true`); `libs/core/services/llm_call_service.role_success_rates()` aggregates per-role success rates.
+
+### Prompt Templates
+
+System prompts live in `prompts/<domain>/<name>/v<N>.md` (frontmatter + jinja2 body), loaded via `libs/prompts` (`render_prompt("ideation.hypothesis_generate", ...)`). Each structured-output prompt carries ONE compact JSON example that `tests/unit/test_prompt_schema_sync.py` validates against the declared pydantic `response_schema` — change prompt and schema together. Per-model variants (`v<N>.<model-slug>.md`) override the base file when the caller passes a model. See `prompts/README.md`.
+
+User messages stay code-assembled and are trimmed to the role's `context_window` via `libs/core/tokens.py` (`ContextSection` + `trim_to_budget` + `prompt_budget`) — priority 0 sections are never dropped.
+
+### Protocol Compile Decomposition
+
+`protocol_compile` runs a per-hypothesis chain (`libs/protocols/operators/compile.py`): one flat `ExperimentPlan` call (role `protocol_drafting`), then one `CodePlanOutput` call (role `coding`); the Dockerfile is synthesized deterministically from dependencies (no LLM) unless a custom build is needed. A failed card chain is skipped, not fatal. `max_specs_per_compile` (cycle protocol config, default 2) bounds wall-time; the loop path compiles exactly one spec.
 
 ### Services Convention
 
@@ -126,10 +156,11 @@ The async DB URL requires `postgresql+psycopg://` prefix (not plain `postgresql:
 - `libs/verification/` — Verification check and failure postmortem operators
 - `libs/remediation/` — Phase 4 auto-remediation, directional signal, frontier, and recommendation operators
 - `libs/autonomy/` — Phase 5 autonomous loop: policy, budget, gates, hypothesis lifecycle, repetition detection, context summarization, completion reporting, `loop_decide`/`loop_report` operators
+- `libs/prompts/` — Versioned prompt template loader (frontmatter + jinja2)
 - `libs/skills/` — Skill loader, parser, validator, registry
 - `skills/` — First-party skill.md packages
 - `configs/` — YAML configs (models.yaml, discovery/, policies/, problems/)
-- `prompts/` — Versioned prompt assets (not yet populated)
+- `prompts/` — Versioned system-prompt templates (`<domain>/<name>/v<N>.md`); see `prompts/README.md`
 
 ### API Error Mapping
 

@@ -6,7 +6,7 @@ to protocol_ready.
 from __future__ import annotations
 
 import asyncio
-from typing import Any
+from typing import Any, Literal
 
 from pydantic import BaseModel, Field
 from sqlalchemy import func, select
@@ -25,12 +25,14 @@ from libs.core.container_images import (
     gpu_requested,
     package_name,
 )
+from libs.core.errors import OperationCancelled, OperatorTimeout
 from libs.core.event_types import AutonomyEvents, ProtocolEvents
 from libs.core.events import emit_event_sync
 from libs.core.logging import get_logger
 from libs.core.operators import OperatorInput, OperatorResult
 from libs.core.types import CycleStatus, JobStatus
 from libs.discovery.skill_support import join_skill_prompts, load_skill_prompt
+from libs.prompts import render_prompt
 from libs.protocols.validation import validate_spec
 from libs.schemas.model_gateway import ModelRole
 from libs.skills.lineage import record_model_call, record_skill_usage
@@ -47,8 +49,85 @@ from libs.storage.models.research import ResearchCharter, ResearchCycle
 
 log = get_logger("protocols.compile")
 
+# ---------------------------------------------------------------------------
+# LLM-facing stage models. The compile is decomposed per hypothesis into
+# (1) plan -> (2) code -> (3 optional) custom build recipe: a single
+# small-model call can produce one flat plan or one script reliably, where the
+# old "N complete specs with code and Dockerfiles in one response" could not.
+# ---------------------------------------------------------------------------
+
+
+class MetricSpec(BaseModel):
+    name: str = Field(description="snake_case metric key written to /artifacts/metrics.json")
+    direction: Literal["maximize", "minimize"]
+    threshold: float | None = Field(default=None, description="Pass/fail cutoff; null if none")
+
+
+class BaselineSpec(BaseModel):
+    description: str = Field(description="What the no-hypothesis baseline is and why")
+    expected_metrics: dict[str, float] = Field(
+        default_factory=dict, description="metric_name -> expected baseline value"
+    )
+
+
+class ControlSetting(BaseModel):
+    name: str
+    value: float | int | str
+
+
+class ExpectedArtifact(BaseModel):
+    name: str = Field(description="Filename under /artifacts, e.g. metrics.json")
+    required: bool = True
+
+
+class StopCondition(BaseModel):
+    description: str = Field(description="e.g. 'stop after 200 training steps'")
+
+
+class ExperimentPlan(BaseModel):
+    """Stage 1 output: flat experiment design. No code, no Dockerfile."""
+
+    title: str = Field(max_length=500)
+    description: str
+    baseline: BaselineSpec
+    controls: list[ControlSetting] = Field(default_factory=list)
+    metrics: list[MetricSpec] = Field(min_length=1)
+    expected_artifacts: list[ExpectedArtifact] = Field(default_factory=list)
+    stop_conditions: list[StopCondition] = Field(min_length=1)
+    dependencies: list[str] = Field(
+        default_factory=list, description="pip package names the code will import"
+    )
+    approach_summary: str = Field(
+        description="3-5 sentence implementation sketch handed to the code generator"
+    )
+
+
+class CodeFile(BaseModel):
+    path: str = Field(description="Relative path, e.g. run_experiment.py")
+    content: str
+
+
+class CodePlanOutput(BaseModel):
+    """Stage 2 output. A typed file list (not dict[str, str]): dynamic dict
+    keys interact badly with json_schema-constrained decoding on llama.cpp."""
+
+    entry_point: str = "run_experiment.py"
+    files: list[CodeFile] = Field(min_length=1)
+
+
+class BuildRecipeOutput(BaseModel):
+    """Stage 3 output (rare; the default pip-install recipe needs no LLM)."""
+
+    dockerfile_content: str
+
+
 class _CompiledSpec(BaseModel):
-    """Structured output from the protocol-drafting LLM call."""
+    """Internal interchange container, assembled from the stage outputs.
+
+    Field shapes are unchanged from the original single-call schema -- every
+    downstream consumer (validate_spec, ExperimentSpec JSONB columns, setup,
+    verification, repetition fingerprinting) sees identical dicts.
+    """
 
     title: str = Field(max_length=500)
     description: str
@@ -60,10 +139,180 @@ class _CompiledSpec(BaseModel):
     code_plan: dict[str, Any]
     base_image: str | None = None
     build_recipe: dict[str, Any] | None = None
+    # 0-based position of the source hypothesis; None for legacy/test
+    # constructions, which fall back to zip-order matching.
+    hypothesis_index: int | None = None
 
 
 class _SpecSet(BaseModel):
     specs: list[_CompiledSpec]
+
+
+def _hardware_hint(hardware_profile: dict[str, Any] | None, base_image: str | None) -> str:
+    hw_hint = ""
+    if hardware_profile:
+        hw_hint = f"\nHardware profile: {hardware_profile}"
+        if gpu_requested(hardware_profile) and not base_image:
+            hw_hint += f"\nRecommended GPU base image: {BLACKWELL_PYTORCH_IMAGE}"
+    if base_image:
+        hw_hint += f"\nBase image: {base_image}"
+    return hw_hint
+
+
+def _variation_hint(variation_context: dict[str, Any] | None) -> str:
+    if not variation_context:
+        return ""
+    hint = (
+        "\n\nPrevious attempt results:\n"
+        f"- Signal: {variation_context.get('signal', 'unknown')}\n"
+        f"- Best frontier value: {variation_context.get('frontier_best', 'N/A')}\n"
+        f"- Recommendation: {variation_context.get('recommendation_action', '')}\n"
+        f"- This is variation #{variation_context.get('variation_number', 1)}.\n"
+        "\nDesign a NEW experiment that addresses the stall/regression by "
+        "varying hyperparameters, architecture choices, or training strategy. "
+        "Do NOT repeat the same configuration."
+    )
+    prior_metrics = variation_context.get("prior_metrics")
+    if prior_metrics:
+        hint += f"\n- Metrics achieved: {prior_metrics}"
+    context_summary = variation_context.get("context_summary")
+    if context_summary:
+        key_findings = context_summary.get("key_findings", "")
+        if key_findings:
+            hint += f"\n- Loop findings: {key_findings}"
+        repeated = context_summary.get("repeated_approaches", [])
+        if repeated:
+            hint += "\n- Repeated approaches: " + "; ".join(repeated)
+    return hint
+
+
+async def _compile_one_spec(
+    router: ModelRouter,
+    *,
+    hypothesis: dict[str, Any],
+    hypothesis_index: int,
+    problem_statement: str,
+    hardware_profile: dict[str, Any] | None,
+    base_image: str | None,
+    skill_prompt: str | None,
+    variation_context: dict[str, Any] | None,
+) -> _CompiledSpec:
+    """Run the plan -> code chain for one hypothesis and assemble the spec.
+
+    The build recipe is synthesized deterministically from dependencies in
+    ``_normalize_compiled_spec`` -- no third LLM call on the happy path.
+    """
+    hw_hint = _hardware_hint(hardware_profile, base_image)
+
+    # Stage 1: plan
+    plan_system = render_prompt("protocols.compile_plan")
+    plan_system = join_skill_prompts(plan_system, skill_prompt) or plan_system
+    plan_user = (
+        f"Problem: {problem_statement}\n\n"
+        f"Hypothesis: {hypothesis['title']}\n"
+        f"Statement: {hypothesis['statement']}\n"
+        f"Rationale: {hypothesis['rationale']}\n"
+        f"Scores - novelty: {hypothesis.get('novelty_score')}, "
+        f"feasibility: {hypothesis.get('feasibility_score')}, "
+        f"impact: {hypothesis.get('impact_score')}"
+        f"{hw_hint}\n\n"
+        "Design the experiment plan for this hypothesis."
+        f"{_variation_hint(variation_context)}"
+    )
+    plan = await router.complete_structured(
+        role=ModelRole.protocol_drafting,
+        messages=[
+            {"role": "system", "content": plan_system},
+            {"role": "user", "content": plan_user},
+        ],
+        response_model=ExperimentPlan,
+        temperature=0.3,
+    )
+
+    # Stage 2: code (the coding role -- typically the code-tuned local model)
+    code_system = render_prompt("protocols.compile_code")
+    code_system = join_skill_prompts(code_system, skill_prompt) or code_system
+    metrics_text = "\n".join(
+        f"- {m.name} ({m.direction}"
+        + (f", threshold {m.threshold}" if m.threshold is not None else "")
+        + ")"
+        for m in plan.metrics
+    )
+    artifacts_text = (
+        "\n".join(f"- {a.name} (required: {a.required})" for a in plan.expected_artifacts)
+        or "- metrics.json (required: True)"
+    )
+    stop_text = "\n".join(f"- {s.description}" for s in plan.stop_conditions)
+    code_user = (
+        f"Experiment: {plan.title}\n"
+        f"Description: {plan.description}\n\n"
+        f"Implementation approach:\n{plan.approach_summary}\n\n"
+        f"Metrics to report in /artifacts/metrics.json:\n{metrics_text}\n\n"
+        f"Expected artifacts:\n{artifacts_text}\n\n"
+        f"Stop conditions:\n{stop_text}\n\n"
+        f"Allowed dependencies: {plan.dependencies or ['(stdlib, torch, numpy only)']}"
+        f"{hw_hint}\n\n"
+        "Write the complete experiment code."
+    )
+    code = await router.complete_structured(
+        role=ModelRole.coding,
+        messages=[
+            {"role": "system", "content": code_system},
+            {"role": "user", "content": code_user},
+        ],
+        response_model=CodePlanOutput,
+        temperature=0.2,
+    )
+
+    return _CompiledSpec(
+        title=plan.title,
+        description=plan.description,
+        baseline=plan.baseline.model_dump(),
+        controls=[c.model_dump() for c in plan.controls],
+        metrics=[m.model_dump() for m in plan.metrics],
+        expected_artifacts=[a.model_dump() for a in plan.expected_artifacts],
+        stop_conditions=[s.model_dump() for s in plan.stop_conditions],
+        code_plan={
+            "entry_point": code.entry_point,
+            "files": {f.path: f.content for f in code.files},
+            "dependencies": plan.dependencies,
+        },
+        base_image=base_image,
+        build_recipe=None,  # synthesized deterministically in normalization
+        hypothesis_index=hypothesis_index,
+    )
+
+
+async def compile_build_recipe(
+    router: ModelRouter,
+    *,
+    base_image: str,
+    code_plan: dict[str, Any],
+    skill_prompt: str | None = None,
+) -> BuildRecipeOutput:
+    """Stage 3: LLM-authored custom Dockerfile.
+
+    Not part of the happy path (the deterministic pip-install recipe covers
+    it); available for remediation/custom-build flows.
+    """
+    system = render_prompt("protocols.compile_build", base_image=base_image)
+    system = join_skill_prompts(system, skill_prompt) or system
+    files = code_plan.get("files") or {}
+    user = (
+        f"Code files: {sorted(files)}\n"
+        f"Entry point: {code_plan.get('entry_point')}\n"
+        f"Dependencies: {code_plan.get('dependencies') or []}\n\n"
+        "Write the Dockerfile."
+    )
+    return await router.complete_structured(
+        role=ModelRole.coding,
+        messages=[
+            {"role": "system", "content": system},
+            {"role": "user", "content": user},
+        ],
+        response_model=BuildRecipeOutput,
+        temperature=0.2,
+    )
 
 
 async def _compile_specs(
@@ -74,102 +323,40 @@ async def _compile_specs(
     skill_prompt: str | None,
     variation_context: dict[str, Any] | None = None,
 ) -> tuple[_SpecSet, dict[str, Any]]:
-    """Call the LLM to compile hypotheses into executable experiment specs."""
+    """Compile hypotheses into executable experiment specs, one chain per card.
+
+    Per-card compilation makes failures partial: a hypothesis whose chain
+    fails is logged and skipped instead of failing the whole job. Specs carry
+    ``hypothesis_index`` so the caller never relies on output order.
+    """
     router = ModelRouter()
     try:
-        system_msg = (
-            "You are an ML experiment protocol compiler. Given hypotheses and a "
-            "research problem, produce fully executable experiment specifications. "
-            "Each spec must include:\n"
-            "- A baseline description with expected metrics\n"
-            "- Metrics to track with direction (maximize/minimize) and optional thresholds\n"
-            "- A code_plan with entry_point, dependencies, and complete file contents\n"
-            "- A build_recipe with dockerfile_content whenever the code needs runtime "
-            "dependencies beyond the base image\n"
-            "- Stop conditions\n"
-            "- Expected artifacts to produce\n"
-            "When build_recipe.dockerfile_content is needed, return a complete Dockerfile "
-            "that starts from the selected base_image or python:3.12-slim, copies or "
-            "uses the workspace as the build context, and installs every runtime "
-            "dependency required by code_plan.files. Do not rely on code_plan.dependencies "
-            "as the install mechanism; it is descriptive metadata only. "
-            f"When the hardware profile requests GPU, prefer base_image "
-            f"{BLACKWELL_PYTORCH_IMAGE} unless the caller selected another "
-            "CUDA-capable image. Do not use python:3.12-slim for GPU training. "
-            "Keep autonomous experiments fast and bounded. External datasets such as "
-            "WikiText are valid, but use streaming mode or very small explicit splits "
-            "and cap the number of examples/batches so the run finishes quickly. "
-            "If a runtime network request fails or cached data is unavailable, the "
-            "experiment code must fall back to a deterministic tiny synthetic/local "
-            "token corpus rather than failing. Avoid downloading large pretrained "
-            "models/tokenizers during quick E2E experiments; prefer a tiny torch model "
-            "defined in code or a clearly bounded cached model path when supplied. "
-            "If base_image is synthetos:latest and the code only needs packages "
-            "already present there, such as torch and numpy, leave build_recipe null. "
-            "The code should write metrics to /artifacts/metrics.json as a flat "
-            "{metric_name: numeric_value} JSON object. Training code should also save "
-            "model weights to /artifacts/model_weights.pt when the experiment trains "
-            "a model."
-        )
-        system_msg = join_skill_prompts(system_msg, skill_prompt) or system_msg
-        hyp_text = "\n\n".join(
-            f"Hypothesis {i + 1}: {h['title']}\n"
-            f"Statement: {h['statement']}\n"
-            f"Rationale: {h['rationale']}\n"
-            f"Scores - novelty: {h.get('novelty_score')}, "
-            f"feasibility: {h.get('feasibility_score')}, "
-            f"impact: {h.get('impact_score')}"
-            for i, h in enumerate(hypotheses)
-        )
-        hw_hint = ""
-        if hardware_profile:
-            hw_hint = f"\nHardware profile: {hardware_profile}"
-            if gpu_requested(hardware_profile) and not base_image:
-                hw_hint += f"\nRecommended GPU base image: {BLACKWELL_PYTORCH_IMAGE}"
-        if base_image:
-            hw_hint += f"\nBase image: {base_image}"
-
-        variation_hint = ""
-        if variation_context:
-            variation_hint = (
-                "\n\nPrevious attempt results:\n"
-                f"- Signal: {variation_context.get('signal', 'unknown')}\n"
-                f"- Best frontier value: {variation_context.get('frontier_best', 'N/A')}\n"
-                f"- Recommendation: {variation_context.get('recommendation_action', '')}\n"
-                f"- This is variation #{variation_context.get('variation_number', 1)}.\n"
-                "\nCompile a NEW experiment spec that addresses the stall/regression by "
-                "varying hyperparameters, architecture choices, or training strategy. "
-                "Do NOT repeat the same configuration."
-            )
-            prior_metrics = variation_context.get("prior_metrics")
-            if prior_metrics:
-                variation_hint += f"\n- Metrics achieved: {prior_metrics}"
-            context_summary = variation_context.get("context_summary")
-            if context_summary:
-                key_findings = context_summary.get("key_findings", "")
-                if key_findings:
-                    variation_hint += f"\n- Loop findings: {key_findings}"
-                repeated = context_summary.get("repeated_approaches", [])
-                if repeated:
-                    variation_hint += "\n- Repeated approaches: " + "; ".join(repeated)
-
-        user_msg = (
-            f"Problem: {problem_statement}\n\n"
-            f"Hypotheses to compile:\n{hyp_text}\n"
-            f"{hw_hint}\n\n"
-            f"Compile each hypothesis into a complete, executable experiment spec."
-            f"{variation_hint}"
-        )
-        result = await router.complete_structured(
-            role=ModelRole.protocol_drafting,
-            messages=[
-                {"role": "system", "content": system_msg},
-                {"role": "user", "content": user_msg},
-            ],
-            response_model=_SpecSet,
-            temperature=0.3,
-        )
-        return result, router.get_role_config(ModelRole.protocol_drafting)
+        specs: list[_CompiledSpec] = []
+        for i, hypothesis in enumerate(hypotheses):
+            try:
+                spec = await _compile_one_spec(
+                    router,
+                    hypothesis=hypothesis,
+                    hypothesis_index=i,
+                    problem_statement=problem_statement,
+                    hardware_profile=hardware_profile,
+                    base_image=base_image,
+                    skill_prompt=skill_prompt,
+                    variation_context=variation_context,
+                )
+                specs.append(spec)
+            except (OperationCancelled, OperatorTimeout):
+                raise
+            except Exception:
+                log.warning(
+                    "hypothesis_compile_failed",
+                    hypothesis_index=i,
+                    hypothesis_title=str(hypothesis.get("title", ""))[:120],
+                    exc_info=True,
+                )
+        if not specs:
+            raise RuntimeError("all hypothesis compile chains failed")
+        return _SpecSet(specs=specs), router.get_role_config(ModelRole.protocol_drafting)
     finally:
         await router.close()
 
@@ -204,9 +391,8 @@ def protocol_compile_operator(op_input: OperatorInput) -> OperatorResult:
         cycle_autonomy = (cycle.config or {}).get("autonomy", {}) if cycle else {}
         cycle_protocol = cycle_autonomy.get("protocol") or {}
         if hardware_profile is None:
-            hardware_profile = (
-                cycle_protocol.get("hardware_profile")
-                or cycle_autonomy.get("compute_cap")
+            hardware_profile = cycle_protocol.get("hardware_profile") or cycle_autonomy.get(
+                "compute_cap"
             )
         if base_image is None:
             base_image = cycle_protocol.get("base_image")
@@ -234,14 +420,17 @@ def protocol_compile_operator(op_input: OperatorInput) -> OperatorResult:
                     ),
                 )
         else:
-            # Default: take top-5 ranked candidates or selected cards
+            # Default: top-ranked candidates. At 2 LLM calls per card on slow
+            # local inference, the cap bounds compile wall-time; the loop path
+            # only ever executes the first spec, so it compiles exactly one.
+            max_specs = 1 if from_loop else int(cycle_protocol.get("max_specs_per_compile", 2))
             cards = (
                 db.execute(
                     select(HypothesisCard)
                     .where(HypothesisCard.hypothesis_session_id == hypothesis_session_id)
                     .where(HypothesisCard.status.in_(["candidate", "selected"]))
                     .order_by(HypothesisCard.rank.asc().nulls_last())
-                    .limit(5)
+                    .limit(max_specs)
                 )
                 .scalars()
                 .all()
@@ -319,11 +508,22 @@ def protocol_compile_operator(op_input: OperatorInput) -> OperatorResult:
             model_id=str(role_cfg.get("model", "unknown")),
         )
 
-        # Validate and persist specs
+        # Validate and persist specs. Specs carry hypothesis_index when the
+        # per-card chain produced them (some cards may have failed and been
+        # skipped); legacy/test SpecSets without indices match by zip order.
         compiled_ids = []
         rejected_count = 0
 
-        for card, compiled in zip(cards, spec_set.specs, strict=False):
+        if all(s.hypothesis_index is not None for s in spec_set.specs):
+            card_spec_pairs = [
+                (cards[s.hypothesis_index], s)
+                for s in spec_set.specs
+                if s.hypothesis_index is not None and s.hypothesis_index < len(cards)
+            ]
+        else:
+            card_spec_pairs = list(zip(cards, spec_set.specs, strict=False))
+
+        for card, compiled in card_spec_pairs:
             spec_data = compiled.model_dump()
             spec_data = _normalize_compiled_spec(
                 spec_data,
@@ -420,8 +620,9 @@ def protocol_compile_operator(op_input: OperatorInput) -> OperatorResult:
             from sqlalchemy import func as sa_func
 
             max_run_num = db.execute(
-                select(sa_func.coalesce(sa_func.max(RunRecord.run_number), 0))
-                .where(RunRecord.experiment_spec_id == first_spec_id)
+                select(sa_func.coalesce(sa_func.max(RunRecord.run_number), 0)).where(
+                    RunRecord.experiment_spec_id == first_spec_id
+                )
             ).scalar_one()
 
             new_run = RunRecord(
@@ -637,18 +838,11 @@ def _normalize_compiled_spec(
 
 def _default_dependency_dockerfile(base_image: str, dependencies: Any) -> str:
     packages = [
-        str(dep).strip()
-        for dep in dependencies
-        if isinstance(dep, str) and str(dep).strip()
+        str(dep).strip() for dep in dependencies if isinstance(dep, str) and str(dep).strip()
     ]
     if not packages:
         return f"FROM {base_image}\n"
-    return (
-        f"FROM {base_image}\n"
-        "RUN pip install --no-cache-dir "
-        + " ".join(packages)
-        + "\n"
-    )
+    return f"FROM {base_image}\nRUN pip install --no-cache-dir " + " ".join(packages) + "\n"
 
 
 def _dockerfile_only_installs_preloaded_packages(dockerfile: str) -> bool:

@@ -9,10 +9,10 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Literal
 
+import docker
 from docker.errors import BuildError, NotFound
 from docker.types import DeviceRequest, Mount
 
-import docker
 from libs.core.config import get_settings
 from libs.core.logging import get_logger
 

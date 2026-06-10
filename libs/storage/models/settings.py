@@ -26,6 +26,7 @@ class ModelCatalogEntry(Base):
     base_url: Mapped[str | None] = mapped_column(String(500), nullable=True)
     default_temperature: Mapped[float | None] = mapped_column(Float, nullable=True)
     default_max_tokens: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    default_timeout_s: Mapped[int | None] = mapped_column(Integer, nullable=True)
     enabled: Mapped[bool] = mapped_column(Boolean, default=True)
     notes: Mapped[str | None] = mapped_column(Text, nullable=True)
     last_tested_at: Mapped[datetime | None] = mapped_column(nullable=True)
@@ -48,6 +49,7 @@ class ModelRoleBinding(Base):
     )
     temperature: Mapped[float | None] = mapped_column(Float, nullable=True)
     max_tokens: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    timeout_s: Mapped[int | None] = mapped_column(Integer, nullable=True)
     updated_at: Mapped[datetime] = mapped_column(default=utcnow, onupdate=utcnow)
 
     catalog_entry: Mapped[ModelCatalogEntry] = relationship(back_populates="role_bindings")

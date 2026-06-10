@@ -129,10 +129,15 @@ class SkillRuntimeEvents(StrEnum):
 
 
 class JobLifecycleEvents(StrEnum):
-    """Phase 6 job lifecycle/reclaim event types."""
+    """Job lifecycle, retry, and cancellation event types."""
 
     reclaimed = "job.reclaimed"
     reclaim_exhausted = "job.reclaim_exhausted"
+    attempt_started = "job.attempt_started"
+    attempt_failed = "job.attempt_failed"
+    retry_scheduled = "job.retry_scheduled"
+    cancel_requested = "job.cancel_requested"
+    timeout_signalled = "job.timeout_signalled"
 
 
 class AutonomyEvents(StrEnum):

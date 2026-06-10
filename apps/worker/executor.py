@@ -2,12 +2,16 @@
 
 from __future__ import annotations
 
+import traceback
 from collections.abc import Callable
 
+from libs.core.errors import classify_exception
 from libs.core.logging import get_logger
-from libs.core.operators import OperatorInput, OperatorResult
+from libs.core.operators import OperatorFailure, OperatorInput, OperatorResult
 
 log = get_logger("worker.executor")
+
+_TRACEBACK_CAP_CHARS = 20_000
 
 # ---------------------------------------------------------------------------
 # Handler type: a callable that receives OperatorInput and returns OperatorResult
@@ -153,8 +157,27 @@ def execute(op_input: OperatorInput) -> OperatorResult:
     try:
         result = handler(op_input)
     except Exception as exc:
-        msg = f"Handler for {op_input.job_type!r} raised: {exc}"
-        log.exception(msg, job_id=str(op_input.job_id), job_type=op_input.job_type)
-        return OperatorResult(success=False, error=msg)
+        msg = f"{type(exc).__qualname__}: {exc}"
+        log.exception(
+            f"Handler for {op_input.job_type!r} raised",
+            job_id=str(op_input.job_id),
+            job_type=op_input.job_type,
+        )
+        return OperatorResult(
+            success=False,
+            error=msg,
+            failure=OperatorFailure(
+                error_class=classify_exception(exc),
+                exc_type=type(exc).__qualname__,
+                traceback=_truncate_traceback(traceback.format_exc()),
+            ),
+        )
 
     return result
+
+
+def _truncate_traceback(tb: str) -> str:
+    """Cap a traceback, keeping the tail (the raising frame matters most)."""
+    if len(tb) <= _TRACEBACK_CAP_CHARS:
+        return tb
+    return "[... traceback truncated ...]\n" + tb[-_TRACEBACK_CAP_CHARS:]

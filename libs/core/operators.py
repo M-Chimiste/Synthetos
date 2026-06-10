@@ -11,6 +11,8 @@ from dataclasses import dataclass, field
 from typing import Any
 from uuid import UUID
 
+from libs.core.errors import ErrorClass
+
 
 @dataclass(frozen=True)
 class OperatorInput:
@@ -21,6 +23,15 @@ class OperatorInput:
     job_id: UUID
     job_type: str
     payload: dict[str, Any] = field(default_factory=dict)
+
+
+@dataclass(frozen=True)
+class OperatorFailure:
+    """Structured detail about an operator exception, used for job retry decisions."""
+
+    error_class: ErrorClass
+    exc_type: str | None = None
+    traceback: str | None = None
 
 
 @dataclass
@@ -44,6 +55,11 @@ class OperatorResult:
 
     # Error message if not successful
     error: str | None = None
+
+    # Structured failure detail (set by the executor when an operator raises).
+    # None for operators that return success=False without raising; the worker
+    # treats those as permanent failures.
+    failure: OperatorFailure | None = None
 
     def add_event(self, event_type: str, payload: dict[str, Any] | None = None) -> None:
         self.events.append({"event_type": event_type, "payload": payload or {}})

@@ -83,9 +83,8 @@ def _prune_experiment_images(*, keep: int) -> dict[str, int]:
     raises `ImageInUseError` which we swallow — we never want to interrupt
     an in-flight experiment to free disk.
     """
-    from docker.errors import APIError
-
     import docker
+    from docker.errors import APIError
 
     client = docker.from_env()
     images = client.images.list(filters={"reference": "synthetos-exp-*"})

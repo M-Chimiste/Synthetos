@@ -437,7 +437,8 @@ def test_protocol_compile_from_loop_pauses_on_network_gate(
                 "mode": "autonomous",
                 "checkpoint_gates": {"before_network_execution": True},
             }
-        }
+        },
+        status="running",
     )
     session_two = _CompileSessionTwo(spec=None, cycle=cycle, budget=budget)
 

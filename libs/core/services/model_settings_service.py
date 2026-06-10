@@ -88,6 +88,11 @@ def catalog_entry_to_role_config(
         if binding is not None and binding.max_tokens is not None
         else entry.default_max_tokens
     )
+    timeout_s = (
+        binding.timeout_s
+        if binding is not None and binding.timeout_s is not None
+        else entry.default_timeout_s
+    )
 
     cfg: dict[str, Any] = {
         "provider": entry.provider_name,
@@ -100,6 +105,8 @@ def catalog_entry_to_role_config(
         cfg["temperature"] = temperature
     if max_tokens is not None:
         cfg["max_tokens"] = max_tokens
+    if timeout_s is not None:
+        cfg["timeout_s"] = timeout_s
     return cfg
 
 

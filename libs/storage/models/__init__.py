@@ -34,6 +34,7 @@ from libs.storage.models.experiment import (
 from libs.storage.models.goals import GoalAttempt, ResearchGoal
 from libs.storage.models.jobs import Job
 from libs.storage.models.lineage import ModelCallRecord
+from libs.storage.models.llm_calls import LLMCall
 from libs.storage.models.orchestrator import ApiToken, OrchestratorClient
 from libs.storage.models.papers import PaperCard
 from libs.storage.models.patterns import (
@@ -74,6 +75,7 @@ __all__ = [
     "HypothesisSession",
     "IngestedDocument",
     "Job",
+    "LLMCall",
     "LoopDecision",
     "MetricFrontier",
     "ModelCallRecord",

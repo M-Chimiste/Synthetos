@@ -74,7 +74,13 @@ async def cancel_job(
     _: None = Depends(require_scope("runs.control")),
     db: AsyncSession = Depends(get_db),
 ) -> JobRead:
-    """Cancel a pending or running job."""
+    """Cancel a job.
+
+    Pending/paused jobs (nothing running) are cancelled immediately. For
+    claimed/running jobs only ``cancel_requested`` is set: the worker's job
+    supervisor observes the flag within its heartbeat interval, interrupts
+    any in-flight LLM call, and acknowledges by marking the job cancelled.
+    """
     result = await db.execute(select(Job).where(Job.id == job_id))
     job = result.scalar_one_or_none()
     if job is None:
@@ -86,9 +92,22 @@ async def cancel_job(
         JobStatus.paused,
     ):
         raise HTTPException(status_code=409, detail=f"Cannot cancel job in status '{job.status}'")
+    charter_id = await _resolve_charter_id_for_job(db, job)
+
+    if job.status in (JobStatus.claimed, JobStatus.running):
+        job.cancel_requested = True
+        await emit_event(
+            db,
+            event_type="job.cancel_requested",
+            charter_id=charter_id,
+            cycle_id=job.cycle_id,
+            payload={"job_id": str(job.id), "job_type": job.job_type},
+        )
+        await db.flush()
+        return JobRead.model_validate(job)
+
     job.status = JobStatus.cancelled
     job.completed_at = utcnow()
-    charter_id = await _resolve_charter_id_for_job(db, job)
     await emit_event(
         db,
         event_type="job_cancelled",

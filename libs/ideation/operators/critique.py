@@ -25,6 +25,7 @@ from libs.ideation.operators._common import (
     mark_failed,
     merge_stats,
 )
+from libs.prompts import render_prompt
 from libs.schemas.model_gateway import ModelRole
 from libs.skills.lineage import record_model_call, record_skill_usage
 from libs.storage.base import get_sync_session_factory
@@ -34,6 +35,9 @@ log = get_logger("ideation.critique")
 
 
 class _CritiqueResult(BaseModel):
+    # 1-based index matching "Hypothesis N" in the input: explicit alignment
+    # instead of relying on output order (small models reorder/skip items).
+    hypothesis_index: int = Field(ge=1)
     strengths: list[str] = Field(default_factory=list)
     weaknesses: list[str] = Field(default_factory=list)
     failure_modes: list[str] = Field(default_factory=list)
@@ -54,13 +58,7 @@ async def _critique_hypotheses(
     """Call the LLM to critique a batch of hypotheses."""
     router = ModelRouter()
     try:
-        system_msg = (
-            "You are a rigorous scientific reviewer. Critique each hypothesis on its "
-            "novelty (how original is it?), feasibility (can it be tested with standard ML "
-            "hardware and methods?), and impact (how significant would confirmation be?). "
-            "Score each dimension from 0.0 to 1.0. Identify strengths, weaknesses, "
-            "and plausible failure modes."
-        )
+        system_msg = render_prompt("ideation.hypothesis_critique")
         system_msg = join_skill_prompts(system_msg, skill_prompt) or system_msg
         hypotheses_text = "\n\n".join(
             f"Hypothesis {i + 1}: {h['title']}\n"
@@ -171,9 +169,19 @@ def hypothesis_critique_operator(op_input: OperatorInput) -> OperatorResult:
             model_id=str(role_cfg.get("model", "unknown")),
         )
 
-        # Apply critiques to cards
+        # Apply critiques to cards, matched by explicit hypothesis_index
+        # (the model may return them out of order or drop one).
         critiqued_count = 0
-        for card, critique in zip(cards, critique_set.critiques, strict=False):
+        by_index = {c.hypothesis_index: c for c in critique_set.critiques}
+        for i, card in enumerate(cards, start=1):
+            critique = by_index.get(i)
+            if critique is None:
+                log.warning(
+                    "critique_missing_for_hypothesis",
+                    hypothesis_index=i,
+                    card_id=str(card.id),
+                )
+                continue
             card.critique = {
                 "strengths": critique.strengths,
                 "weaknesses": critique.weaknesses,
