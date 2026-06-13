@@ -62,6 +62,8 @@ class OpenAICompatAdapter:
         self.extra_body = dict(extra_body or {})
         self.strip_reasoning_tags = strip_reasoning_tags
         self.sampling = dict(sampling or {})
+        self._json_schema_supported: bool | None = None
+        self._json_schema_fallback_logged = False
         self._client = httpx.AsyncClient(
             base_url=self.base_url,
             headers={
@@ -87,16 +89,29 @@ class OpenAICompatAdapter:
         payload.update(self.extra_body)
         return payload
 
-    async def _post(self, payload: dict[str, Any]) -> dict[str, Any]:
+    async def _post(
+        self,
+        payload: dict[str, Any],
+        *,
+        expected_http_statuses: range | None = None,
+    ) -> dict[str, Any]:
         try:
             resp = await self._client.post(self.chat_completions_path, json=payload)
             resp.raise_for_status()
         except httpx.HTTPStatusError as exc:
-            log.error(
-                "openai_compat.http_error",
-                status=exc.response.status_code,
-                body=exc.response.text[:500],
-            )
+            status = exc.response.status_code
+            if expected_http_statuses is not None and status in expected_http_statuses:
+                log.debug(
+                    "openai_compat.expected_http_error",
+                    status=status,
+                    body=exc.response.text[:500],
+                )
+            else:
+                log.error(
+                    "openai_compat.http_error",
+                    status=status,
+                    body=exc.response.text[:500],
+                )
             raise
         except httpx.RequestError as exc:
             log.error("openai_compat.request_error", error=str(exc))
@@ -174,19 +189,34 @@ class OpenAICompatAdapter:
         )
 
         start = time.monotonic()
-        try:
-            data = await self._post(payload)
-        except httpx.HTTPStatusError as exc:
-            if not 400 <= exc.response.status_code < 500:
-                raise  # 5xx is a transport problem, not a capability problem
-            log.info(
-                "openai_compat.json_schema_unsupported, falling back to prompt schema",
-                model=self.model,
-                status=exc.response.status_code,
-            )
+        if self._json_schema_supported is False:
             data = await self._post(
                 self._prompt_schema_payload(messages, schema, temperature, max_tokens)
             )
+        else:
+            try:
+                data = await self._post(payload, expected_http_statuses=range(400, 500))
+                self._json_schema_supported = True
+            except httpx.HTTPStatusError as exc:
+                if not 400 <= exc.response.status_code < 500:
+                    raise  # 5xx is a transport problem, not a capability problem
+                if not self._json_schema_fallback_logged:
+                    log.debug(
+                        "openai_compat.json_schema_unsupported, falling back to prompt schema",
+                        model=self.model,
+                        status=exc.response.status_code,
+                    )
+                    self._json_schema_fallback_logged = True
+                else:
+                    log.debug(
+                        "openai_compat.json_schema_unsupported",
+                        model=self.model,
+                        status=exc.response.status_code,
+                    )
+                data = await self._post(
+                    self._prompt_schema_payload(messages, schema, temperature, max_tokens)
+                )
+                self._json_schema_supported = False
 
         response = self._to_response(data, int((time.monotonic() - start) * 1000))
         return StructuredCompletion(

@@ -4,12 +4,27 @@ import httpx
 import pytest
 from pydantic import BaseModel
 
+from libs.adapters.llm import openai_compat as openai_compat_module
 from libs.adapters.llm.errors import LLMTruncationError, LLMValidationError
 from libs.adapters.llm.openai_compat import OpenAICompatAdapter
 
 
 class TinyResponse(BaseModel):
     status: str
+
+
+class SpyLog:
+    def __init__(self) -> None:
+        self.records: list[tuple[str, str, dict]] = []
+
+    def debug(self, event: str, **kwargs) -> None:
+        self.records.append(("debug", event, kwargs))
+
+    def info(self, event: str, **kwargs) -> None:
+        self.records.append(("info", event, kwargs))
+
+    def error(self, event: str, **kwargs) -> None:
+        self.records.append(("error", event, kwargs))
 
 
 @pytest.mark.asyncio
@@ -160,6 +175,63 @@ async def test_openai_compat_4xx_falls_back_to_prompt_schema(httpx_mock) -> None
     assert "response_format" not in fallback_body
     assert "Respond ONLY with one valid JSON object" in fallback_body
     assert result.parsed.status == "ok"
+
+
+@pytest.mark.asyncio
+async def test_openai_compat_schema_fallback_is_quiet_and_cached(
+    httpx_mock,
+    monkeypatch,
+) -> None:
+    """Expected response_format 4xx stays below info and skips future probes."""
+    spy_log = SpyLog()
+    monkeypatch.setattr(openai_compat_module, "log", spy_log)
+    httpx_mock.add_response(
+        method="POST",
+        url="http://local.test/v1/chat/completions",
+        status_code=400,
+        text='{"error":{"message":"Failed to initialize samplers"}}',
+    )
+    for _ in range(2):
+        httpx_mock.add_response(
+            method="POST",
+            url="http://local.test/v1/chat/completions",
+            json={
+                "model": "local-model",
+                "choices": [
+                    {"message": {"content": '{"status":"ok"}'}, "finish_reason": "stop"}
+                ],
+            },
+        )
+    adapter = OpenAICompatAdapter(base_url="http://local.test/v1", model="local-model")
+
+    first = await adapter.complete_structured(
+        [{"role": "user", "content": "ping"}],
+        TinyResponse,
+    )
+    second = await adapter.complete_structured(
+        [{"role": "user", "content": "ping again"}],
+        TinyResponse,
+    )
+    await adapter.close()
+
+    requests = httpx_mock.get_requests()
+    assert len(requests) == 3
+    assert "response_format" in requests[0].read().decode()
+    assert "response_format" not in requests[1].read().decode()
+    assert "response_format" not in requests[2].read().decode()
+    assert first.parsed.status == "ok"
+    assert second.parsed.status == "ok"
+    assert not [
+        record
+        for record in spy_log.records
+        if record[0] == "error" and record[1] == "openai_compat.http_error"
+    ]
+    assert not [
+        record
+        for record in spy_log.records
+        if record[0] == "info"
+        and record[1] == "openai_compat.json_schema_unsupported, falling back to prompt schema"
+    ]
 
 
 @pytest.mark.asyncio

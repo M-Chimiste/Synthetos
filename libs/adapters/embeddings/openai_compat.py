@@ -6,6 +6,7 @@ from typing import Any
 
 import httpx
 
+from libs.core.errors import RetryableOperatorError
 from libs.core.logging import get_logger
 
 log = get_logger(__name__)
@@ -62,15 +63,20 @@ class OpenAICompatEmbeddingAdapter:
             resp = await self._client.post("/v1/embeddings", json=payload)
             resp.raise_for_status()
         except httpx.HTTPStatusError as exc:
+            status = exc.response.status_code
             log.error(
                 "embedding.http_error",
-                status=exc.response.status_code,
+                status=status,
                 body=exc.response.text[:500],
             )
+            if status == 429 or status >= 500:
+                raise RetryableOperatorError(
+                    f"embedding endpoint HTTP {status}: {exc.response.text[:200]}"
+                ) from exc
             raise
         except httpx.RequestError as exc:
             log.error("embedding.request_error", error=str(exc))
-            raise
+            raise RetryableOperatorError(f"embedding endpoint request failed: {exc}") from exc
 
         data = resp.json()
         # Sort by index to ensure correct ordering

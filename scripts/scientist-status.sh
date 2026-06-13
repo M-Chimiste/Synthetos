@@ -102,6 +102,15 @@ strip_ansi() {
   sed -E $'s/\x1b\\[[0-9;]*[A-Za-z]//g'
 }
 
+pid_env_value() {
+  local pid="$1"
+  local key="$2"
+  if [[ -r "/proc/$pid/environ" ]]; then
+    tr '\0' '\n' <"/proc/$pid/environ" 2>/dev/null \
+      | awk -F= -v k="$key" '$1 == k {print substr($0, length(k) + 2); exit}'
+  fi
+}
+
 latest_cycle_id() {
   psql_value "select id from research_cycles order by created_at desc limit 1;"
 }
@@ -128,17 +137,47 @@ show_workers() {
     return
   fi
 
-  printf '%-44s %-8s %-10s %s\n' "name" "state" "elapsed" "log"
+  printf '%-44s %-8s %-10s %-38s %s\n' "name" "state" "elapsed" "model_config" "log"
   for pid_file in "${pid_files[@]}"; do
-    local name pid log elapsed
+    local name pid log elapsed model_config
     name="$(basename "$pid_file" .pid)"
     pid="$(cat "$pid_file" 2>/dev/null || true)"
     log="$ROOT/.dev/logs/$name.log"
     if [[ -n "$pid" ]] && kill -0 "$pid" >/dev/null 2>&1; then
       elapsed="$(ps -p "$pid" -o etime= 2>/dev/null | xargs || true)"
-      printf '%-44s %-8s %-10s %s\n' "$name" "running" "${elapsed:-?}" "$log"
+      model_config="$(pid_env_value "$pid" "LAB_MODEL_CONFIG")"
+      [[ -z "$model_config" ]] && model_config="$(pid_env_value "$pid" "LAB_MODEL_CONFIG_PATH")"
+      printf '%-44s %-8s %-10s %-38s %s\n' \
+        "$name" "running" "${elapsed:-?}" "${model_config:--}" "$log"
     else
-      printf '%-44s %-8s %-10s %s\n' "$name" "stale" "-" "$log"
+      printf '%-44s %-8s %-10s %-38s %s\n' "$name" "stale" "-" "-" "$log"
+    fi
+  done
+}
+
+show_worker_config_warnings() {
+  local cycle_id="$1"
+  local pilot
+  pilot="$(psql_value "
+    select coalesce(config->'pilot'->>'problem_id', '')
+    from research_cycles
+    where id = '$cycle_id'::uuid;
+  ")"
+  [[ -z "$pilot" ]] && return
+
+  shopt -s nullglob
+  local pid_files=("$ROOT"/.dev/pids/worker*.pid)
+  shopt -u nullglob
+  for pid_file in "${pid_files[@]}"; do
+    local name pid model_config
+    name="$(basename "$pid_file" .pid)"
+    pid="$(cat "$pid_file" 2>/dev/null || true)"
+    if [[ -n "$pid" ]] && kill -0 "$pid" >/dev/null 2>&1; then
+      model_config="$(pid_env_value "$pid" "LAB_MODEL_CONFIG")"
+      [[ -z "$model_config" ]] && model_config="$(pid_env_value "$pid" "LAB_MODEL_CONFIG_PATH")"
+      if [[ -z "$model_config" ]]; then
+        echo "Warning: pilot cycle '$pilot' is selected but worker '$name' has no LAB_MODEL_CONFIG set."
+      fi
     fi
   done
 }
@@ -324,6 +363,7 @@ render_once() {
 
   show_services
   show_workers
+  show_worker_config_warnings "$cycle_id"
   show_cycle "$cycle_id"
   show_job_status "$cycle_id"
   show_runs "$cycle_id"
