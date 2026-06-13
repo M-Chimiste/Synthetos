@@ -111,7 +111,7 @@ def analysis_evidence_operator(op_input: OperatorInput) -> OperatorResult:
                 CycleStatus.analysis_ready,
                 CycleStatus.evidence_ready,
             )
-            cycle.status = CycleStatus.evidence_ready.value
+            cycle.status = CycleStatus.evidence_ready
 
         # Mark session completed
         from libs.core.clock import utcnow

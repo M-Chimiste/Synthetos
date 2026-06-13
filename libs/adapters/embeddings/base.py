@@ -16,3 +16,7 @@ class EmbeddingAdapter(Protocol):
     async def embed_batch(self, texts: list[str], *, batch_size: int = 64) -> list[list[float]]:
         """Compute embeddings in batches, returning all results concatenated."""
         ...
+
+    async def close(self) -> None:
+        """Release adapter resources."""
+        ...

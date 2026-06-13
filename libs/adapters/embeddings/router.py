@@ -66,7 +66,7 @@ class EmbeddingsRouter:
             )
         return dict(embeddings[name])
 
-    def _build_adapter(self, profile: dict[str, Any]) -> OpenAICompatEmbeddingAdapter:
+    def _build_adapter(self, profile: dict[str, Any]) -> EmbeddingAdapter:
         provider = profile.get("provider", "local")
         providers = self._config.get("providers", {})
         provider_cfg = dict(providers.get(provider, {}))
@@ -114,7 +114,7 @@ class EmbeddingsRouter:
             api_key=profile.get("api_key", "not-needed"),
         )
 
-    def get(self, name: str = "default") -> OpenAICompatEmbeddingAdapter:
+    def get(self, name: str = "default") -> EmbeddingAdapter:
         if name not in self._adapters:
             profile = self._get_profile(name)
             log.info(

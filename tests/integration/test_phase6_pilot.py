@@ -19,6 +19,8 @@ from libs.pilot import runner as pilot_runner
 from libs.pilot.fixture import load_fixture
 from libs.schemas.discovery import DiscoverySessionRead
 from libs.storage.models.discovery import DiscoverySession
+from libs.storage.models.goals import GoalAttempt, ResearchGoal
+from libs.storage.models.research import ResearchCycle
 
 FIXTURE_ROOT = Path("configs/problems")
 
@@ -94,6 +96,17 @@ def test_start_pilot_creates_cycle_and_kicks_off_discovery(monkeypatch) -> None:
     assert captured["cycle_id"] == handle.cycle_id
     assert captured["problem_id"] == fixture.problem_id
     assert any(getattr(obj, "charter_id", None) == charter.id for obj in session.added)
+    goal = next(obj for obj in session.added if isinstance(obj, ResearchGoal))
+    attempt = next(obj for obj in session.added if isinstance(obj, GoalAttempt))
+    cycle = next(obj for obj in session.added if isinstance(obj, ResearchCycle))
+    assert attempt.goal_id == goal.id
+    assert attempt.cycle_id == cycle.id
+    assert cycle.config["goal"]["goal_id"] == str(goal.id)
+    assert cycle.config["goal"]["attempt_number"] == 1
+    assert any(
+        criterion["check_type"] == "verification_passed"
+        for criterion in goal.success_criteria
+    )
 
 
 async def test_discovery_kickoff_accepts_uuid_utils_cycle_charter_id(monkeypatch) -> None:

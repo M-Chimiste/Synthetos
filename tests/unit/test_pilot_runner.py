@@ -9,7 +9,12 @@ from __future__ import annotations
 from pathlib import Path
 
 from libs.pilot.fixture import load_fixture
-from libs.pilot.runner import _cycle_config, _discovery_profile
+from libs.pilot.runner import (
+    _cycle_config,
+    _discovery_profile,
+    _goal_policy,
+    _goal_success_criteria,
+)
 
 FIXTURE_ROOT = Path("configs/problems")
 
@@ -40,3 +45,26 @@ def test_discovery_profile_uses_problem_statement_and_domain_hints() -> None:
     assert profile.source_scope is not None
     assert profile.source_scope["domain"] == "synthetic-classification"
     assert profile.source_scope["search_hints"]["synonyms"] == ["synthetic-classification"]
+
+
+def test_goal_contract_includes_fixture_artifacts_and_protocol() -> None:
+    fixture = load_fixture(FIXTURE_ROOT / "diffusionblocks_e2e")
+
+    criteria = _goal_success_criteria(fixture)
+    policy = _goal_policy(fixture)
+
+    artifact_names = {
+        criterion["params"]["artifact_name"]
+        for criterion in criteria
+        if criterion["check_type"] == "artifact_exists"
+    }
+    assert {"metrics.json", "model_weights.pt", "report.md"} <= artifact_names
+    assert (
+        policy["protocol"]["base_image"]
+        == "pytorch/pytorch:2.7.0-cuda12.8-cudnn9-runtime"
+    )
+    assert policy["pilot"]["expected"]["required_artifacts"] == [
+        "metrics.json",
+        "model_weights.pt",
+        "report.md",
+    ]

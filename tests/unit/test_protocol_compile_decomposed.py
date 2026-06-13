@@ -132,6 +132,7 @@ def test_chain_makes_exactly_two_requests_and_reassembles(httpx_mock, routed_to_
     assert spec.code_plan["entry_point"] == "run_experiment.py"
     assert "run_experiment.py" in spec.code_plan["files"]
     assert spec.code_plan["dependencies"] == []
+    assert spec.code_plan["expected_artifacts"] == _PLAN_JSON["expected_artifacts"]
 
     # The reassembled dict passes the unchanged downstream validation.
     normalized = _normalize_compiled_spec(spec.model_dump(), fallback_base_image="synthetos:latest")
@@ -158,6 +159,40 @@ def test_plan_prompt_carries_hypothesis_and_code_prompt_carries_plan(
     # Stage 2 receives the plan, not the raw hypothesis.
     assert _PLAN_JSON["approach_summary"] in code_user
     assert "val_loss" in code_user
+
+
+def test_fixture_expected_artifacts_are_forced_into_plan_and_spec(
+    httpx_mock,
+    routed_to_mock,
+) -> None:
+    httpx_mock.add_response(method="POST", url=CHAT_URL, json=_ok(_PLAN_JSON))
+    httpx_mock.add_response(method="POST", url=CHAT_URL, json=_ok(_CODE_JSON))
+
+    fixture_expected = {
+        "required_artifacts": ["metrics.json", "model_weights.pt", "report.md"],
+        "reference_sources": ["https://arxiv.org/html/2506.14202v3"],
+    }
+    spec_set, _ = asyncio.run(
+        _compile_specs(
+            [_HYPOTHESIS],
+            "Improve tiny LM training.",
+            None,
+            None,
+            None,
+            fixture_expected=fixture_expected,
+        )
+    )
+
+    requests = httpx_mock.get_requests()
+    plan_user = json.loads(requests[0].read())["messages"][-1]["content"]
+    code_user = json.loads(requests[1].read())["messages"][-1]["content"]
+    artifact_names = {artifact["name"] for artifact in spec_set.specs[0].expected_artifacts}
+
+    assert "Pilot fixture expectations" in plan_user
+    assert "model_weights.pt" in plan_user
+    assert "report.md" in code_user
+    assert artifact_names == {"metrics.json", "model_weights.pt", "report.md"}
+    assert spec_set.specs[0].code_plan["expected_artifacts"] == spec_set.specs[0].expected_artifacts
 
 
 def test_failed_card_chain_is_skipped_not_fatal(httpx_mock, routed_to_mock) -> None:

@@ -186,6 +186,95 @@ def _variation_hint(variation_context: dict[str, Any] | None) -> str:
     return hint
 
 
+def _fixture_required_artifacts(fixture_expected: dict[str, Any] | None) -> list[dict[str, Any]]:
+    """Normalize fixture expected.required_artifacts into spec artifact dicts."""
+    if not fixture_expected:
+        return []
+    raw_artifacts = fixture_expected.get("required_artifacts") or []
+    if not isinstance(raw_artifacts, list):
+        return []
+
+    artifacts: list[dict[str, Any]] = []
+    for raw in raw_artifacts:
+        if isinstance(raw, str):
+            name = raw.strip()
+            if name:
+                artifacts.append({"name": name, "required": True})
+            continue
+        if not isinstance(raw, dict):
+            continue
+        name = str(raw.get("name") or raw.get("path") or "").strip()
+        if not name:
+            continue
+        artifact = dict(raw)
+        artifact["name"] = name.rsplit("/", 1)[-1]
+        artifact["required"] = bool(raw.get("required", True))
+        artifacts.append(artifact)
+    return artifacts
+
+
+def _artifact_key(artifact: dict[str, Any]) -> str:
+    name = str(artifact.get("name") or artifact.get("path") or "").strip()
+    return name.rsplit("/", 1)[-1]
+
+
+def _merge_expected_artifacts(
+    *artifact_groups: list[dict[str, Any]],
+) -> list[dict[str, Any]]:
+    """Merge plan-authored artifacts with fixture-required artifacts by filename."""
+    merged: dict[str, dict[str, Any]] = {}
+    for group in artifact_groups:
+        for raw_artifact in group:
+            if not isinstance(raw_artifact, dict):
+                continue
+            key = _artifact_key(raw_artifact)
+            if not key:
+                continue
+            artifact = dict(raw_artifact)
+            artifact["name"] = key
+            artifact["required"] = bool(raw_artifact.get("required", True))
+            existing = merged.get(key)
+            if existing is None:
+                merged[key] = artifact
+            else:
+                existing["required"] = bool(existing.get("required", True)) or bool(
+                    artifact.get("required", True)
+                )
+                for optional_key in ("path", "type"):
+                    if optional_key not in existing and optional_key in artifact:
+                        existing[optional_key] = artifact[optional_key]
+    return list(merged.values())
+
+
+def _format_expected_artifacts(artifacts: list[dict[str, Any]]) -> str:
+    if not artifacts:
+        return "- metrics.json (required: True)"
+    lines = []
+    for artifact in artifacts:
+        name = str(artifact.get("name") or artifact.get("path") or "").strip()
+        required = bool(artifact.get("required", True))
+        lines.append(f"- {name} (required: {required})")
+    return "\n".join(lines)
+
+
+def _fixture_expectation_hint(fixture_expected: dict[str, Any] | None) -> str:
+    if not fixture_expected:
+        return ""
+    required_artifacts = _fixture_required_artifacts(fixture_expected)
+    reference_sources = fixture_expected.get("reference_sources") or []
+    lines = ["Pilot fixture expectations:"]
+    if required_artifacts:
+        lines.append("Required /artifacts files:")
+        lines.extend(f"- {artifact['name']}" for artifact in required_artifacts)
+    if isinstance(reference_sources, list) and reference_sources:
+        lines.append("Reference sources that should inform the experiment:")
+        lines.extend(f"- {source}" for source in reference_sources)
+    lines.append(
+        "Copy every required artifact into expected_artifacts and design code that writes them."
+    )
+    return "\n".join(lines)
+
+
 async def _compile_one_spec(
     router: ModelRouter,
     *,
@@ -196,6 +285,7 @@ async def _compile_one_spec(
     base_image: str | None,
     skill_prompt: str | None,
     variation_context: dict[str, Any] | None,
+    fixture_expected: dict[str, Any] | None,
 ) -> _CompiledSpec:
     """Run the plan -> code chain for one hypothesis and assemble the spec.
 
@@ -216,6 +306,7 @@ async def _compile_one_spec(
         f"feasibility: {hypothesis.get('feasibility_score')}, "
         f"impact: {hypothesis.get('impact_score')}"
         f"{hw_hint}\n\n"
+        f"{_fixture_expectation_hint(fixture_expected)}\n\n"
         "Design the experiment plan for this hypothesis."
         f"{_variation_hint(variation_context)}"
     )
@@ -238,10 +329,11 @@ async def _compile_one_spec(
         + ")"
         for m in plan.metrics
     )
-    artifacts_text = (
-        "\n".join(f"- {a.name} (required: {a.required})" for a in plan.expected_artifacts)
-        or "- metrics.json (required: True)"
+    expected_artifacts = _merge_expected_artifacts(
+        [a.model_dump() for a in plan.expected_artifacts],
+        _fixture_required_artifacts(fixture_expected),
     )
+    artifacts_text = _format_expected_artifacts(expected_artifacts)
     stop_text = "\n".join(f"- {s.description}" for s in plan.stop_conditions)
     code_user = (
         f"Experiment: {plan.title}\n"
@@ -270,12 +362,13 @@ async def _compile_one_spec(
         baseline=plan.baseline.model_dump(),
         controls=[c.model_dump() for c in plan.controls],
         metrics=[m.model_dump() for m in plan.metrics],
-        expected_artifacts=[a.model_dump() for a in plan.expected_artifacts],
+        expected_artifacts=expected_artifacts,
         stop_conditions=[s.model_dump() for s in plan.stop_conditions],
         code_plan={
             "entry_point": code.entry_point,
             "files": {f.path: f.content for f in code.files},
             "dependencies": plan.dependencies,
+            "expected_artifacts": expected_artifacts,
         },
         base_image=base_image,
         build_recipe=None,  # synthesized deterministically in normalization
@@ -322,6 +415,7 @@ async def _compile_specs(
     base_image: str | None,
     skill_prompt: str | None,
     variation_context: dict[str, Any] | None = None,
+    fixture_expected: dict[str, Any] | None = None,
 ) -> tuple[_SpecSet, dict[str, Any]]:
     """Compile hypotheses into executable experiment specs, one chain per card.
 
@@ -343,6 +437,7 @@ async def _compile_specs(
                     base_image=base_image,
                     skill_prompt=skill_prompt,
                     variation_context=variation_context,
+                    fixture_expected=fixture_expected,
                 )
                 specs.append(spec)
             except (OperationCancelled, OperatorTimeout):
@@ -388,7 +483,14 @@ def protocol_compile_operator(op_input: OperatorInput) -> OperatorResult:
         charter = db.get(ResearchCharter, hs.charter_id)
         problem_statement = charter.problem_statement if charter else ""
         cycle = db.get(ResearchCycle, hs.cycle_id)
-        cycle_autonomy = (cycle.config or {}).get("autonomy", {}) if cycle else {}
+        cycle_config = (cycle.config or {}) if cycle else {}
+        cycle_autonomy = cycle_config.get("autonomy", {})
+        cycle_pilot = cycle_config.get("pilot", {})
+        fixture_expected = (
+            cycle_pilot.get("expected", {})
+            if isinstance(cycle_pilot, dict)
+            else {}
+        )
         cycle_protocol = cycle_autonomy.get("protocol") or {}
         if hardware_profile is None:
             hardware_profile = cycle_protocol.get("hardware_profile") or cycle_autonomy.get(
@@ -495,6 +597,7 @@ def protocol_compile_operator(op_input: OperatorInput) -> OperatorResult:
                     base_image,
                     combined_skill_prompt,
                     variation_context=variation_context,
+                    fixture_expected=fixture_expected,
                 )
             )
         except Exception as exc:

@@ -112,6 +112,22 @@ Hypothesis lifecycle statuses (`active|promising|stalled|deprioritized|validated
 
 Spec repetition detection (`libs/autonomy/repetition.py`) fingerprints `(code_plan, controls, metrics, baseline)` and escalates `continue_current → vary_parameters` on exact duplicates, or to `pivot_hypothesis` on 3+ near-duplicates in a row. Context summaries are generated every `summary_interval` runs (default 5) and fed into variation prompts.
 
+### Pattern Memory (Phase 6 / "Mnemosyne")
+
+Cross-cycle distilled memory in `libs/patterns/`. The `consolidate_patterns` operator mines completed-cycle artifacts (`FailurePostmortem`, `RemediationAction`, `MetricFrontier`, `LoopDecision`, `HypothesisCard`) into `CanonicalPattern` rows, deduplicated by a stable `content_key` (SHA-256 of normalized attributes per pattern type: failure / remediation / signal_trajectory / successful_line / retrieval_heuristic) via upsert, with provenance in `PatternObservation`. Patterns carry a 768-dim embedding for semantic retrieval and a `confidence` that the `decay_patterns` operator ages over time.
+
+Operators bias their prompts by calling `inject_patterns()` (`libs/patterns/injection.py`) — callers today include discovery search, ideation generate, verification check, remediation, and `loop_decide`. Injection applies an approval policy: `auto` patterns pass when `effective_confidence >= min_confidence_auto` (0.7 default); `curated` patterns require a `PatternApproval` row (charter-scoped or global).
+
+`decay_patterns` is enqueued by the worker's periodic loop (`apps/worker/periodic.py`), gated idempotently via `PeriodicJobState` (`pattern_decay_interval_h`). That same loop reclaims stale jobs whose worker died mid-execution. Local-model presets for this workflow live in `configs/models.mnemosyne.yaml` (and `models.mnemosyne-e2e.yaml`).
+
+### Goal Mode
+
+`libs/goals/` adds multi-attempt research objectives on top of the cycle machinery. A `ResearchGoal` (with JSONB `success_criteria`) spawns successive `GoalAttempt` rows, each bound 1:1 to a cycle. Operators: `goal_advance` (start the next attempt cycle), `goal_evaluate` (grade a finished cycle against the criteria), `goal_report` (synthesize the cross-attempt ledger). Goal-advance side effects fire only on a job's FINAL failure (see Job Reliability). Service logic is in `libs/core/services/goal_service.py`; drive it via `synthetos goal`.
+
+### Pilot Harness
+
+`libs/pilot/` runs seeded problems through the full loop end-to-end for correctness testing. `fixture.py` loads/validates a `configs/problems/<id>/` fixture (charter + autonomy + seeds + `expected.yaml`), `runner.py` idempotently creates the charter/cycle and enqueues discovery, and `evaluation.py` grades final cycle state against `expected.yaml`. Driven by `synthetos pilot run|evaluate <problem_id>`.
+
 ### Event Sourcing
 
 All state changes emit `DomainEvent` rows (`libs/core/events.py`, `libs/storage/models/events.py`). Events carry charter_id, cycle_id, actor info, and JSON payloads. The API exposes an SSE stream for live telemetry.
@@ -141,7 +157,7 @@ The async DB URL requires `postgresql+psycopg://` prefix (not plain `postgresql:
 ## Monorepo Layout
 
 - `apps/api/` — FastAPI server, routers mount under `/api/v1`, auth in `auth.py`, deps in `deps.py`
-- `apps/worker/` — Polling worker with `claimer.py` (job locking), `heartbeat.py`, `executor.py` (operator dispatch)
+- `apps/worker/` — Polling worker with `claimer.py` (job locking), `heartbeat.py` (`JobSupervisor`), `executor.py` (operator dispatch/registration), `periodic.py` (stale-job reclaim + pattern-decay enqueue)
 - `apps/cli/` — Typer CLI, entry point is `synthetos` command, subcommands in `commands/`
 - `apps/web/` — React 19 + TypeScript + Vite + TanStack Router (file-based, auto-generates `routeTree.gen.ts`) + TanStack Query + Tailwind CSS 4. Vite proxies `/api` to `localhost:8000`.
 - `libs/schemas/` — Pydantic v2 request/response models (API boundary)
@@ -156,10 +172,14 @@ The async DB URL requires `postgresql+psycopg://` prefix (not plain `postgresql:
 - `libs/verification/` — Verification check and failure postmortem operators
 - `libs/remediation/` — Phase 4 auto-remediation, directional signal, frontier, and recommendation operators
 - `libs/autonomy/` — Phase 5 autonomous loop: policy, budget, gates, hypothesis lifecycle, repetition detection, context summarization, completion reporting, `loop_decide`/`loop_report` operators
-- `libs/prompts/` — Versioned prompt template loader (frontmatter + jinja2)
+- `libs/patterns/` — Phase 6 canonical pattern memory: `consolidate_patterns`/`decay_patterns` operators, content-key dedup, embedding retrieval, `inject_patterns()` (see Pattern Memory above)
+- `libs/goals/` — Goal mode: `goal_advance`/`goal_evaluate`/`goal_report` operators over `ResearchGoal`/`GoalAttempt` (see Goal Mode above)
+- `libs/pilot/` — Fixture-driven end-to-end harness (`fixture.py`/`runner.py`/`evaluation.py`); see Pilot Harness above
+- `libs/orchestration/` — Reserved namespace (only `__init__.py` today)
+- `libs/prompts/` — Versioned prompt template loader (frontmatter + jinja2); resolves `<domain>.<name>` → `prompts/<domain>/<name>/vN.md`, preferring per-model `vN.<model-slug>.md` variants
 - `libs/skills/` — Skill loader, parser, validator, registry
 - `skills/` — First-party skill.md packages
-- `configs/` — YAML configs (models.yaml, discovery/, policies/, problems/)
+- `configs/` — YAML configs (`models.yaml` + `models.mnemosyne*.yaml` variants, `discovery/`, `policies/`, `problems/` pilot fixtures, `skills/`)
 - `prompts/` — Versioned system-prompt templates (`<domain>/<name>/v<N>.md`); see `prompts/README.md`
 
 ### API Error Mapping

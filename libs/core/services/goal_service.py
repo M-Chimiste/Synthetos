@@ -312,31 +312,40 @@ def start_goal_attempt_sync(
     actor_id: str | None = None,
 ) -> GoalAttempt:
     """Create and kick off a new cycle attempt for a goal."""
+    raw_policy = dict(goal.policy or {})
     max_attempt = session.execute(
         select(func.coalesce(func.max(GoalAttempt.attempt_number), 0)).where(
             GoalAttempt.goal_id == goal.id
         )
     ).scalar_one()
     attempt_number = int(max_attempt) + 1
-    policy = GoalPolicy.model_validate(goal.policy or {})
+    policy = GoalPolicy.model_validate(raw_policy)
     autonomy = dict(policy.autonomy or {})
     if not autonomy:
         autonomy = {"mode": "autonomous", "max_total_runs": 4}
+    cycle_config: dict[str, Any] = {
+        "autonomy": autonomy,
+        "goal": {
+            "goal_id": str(goal.id),
+            "attempt_number": attempt_number,
+            "goal_statement": goal.goal_statement,
+            "success_criteria": goal.success_criteria,
+            "prior_attempt_summary": prior_attempt_summary,
+        },
+    }
+    # Pilot goals carry fixture metadata outside GoalPolicy's typed fields.
+    # Preserve it on follow-up attempts so protocol compilation still sees the
+    # expected artifacts and other evaluation contract from the fixture.
+    for key in ("pilot", "seeds"):
+        value = raw_policy.get(key)
+        if isinstance(value, dict):
+            cycle_config[key] = value
 
     cycle = ResearchCycle(
         id=uuid7(),
         charter_id=goal.charter_id,
         status=CycleStatus.created,
-        config={
-            "autonomy": autonomy,
-            "goal": {
-                "goal_id": str(goal.id),
-                "attempt_number": attempt_number,
-                "goal_statement": goal.goal_statement,
-                "success_criteria": goal.success_criteria,
-                "prior_attempt_summary": prior_attempt_summary,
-            },
-        },
+        config=cycle_config,
         created_at=utcnow(),
         updated_at=utcnow(),
     )
@@ -1045,12 +1054,13 @@ def _handle_goal_pre_run_failure(
         }
 
     if plan.proposed_action == "stop_failed":
+        completed_at = utcnow()
         attempt.status = "failed"
-        attempt.completed_at = utcnow()
-        attempt.updated_at = attempt.completed_at
+        attempt.completed_at = completed_at
+        attempt.updated_at = completed_at
         goal.status = GoalStatus.failed.value
-        goal.completed_at = utcnow()
-        goal.updated_at = goal.completed_at
+        goal.completed_at = completed_at
+        goal.updated_at = completed_at
         append_goal_ledger_entry(
             session,
             goal,
@@ -1415,9 +1425,10 @@ def _block_or_next_attempt(
     repair_plan: dict[str, Any] | None = None,
     fingerprint: str | None = None,
 ) -> dict[str, Any]:
+    completed_at = utcnow()
     attempt.status = "blocked"
-    attempt.completed_at = utcnow()
-    attempt.updated_at = attempt.completed_at
+    attempt.completed_at = completed_at
+    attempt.updated_at = completed_at
     evaluation = dict(attempt.evaluation or {})
     evaluation["blocked_reason"] = summary
     evaluation["repair_plan"] = repair_plan
@@ -1448,9 +1459,10 @@ def _block_or_next_attempt(
         actor_type=ActorType.worker,
     )
     if _budget_exhausted(session, goal):
+        goal_completed_at = utcnow()
         goal.status = GoalStatus.exhausted.value
-        goal.completed_at = utcnow()
-        goal.updated_at = goal.completed_at
+        goal.completed_at = goal_completed_at
+        goal.updated_at = goal_completed_at
         paths = write_goal_report(session, goal)
         goal.report_path = paths["markdown"]
         goal.report_json_path = paths["json"]
@@ -1612,10 +1624,11 @@ def _evaluate_one(
             or ""
         )
         op = str(params.get("operator") or params.get("op") or ">=")
-        if params.get("value") is None:
+        threshold_value = params.get("value")
+        if threshold_value is None:
             detail = "metric_threshold missing params.value"
         else:
-            threshold = float(params.get("value"))
+            threshold = float(threshold_value)
             values = [
                 float((run.metrics_output or {})[metric])
                 for run in runs
@@ -1712,7 +1725,7 @@ def _runs_for_cycles(session, cycle_ids: list[UUID]) -> list[RunRecord]:
 
 
 def _read_cycle_report_paths(paths: list[str] | None) -> dict[str, str | None]:
-    out = {"markdown": None, "json": None}
+    out: dict[str, str | None] = {"markdown": None, "json": None}
     for path in paths or []:
         if path.endswith(".md"):
             out["markdown"] = path

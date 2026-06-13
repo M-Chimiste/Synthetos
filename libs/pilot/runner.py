@@ -21,20 +21,21 @@ from __future__ import annotations
 import asyncio
 from dataclasses import dataclass
 from datetime import datetime
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any
 from uuid import UUID
 
 from sqlalchemy import select
 from uuid_utils import uuid7
 
 from libs.core.clock import utcnow
-from libs.core.event_types import AutonomyEvents
+from libs.core.event_types import AutonomyEvents, GoalEvents
 from libs.core.events import emit_event_sync
 from libs.core.services.discovery_service import start_discovery_session_for_cycle
-from libs.core.types import CharterStatus, CycleStatus
+from libs.core.types import ActorType, CharterStatus, CycleStatus, GoalStatus
 from libs.pilot.fixture import PilotFixture
 from libs.schemas.discovery import DiscoveryBudget, ProblemProfileCreate, RerankPolicy
 from libs.storage.base import get_async_session_factory, get_sync_session_factory
+from libs.storage.models.goals import GoalAttempt, ResearchGoal
 from libs.storage.models.research import ResearchCharter, ResearchCycle
 
 if TYPE_CHECKING:
@@ -119,6 +120,178 @@ def _discovery_profile(fixture: PilotFixture) -> ProblemProfileCreate:
     )
 
 
+def _goal_success_criteria(fixture: PilotFixture) -> list[dict[str, Any]]:
+    """Translate the pilot's human fixture contract into goal criteria."""
+    criteria: list[dict[str, Any]] = [
+        {
+            "name": "completed_run",
+            "description": "At least one experiment run completed.",
+            "required": True,
+            "check_type": "completed_run_exists",
+            "params": {},
+            "scope": "cumulative",
+        },
+        {
+            "name": "verification_passed_or_inconclusive",
+            "description": "At least one run reached a non-failed verification verdict.",
+            "required": True,
+            "check_type": "verification_passed",
+            "params": {"accepted_verdicts": ["passed", "inconclusive"]},
+            "scope": "cumulative",
+        },
+    ]
+
+    reference_metrics = fixture.expected.get("reference_metrics") or {}
+    if isinstance(reference_metrics, dict):
+        for metric_name, threshold in sorted(reference_metrics.items()):
+            metric = str(metric_name).strip()
+            if not metric:
+                continue
+            if isinstance(threshold, int | float):
+                criteria.append(
+                    {
+                        "name": f"metric_threshold:{metric}",
+                        "description": f"{metric} reaches the fixture threshold.",
+                        "required": True,
+                        "check_type": "metric_threshold",
+                        "params": {
+                            "metric": metric,
+                            "operator": ">=",
+                            "value": threshold,
+                        },
+                        "scope": "cumulative",
+                    }
+                )
+            else:
+                criteria.append(
+                    {
+                        "name": f"metric_present:{metric}",
+                        "description": f"{metric} is present in run metrics.",
+                        "required": True,
+                        "check_type": "metric_present",
+                        "params": {"metric": metric},
+                        "scope": "cumulative",
+                    }
+                )
+
+    required_artifacts = fixture.expected.get("required_artifacts") or []
+    if isinstance(required_artifacts, list):
+        for raw_artifact in required_artifacts:
+            if isinstance(raw_artifact, dict):
+                artifact_name = str(
+                    raw_artifact.get("name") or raw_artifact.get("path") or ""
+                ).strip()
+            else:
+                artifact_name = str(raw_artifact).strip()
+            if not artifact_name:
+                continue
+            criteria.append(
+                {
+                    "name": f"artifact:{artifact_name}",
+                    "description": f"{artifact_name} exists in the run artifact manifest.",
+                    "required": True,
+                    "check_type": "artifact_exists",
+                    "params": {"artifact_name": artifact_name},
+                    "scope": "cumulative",
+                }
+            )
+    return criteria
+
+
+def _goal_policy(fixture: PilotFixture) -> dict[str, Any]:
+    """Build a goal policy that preserves the pilot fixture contract."""
+    autonomy = dict(fixture.autonomy or {})
+    discovery_profile = _discovery_profile(fixture).model_dump(mode="json")
+    return {
+        "max_attempt_cycles": int(
+            autonomy.get("max_attempt_cycles") or autonomy.get("max_total_runs") or 1
+        ),
+        "max_total_runs": autonomy.get("max_total_runs"),
+        "max_wall_clock_hours": autonomy.get("max_wall_clock_hours"),
+        "autonomy": autonomy,
+        "discovery": discovery_profile,
+        "protocol": dict(autonomy.get("protocol") or {}),
+        "pilot": _cycle_config(fixture)["pilot"],
+        "seeds": fixture.seeds,
+    }
+
+
+def _attach_goal_to_pilot_cycle(
+    db: Session,
+    *,
+    charter: ResearchCharter,
+    cycle: ResearchCycle,
+    fixture: PilotFixture,
+) -> tuple[ResearchGoal, GoalAttempt]:
+    """Create the goal records that let the worker advance a pilot cycle."""
+    title = str(fixture.charter.get("title") or fixture.problem_id).strip()
+    goal = ResearchGoal(
+        id=uuid7(),
+        charter_id=charter.id,
+        title=f"Pilot: {title}",
+        goal_statement=str(fixture.charter.get("problem_statement") or title).strip(),
+        success_criteria=_goal_success_criteria(fixture),
+        policy=_goal_policy(fixture),
+        status=GoalStatus.running.value,
+        created_at=utcnow(),
+        updated_at=utcnow(),
+    )
+    db.add(goal)
+    db.flush()
+
+    attempt = GoalAttempt(
+        id=uuid7(),
+        goal_id=goal.id,
+        charter_id=charter.id,
+        cycle_id=cycle.id,
+        attempt_number=1,
+        status="running",
+        created_at=utcnow(),
+        updated_at=utcnow(),
+    )
+    db.add(attempt)
+    db.flush()
+
+    cycle_config = dict(cycle.config or {})
+    cycle_config["goal"] = {
+        "goal_id": str(goal.id),
+        "attempt_number": 1,
+        "goal_statement": goal.goal_statement,
+        "success_criteria": goal.success_criteria,
+        "prior_attempt_summary": None,
+    }
+    cycle.config = cycle_config
+    cycle.updated_at = utcnow()
+
+    emit_event_sync(
+        db,
+        event_type=GoalEvents.created.value,
+        charter_id=goal.charter_id,
+        cycle_id=None,
+        payload={
+            "goal_id": str(goal.id),
+            "title": goal.title,
+            "source": "pilot",
+            "problem_id": fixture.problem_id,
+        },
+        actor_type=ActorType.system,
+    )
+    emit_event_sync(
+        db,
+        event_type=GoalEvents.attempt_started.value,
+        charter_id=goal.charter_id,
+        cycle_id=cycle.id,
+        payload={
+            "goal_id": str(goal.id),
+            "attempt_id": str(attempt.id),
+            "attempt_number": attempt.attempt_number,
+            "source": "pilot",
+        },
+        actor_type=ActorType.system,
+    )
+    return goal, attempt
+
+
 async def _kickoff_discovery(
     *,
     charter_id: UUID,
@@ -155,6 +328,12 @@ def start_pilot(fixture: PilotFixture) -> PilotRunHandle:
         )
         db.add(cycle)
         db.flush()
+        goal, attempt = _attach_goal_to_pilot_cycle(
+            db,
+            charter=charter,
+            cycle=cycle,
+            fixture=fixture,
+        )
 
         emit_event_sync(
             db,
@@ -166,6 +345,8 @@ def start_pilot(fixture: PilotFixture) -> PilotRunHandle:
                 "tier": fixture.tier,
                 "autonomy_mode": fixture.autonomy.get("mode"),
                 "max_total_runs": fixture.autonomy.get("max_total_runs"),
+                "goal_id": str(goal.id),
+                "attempt_id": str(attempt.id),
             },
         )
         # If the fixture's autonomy mode is autonomous, also emit the

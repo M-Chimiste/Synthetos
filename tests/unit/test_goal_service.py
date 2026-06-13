@@ -93,6 +93,41 @@ def test_create_goal_creates_first_cycle_attempt_and_discovery_job(monkeypatch) 
     assert any(isinstance(obj, Job) and obj.job_type == "discovery_intake" for obj in session.added)
 
 
+def test_start_goal_attempt_preserves_pilot_contract(monkeypatch) -> None:
+    goal = ResearchGoal(
+        id=uuid7(),
+        charter_id=uuid7(),
+        title="pilot goal",
+        goal_statement="run the pilot",
+        success_criteria=[],
+        policy={
+            "autonomy": {"mode": "autonomous", "max_total_runs": 2},
+            "discovery": {"query_text": "pilot query"},
+            "pilot": {
+                "problem_id": "pilot_fixture",
+                "expected": {"required_artifacts": ["metrics.json"]},
+            },
+            "seeds": {"global": 42},
+        },
+        status="running",
+    )
+    session = _FakeSession()
+    session.execute_values = [0]
+    monkeypatch.setattr(goal_service, "emit_event_sync", lambda *args, **kwargs: None)
+
+    attempt = goal_service.start_goal_attempt_sync(session, goal)
+
+    cycle = next(obj for obj in session.added if isinstance(obj, ResearchCycle))
+    assert attempt.cycle_id == cycle.id
+    assert cycle.config["goal"]["goal_id"] == str(goal.id)
+    assert cycle.config["pilot"]["expected"]["required_artifacts"] == ["metrics.json"]
+    assert cycle.config["seeds"] == {"global": 42}
+    assert any(
+        isinstance(obj, Job) and obj.job_type == "discovery_intake"
+        for obj in session.added
+    )
+
+
 def test_evaluate_goal_attempt_marks_satisfied(monkeypatch) -> None:
     goal = ResearchGoal(
         id=uuid7(),

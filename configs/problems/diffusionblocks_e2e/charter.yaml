@@ -11,10 +11,19 @@ problem_statement: |
   metrics.json, model_weights.pt, and a concise report artifact. Prefer tiny
   synthetic or cached text data over large downloads. Do not claim publishable
   novelty unless the measured evidence supports it.
+
+  Target the research question against a small Qwen-style proxy for
+  Qwen/Qwen3.5-2B: keep the smoke test tiny enough to run locally, avoid
+  downloading full 2B weights, but preserve the causal LM objective and note
+  which parts are proxy measurements. Use a cached/streamed text source such
+  as tatsu-lab/alpaca when available, with a deterministic tiny text fallback
+  if network or cache access is unavailable.
 domain: "small-llm-training"
 success_criteria:
   - "At least one run completes with verification verdict == passed or inconclusive."
   - "The experiment produces metrics.json and model_weights.pt."
+  - "The experiment produces report.md that separates measured evidence from caveats."
+  - "The report states that Qwen/Qwen3.5-2B is represented by a tiny proxy unless full weights were explicitly loaded."
   - "The completion report distinguishes measured evidence from speculation."
   - "The autonomous loop avoids repeating the same failed protocol after verification failures."
-expected_runtime_bucket: "workstation_cpu"
+expected_runtime_bucket: "workstation_gpu"

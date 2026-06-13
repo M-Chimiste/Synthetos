@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import math
+from collections.abc import Iterable
 from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
@@ -16,6 +17,14 @@ def _has_embedding(value: object) -> bool:
         return len(value) > 0  # type: ignore[arg-type]
     except TypeError:
         return False
+
+
+def _embedding_list(value: object) -> list[float] | None:
+    if not _has_embedding(value):
+        return None
+    if not isinstance(value, Iterable):
+        return None
+    return [float(item) for item in value]
 
 
 def build_stable_view(cards: list[PaperCard], *, top_k: int) -> list[PaperCard]:
@@ -49,8 +58,10 @@ def _category_overlap(a: list[str] | None, b: list[str] | None) -> float:
 
 def _similarity(a: PaperCard, b: PaperCard) -> float:
     """Cosine over embeddings if both have one; else Jaccard over categories."""
-    if _has_embedding(a.embedding) and _has_embedding(b.embedding):
-        return _cosine(list(a.embedding), list(b.embedding))
+    a_embedding = _embedding_list(a.embedding)
+    b_embedding = _embedding_list(b.embedding)
+    if a_embedding is not None and b_embedding is not None:
+        return _cosine(a_embedding, b_embedding)
     return _category_overlap(a.categories, b.categories)
 
 
